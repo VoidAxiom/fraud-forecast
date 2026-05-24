@@ -49,6 +49,12 @@ UK_POSTCODE_AREAS: dict[str, list[str]] = {
     "Coventry": ["CV"],
 }
 
+_ALL_POSTCODE_AREAS: list[str] = [
+    area
+    for areas in UK_POSTCODE_AREAS.values()
+    for area in areas
+]
+
 CUISINE_WEIGHTS: dict[str, float] = {
     "Indian": 0.15,
     "Chinese": 0.12,
@@ -158,7 +164,7 @@ _POSTCODE_UNIT_CHARS = "ABDEFGHJLNPQRSTUVWXYZ"
 
 
 def random_uk_postcode(city: str, *, rng: random.Random) -> str:
-    area = rng.choice(UK_POSTCODE_AREAS.get(city, ["GIR"]))
+    area = rng.choice(UK_POSTCODE_AREAS.get(city, _ALL_POSTCODE_AREAS))
     district_num = rng.randint(1, 9)
     subdistrict = ""
     if rng.random() < 0.5:

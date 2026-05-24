@@ -20,7 +20,7 @@ def _resolve_url(role: Role) -> str:
     env_key = f"DATABASE_URL_{role.upper()}"
     if env_key in os.environ:
         return os.environ[env_key]
-    if role == "app" and "DATABASE_URL" in os.environ:
+    if "DATABASE_URL" in os.environ:
         return os.environ["DATABASE_URL"]
     return _DEFAULT_URLS[role]
 
