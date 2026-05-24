@@ -5,5 +5,5 @@ set -euo pipefail
 SCALE="${1:-1.0}"
 WORKERS="${2:-8}"
 SEED="${3:-42}"
-docker compose --profile tools run --rm simulator \
+docker compose --profile tools run --build --rm simulator \
   python -m simulator.seed --scale "$SCALE" --workers "$WORKERS" --seed "$SEED"
