@@ -6,4 +6,5 @@ python-json-logger~=2.0.0
 sqlalchemy-utils~=0.37.0
 faker~=8.0.0
 backports.zoneinfo;python_version<"3.9"
+redis~=4.5
 asyncpg~=0.28.0  # last release with Python 3.8 support

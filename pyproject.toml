@@ -1,7 +1,7 @@
 [tool.mypy]
 python_version = "3.8"
 strict = true
-files = ["shared", "db/migrations/versions"]
+files = ["shared", "db/migrations/versions", "archival"]
 exclude = [
     "db/migrations/versions/.*_initial_schema\\.py",
 ]
