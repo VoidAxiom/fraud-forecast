@@ -8,21 +8,12 @@ import os
 import random
 import sys
 import uuid
-from typing import Any, Optional, TYPE_CHECKING
+from typing import Any
 
-import asyncpg
+import asyncpg  # type: ignore[import]
 
 LOGGER: logging.Logger = logging.getLogger(__name__)
-DATABASE_URL_SIMULATOR: Optional[str] = os.environ.get("DATABASE_URL_SIMULATOR")
-
-if TYPE_CHECKING:
-    from asyncpg import Record
-
-    # asyncpg.Pool generic typing is version-dependent in some environments.
-    AsyncpgPool = asyncpg.Pool[Record]
-else:
-    AsyncpgPool = Any
-
+DATABASE_URL_SIMULATOR: str | None = os.environ.get("DATABASE_URL_SIMULATOR")
 
 _CHARGEBACK_CANDIDATES_SQL = """
 SELECT
@@ -144,7 +135,7 @@ def _coerce_order_id(raw_order_id: object) -> uuid.UUID:
     return uuid.UUID(str(raw_order_id))
 
 
-def _chargeback_probability(is_fraud: bool, fraud_category: Optional[str]) -> float:
+def _chargeback_probability(is_fraud: bool, fraud_category: str | None) -> float:
     if not is_fraud:
         return 0.002
 
@@ -170,7 +161,7 @@ def _days_to_chargeback_threshold(rng: random.Random, is_fraud: bool) -> float:
     return rng.lognormvariate(math.log(30), 0.8)
 
 
-async def generate_chargebacks(pool: AsyncpgPool) -> None:
+async def generate_chargebacks(pool: Any) -> None:
     async with pool.acquire() as conn:
         candidate_rows = await conn.fetch(_CHARGEBACK_CANDIDATES_SQL)
         now = datetime.datetime.now(datetime.timezone.utc)
@@ -220,7 +211,7 @@ async def generate_chargebacks(pool: AsyncpgPool) -> None:
             )
 
 
-async def generate_refunds(pool: AsyncpgPool) -> None:
+async def generate_refunds(pool: Any) -> None:
     async with pool.acquire() as conn:
         candidate_rows = await conn.fetch(_REFUND_CANDIDATES_SQL)
         now = datetime.datetime.now(datetime.timezone.utc)
@@ -240,7 +231,7 @@ async def generate_refunds(pool: AsyncpgPool) -> None:
             await conn.execute(_REFUND_ARCHIVE_OUTCOME_UPDATE_SQL, order_id, order_placed_at)
 
 
-async def finalize_stale_labels(pool: AsyncpgPool) -> None:
+async def finalize_stale_labels(pool: Any) -> None:
     async with pool.acquire() as conn:
         await conn.execute(_FINALIZE_ORDERS_SQL)
         await conn.execute(_FINALIZE_ARCHIVE_SQL)
