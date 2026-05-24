@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import sqlalchemy.types as sqltypes
+import sqlalchemy.types as sqltypes  # type: ignore[import-untyped]  # SQLAlchemy 1.4 has no type stubs
 
 from sqlalchemy import (
     BigInteger,
@@ -19,21 +19,21 @@ from sqlalchemy import (
     Time,
     text,
 )
-from sqlalchemy.dialects.postgresql import ARRAY, INET, JSONB, UUID
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import RelationshipProperty, relationship
+from sqlalchemy.dialects.postgresql import ARRAY, INET, JSONB, UUID  # type: ignore[import-untyped]  # SQLAlchemy 1.4 has no type stubs
+from sqlalchemy.ext.declarative import declarative_base  # type: ignore[import-untyped]  # SQLAlchemy 1.4 has no type stubs
+from sqlalchemy.orm import relationship  # type: ignore[import-untyped]  # SQLAlchemy 1.4 has no type stubs
 
 Base = declarative_base()
 
 
-class CITEXTType(sqltypes.TypeDecorator):
+class CITEXTType(sqltypes.TypeDecorator):  # type: ignore[misc]  # SQLAlchemy 1.4 TypeDecorator is untyped
     """Maps to PostgreSQL CITEXT (case-insensitive text). Postgres-side enforcement by migration."""
 
     impl = sqltypes.String
     cache_ok = True
 
 
-class User(Base):
+class User(Base):  # type: ignore[misc, valid-type]  # SQLAlchemy 1.4 declarative_base() returns Any
     __tablename__ = "users"
 
     user_id = Column(UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()"))
@@ -58,8 +58,8 @@ class User(Base):
     updated_at = Column(DateTime(timezone=True), nullable=False, server_default=text("NOW()"))
     last_login_at = Column(DateTime(timezone=True))
 
-    addresses: RelationshipProperty = relationship("UserAddress", back_populates="user")
-    devices: RelationshipProperty = relationship("Device", secondary="user_devices", back_populates="users")
+    addresses = relationship("UserAddress", back_populates="user")
+    devices = relationship("Device", secondary="user_devices", back_populates="users")
 
     __table_args__ = (
         CheckConstraint("account_status IN ('ACTIVE','SUSPENDED','BANNED','DELETED')", name="users_status_check"),
@@ -67,7 +67,7 @@ class User(Base):
     )
 
 
-class UserAddress(Base):
+class UserAddress(Base):  # type: ignore[misc, valid-type]  # SQLAlchemy 1.4 declarative_base() returns Any
     __tablename__ = "user_addresses"
 
     address_id = Column(UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()"))
@@ -89,7 +89,7 @@ class UserAddress(Base):
     last_used_at = Column(DateTime(timezone=True))
     created_at = Column(DateTime(timezone=True), nullable=False, server_default=text("NOW()"))
 
-    user: RelationshipProperty = relationship("User", back_populates="addresses")
+    user = relationship("User", back_populates="addresses")
 
     __table_args__ = (
         CheckConstraint(
@@ -99,7 +99,7 @@ class UserAddress(Base):
     )
 
 
-class Device(Base):
+class Device(Base):  # type: ignore[misc, valid-type]  # SQLAlchemy 1.4 declarative_base() returns Any
     __tablename__ = "devices"
 
     device_id = Column(UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()"))
@@ -121,7 +121,7 @@ class Device(Base):
     unique_users_count = Column(Integer, server_default=text("1"))
     risk_score = Column(Numeric(5, 4), server_default=text("0.0"))
 
-    users: RelationshipProperty = relationship("User", secondary="user_devices", back_populates="devices")
+    users = relationship("User", secondary="user_devices", back_populates="devices")
 
     __table_args__ = (
         CheckConstraint(
@@ -131,7 +131,7 @@ class Device(Base):
     )
 
 
-class UserDevice(Base):
+class UserDevice(Base):  # type: ignore[misc, valid-type]  # SQLAlchemy 1.4 declarative_base() returns Any
     __tablename__ = "user_devices"
 
     user_id = Column(UUID(as_uuid=True), ForeignKey("users.user_id"), nullable=False)
@@ -144,7 +144,7 @@ class UserDevice(Base):
     __table_args__ = (PrimaryKeyConstraint("user_id", "device_id"),)
 
 
-class Session(Base):
+class Session(Base):  # type: ignore[misc, valid-type]  # SQLAlchemy 1.4 declarative_base() returns Any
     __tablename__ = "sessions"
 
     session_id = Column(UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()"))
@@ -166,7 +166,7 @@ class Session(Base):
     is_active = Column(Boolean, server_default=text("true"))
 
 
-class PaymentMethod(Base):
+class PaymentMethod(Base):  # type: ignore[misc, valid-type]  # SQLAlchemy 1.4 declarative_base() returns Any
     __tablename__ = "payment_methods"
 
     payment_method_id = Column(UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()"))
@@ -193,7 +193,7 @@ class PaymentMethod(Base):
     last_used_at = Column(DateTime(timezone=True))
 
 
-class Merchant(Base):
+class Merchant(Base):  # type: ignore[misc, valid-type]  # SQLAlchemy 1.4 declarative_base() returns Any
     __tablename__ = "merchants"
 
     merchant_id = Column(UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()"))
@@ -206,10 +206,10 @@ class Merchant(Base):
     onboarded_at = Column(DateTime(timezone=True), nullable=False, server_default=text("NOW()"))
     risk_tier = Column(String(20), server_default=text("'STANDARD'"))
 
-    stores: RelationshipProperty = relationship("Store", back_populates="merchant")
+    stores = relationship("Store", back_populates="merchant")
 
 
-class Store(Base):
+class Store(Base):  # type: ignore[misc, valid-type]  # SQLAlchemy 1.4 declarative_base() returns Any
     __tablename__ = "stores"
 
     store_id = Column(UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()"))
@@ -241,12 +241,12 @@ class Store(Base):
     created_at = Column(DateTime(timezone=True), nullable=False, server_default=text("NOW()"))
     risk_score = Column(Numeric(5, 4), server_default=text("0.0"))
 
-    merchant: RelationshipProperty = relationship("Merchant", back_populates="stores")
-    menu_items: RelationshipProperty = relationship("MenuItem", back_populates="store")
-    hours: RelationshipProperty = relationship("StoreHour", back_populates="store")
+    merchant = relationship("Merchant", back_populates="stores")
+    menu_items = relationship("MenuItem", back_populates="store")
+    hours = relationship("StoreHour", back_populates="store")
 
 
-class StoreHour(Base):
+class StoreHour(Base):  # type: ignore[misc, valid-type]  # SQLAlchemy 1.4 declarative_base() returns Any
     __tablename__ = "store_hours"
 
     store_id = Column(UUID(as_uuid=True), ForeignKey("stores.store_id"), nullable=False)
@@ -254,12 +254,12 @@ class StoreHour(Base):
     open_time = Column(Time, nullable=False)
     close_time = Column(Time, nullable=False)
 
-    store: RelationshipProperty = relationship("Store", back_populates="hours")
+    store = relationship("Store", back_populates="hours")
 
     __table_args__ = (PrimaryKeyConstraint("store_id", "day_of_week", "open_time"),)
 
 
-class MenuItem(Base):
+class MenuItem(Base):  # type: ignore[misc, valid-type]  # SQLAlchemy 1.4 declarative_base() returns Any
     __tablename__ = "menu_items"
 
     item_id = Column(UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()"))
@@ -271,10 +271,10 @@ class MenuItem(Base):
     is_available = Column(Boolean, server_default=text("true"))
     created_at = Column(DateTime(timezone=True), nullable=False, server_default=text("NOW()"))
 
-    store: RelationshipProperty = relationship("Store", back_populates="menu_items")
+    store = relationship("Store", back_populates="menu_items")
 
 
-class Driver(Base):
+class Driver(Base):  # type: ignore[misc, valid-type]  # SQLAlchemy 1.4 declarative_base() returns Any
     __tablename__ = "drivers"
 
     driver_id = Column(UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()"))
@@ -292,7 +292,7 @@ class Driver(Base):
     risk_score = Column(Numeric(5, 4), server_default=text("0.0"))
 
 
-class Promotion(Base):
+class Promotion(Base):  # type: ignore[misc, valid-type]  # SQLAlchemy 1.4 declarative_base() returns Any
     __tablename__ = "promotions"
 
     promo_id = Column(UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()"))
@@ -308,7 +308,7 @@ class Promotion(Base):
     created_at = Column(DateTime(timezone=True), nullable=False, server_default=text("NOW()"))
 
 
-class Order(Base):
+class Order(Base):  # type: ignore[misc, valid-type]  # SQLAlchemy 1.4 declarative_base() returns Any
     """Partitioned by `placed_at`; composite PK (`order_id`, `placed_at`)."""
 
     order_id = Column(UUID(as_uuid=True), nullable=False, server_default=text("gen_random_uuid()"))
@@ -424,7 +424,7 @@ class Order(Base):
     )
 
 
-class OrdersArchive(Base):
+class OrdersArchive(Base):  # type: ignore[misc, valid-type]  # SQLAlchemy 1.4 declarative_base() returns Any
     """Archive table. Same schema as `orders`/`order_items`/`order_events`. Rows moved here by the archiver daemon after 48h in terminal state."""
 
     order_id = Column(UUID(as_uuid=True), nullable=False, server_default=text("gen_random_uuid()"))
@@ -540,7 +540,7 @@ class OrdersArchive(Base):
     )
 
 
-class OrderItem(Base):
+class OrderItem(Base):  # type: ignore[misc, valid-type]  # SQLAlchemy 1.4 declarative_base() returns Any
     """Partitioned by `order_placed_at`; composite PK (`order_item_id`, `order_placed_at`)."""
 
     order_item_id = Column(UUID(as_uuid=True), nullable=False, server_default=text("gen_random_uuid()"))
@@ -562,7 +562,7 @@ class OrderItem(Base):
     )
 
 
-class OrderItemsArchive(Base):
+class OrderItemsArchive(Base):  # type: ignore[misc, valid-type]  # SQLAlchemy 1.4 declarative_base() returns Any
     """Archive table. Same schema as `orders`/`order_items`/`order_events`. Rows moved here by the archiver daemon after 48h in terminal state."""
 
     order_item_id = Column(UUID(as_uuid=True), nullable=False, server_default=text("gen_random_uuid()"))
@@ -584,7 +584,7 @@ class OrderItemsArchive(Base):
     )
 
 
-class OrderEvent(Base):
+class OrderEvent(Base):  # type: ignore[misc, valid-type]  # SQLAlchemy 1.4 declarative_base() returns Any
     """Partitioned by `order_placed_at`; composite PK (`event_id`, `order_placed_at`)."""
 
     event_id = Column(BigInteger, nullable=False, autoincrement=True)
@@ -605,7 +605,7 @@ class OrderEvent(Base):
     )
 
 
-class OrderEventsArchive(Base):
+class OrderEventsArchive(Base):  # type: ignore[misc, valid-type]  # SQLAlchemy 1.4 declarative_base() returns Any
     """Archive table. Same schema as `orders`/`order_items`/`order_events`. Rows moved here by the archiver daemon after 48h in terminal state."""
 
     event_id = Column(BigInteger, nullable=False, autoincrement=True)
@@ -626,7 +626,7 @@ class OrderEventsArchive(Base):
     )
 
 
-class FraudDecision(Base):
+class FraudDecision(Base):  # type: ignore[misc, valid-type]  # SQLAlchemy 1.4 declarative_base() returns Any
     __tablename__ = "fraud_decisions"
 
     decision_id = Column(BigInteger, primary_key=True, autoincrement=True)
@@ -641,7 +641,7 @@ class FraudDecision(Base):
     created_at = Column(DateTime(timezone=True), nullable=False, server_default=text("NOW()"))
 
 
-class Chargeback(Base):
+class Chargeback(Base):  # type: ignore[misc, valid-type]  # SQLAlchemy 1.4 declarative_base() returns Any
     __tablename__ = "chargebacks"
 
     chargeback_id = Column(UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()"))
