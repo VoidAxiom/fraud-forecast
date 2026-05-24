@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import sqlalchemy.types as sqltypes  # type: ignore[import-untyped]  # SQLAlchemy 1.4 has no type stubs
+import sqlalchemy.types as sqltypes  # type: ignore  # SQLAlchemy 1.4 has no type stubs
 
 from sqlalchemy import (
     BigInteger,
@@ -19,21 +19,21 @@ from sqlalchemy import (
     Time,
     text,
 )
-from sqlalchemy.dialects.postgresql import ARRAY, INET, JSONB, UUID  # type: ignore[import-untyped]  # SQLAlchemy 1.4 has no type stubs
-from sqlalchemy.ext.declarative import declarative_base  # type: ignore[import-untyped]  # SQLAlchemy 1.4 has no type stubs
-from sqlalchemy.orm import relationship  # type: ignore[import-untyped]  # SQLAlchemy 1.4 has no type stubs
+from sqlalchemy.dialects.postgresql import ARRAY, INET, JSONB, UUID  # type: ignore  # SQLAlchemy 1.4 has no type stubs
+from sqlalchemy.ext.declarative import declarative_base  # type: ignore  # SQLAlchemy 1.4 has no type stubs
+from sqlalchemy.orm import relationship  # type: ignore  # SQLAlchemy 1.4 has no type stubs
 
 Base = declarative_base()
 
 
-class CITEXTType(sqltypes.TypeDecorator):  # type: ignore[misc]  # SQLAlchemy 1.4 TypeDecorator is untyped
+class CITEXTType(sqltypes.TypeDecorator):  # type: ignore  # SQLAlchemy 1.4 TypeDecorator is untyped
     """Maps to PostgreSQL CITEXT (case-insensitive text). Postgres-side enforcement by migration."""
 
     impl = sqltypes.String
     cache_ok = True
 
 
-class User(Base):  # type: ignore[misc, valid-type]  # SQLAlchemy 1.4 declarative_base() returns Any
+class User(Base):  # type: ignore  # SQLAlchemy 1.4 declarative_base() returns Any
     __tablename__ = "users"
 
     user_id = Column(UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()"))
@@ -67,7 +67,7 @@ class User(Base):  # type: ignore[misc, valid-type]  # SQLAlchemy 1.4 declarativ
     )
 
 
-class UserAddress(Base):  # type: ignore[misc, valid-type]  # SQLAlchemy 1.4 declarative_base() returns Any
+class UserAddress(Base):  # type: ignore  # SQLAlchemy 1.4 declarative_base() returns Any
     __tablename__ = "user_addresses"
 
     address_id = Column(UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()"))
@@ -99,7 +99,7 @@ class UserAddress(Base):  # type: ignore[misc, valid-type]  # SQLAlchemy 1.4 dec
     )
 
 
-class Device(Base):  # type: ignore[misc, valid-type]  # SQLAlchemy 1.4 declarative_base() returns Any
+class Device(Base):  # type: ignore  # SQLAlchemy 1.4 declarative_base() returns Any
     __tablename__ = "devices"
 
     device_id = Column(UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()"))
@@ -131,7 +131,7 @@ class Device(Base):  # type: ignore[misc, valid-type]  # SQLAlchemy 1.4 declarat
     )
 
 
-class UserDevice(Base):  # type: ignore[misc, valid-type]  # SQLAlchemy 1.4 declarative_base() returns Any
+class UserDevice(Base):  # type: ignore  # SQLAlchemy 1.4 declarative_base() returns Any
     __tablename__ = "user_devices"
 
     user_id = Column(UUID(as_uuid=True), ForeignKey("users.user_id"), nullable=False)
@@ -144,7 +144,7 @@ class UserDevice(Base):  # type: ignore[misc, valid-type]  # SQLAlchemy 1.4 decl
     __table_args__ = (PrimaryKeyConstraint("user_id", "device_id"),)
 
 
-class Session(Base):  # type: ignore[misc, valid-type]  # SQLAlchemy 1.4 declarative_base() returns Any
+class Session(Base):  # type: ignore  # SQLAlchemy 1.4 declarative_base() returns Any
     __tablename__ = "sessions"
 
     session_id = Column(UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()"))
@@ -166,7 +166,7 @@ class Session(Base):  # type: ignore[misc, valid-type]  # SQLAlchemy 1.4 declara
     is_active = Column(Boolean, server_default=text("true"))
 
 
-class PaymentMethod(Base):  # type: ignore[misc, valid-type]  # SQLAlchemy 1.4 declarative_base() returns Any
+class PaymentMethod(Base):  # type: ignore  # SQLAlchemy 1.4 declarative_base() returns Any
     __tablename__ = "payment_methods"
 
     payment_method_id = Column(UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()"))
@@ -193,7 +193,7 @@ class PaymentMethod(Base):  # type: ignore[misc, valid-type]  # SQLAlchemy 1.4 d
     last_used_at = Column(DateTime(timezone=True))
 
 
-class Merchant(Base):  # type: ignore[misc, valid-type]  # SQLAlchemy 1.4 declarative_base() returns Any
+class Merchant(Base):  # type: ignore  # SQLAlchemy 1.4 declarative_base() returns Any
     __tablename__ = "merchants"
 
     merchant_id = Column(UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()"))
@@ -209,7 +209,7 @@ class Merchant(Base):  # type: ignore[misc, valid-type]  # SQLAlchemy 1.4 declar
     stores = relationship("Store", back_populates="merchant")
 
 
-class Store(Base):  # type: ignore[misc, valid-type]  # SQLAlchemy 1.4 declarative_base() returns Any
+class Store(Base):  # type: ignore  # SQLAlchemy 1.4 declarative_base() returns Any
     __tablename__ = "stores"
 
     store_id = Column(UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()"))
@@ -246,7 +246,7 @@ class Store(Base):  # type: ignore[misc, valid-type]  # SQLAlchemy 1.4 declarati
     hours = relationship("StoreHour", back_populates="store")
 
 
-class StoreHour(Base):  # type: ignore[misc, valid-type]  # SQLAlchemy 1.4 declarative_base() returns Any
+class StoreHour(Base):  # type: ignore  # SQLAlchemy 1.4 declarative_base() returns Any
     __tablename__ = "store_hours"
 
     store_id = Column(UUID(as_uuid=True), ForeignKey("stores.store_id"), nullable=False)
@@ -259,7 +259,7 @@ class StoreHour(Base):  # type: ignore[misc, valid-type]  # SQLAlchemy 1.4 decla
     __table_args__ = (PrimaryKeyConstraint("store_id", "day_of_week", "open_time"),)
 
 
-class MenuItem(Base):  # type: ignore[misc, valid-type]  # SQLAlchemy 1.4 declarative_base() returns Any
+class MenuItem(Base):  # type: ignore  # SQLAlchemy 1.4 declarative_base() returns Any
     __tablename__ = "menu_items"
 
     item_id = Column(UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()"))
@@ -274,7 +274,7 @@ class MenuItem(Base):  # type: ignore[misc, valid-type]  # SQLAlchemy 1.4 declar
     store = relationship("Store", back_populates="menu_items")
 
 
-class Driver(Base):  # type: ignore[misc, valid-type]  # SQLAlchemy 1.4 declarative_base() returns Any
+class Driver(Base):  # type: ignore  # SQLAlchemy 1.4 declarative_base() returns Any
     __tablename__ = "drivers"
 
     driver_id = Column(UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()"))
@@ -292,7 +292,7 @@ class Driver(Base):  # type: ignore[misc, valid-type]  # SQLAlchemy 1.4 declarat
     risk_score = Column(Numeric(5, 4), server_default=text("0.0"))
 
 
-class Promotion(Base):  # type: ignore[misc, valid-type]  # SQLAlchemy 1.4 declarative_base() returns Any
+class Promotion(Base):  # type: ignore  # SQLAlchemy 1.4 declarative_base() returns Any
     __tablename__ = "promotions"
 
     promo_id = Column(UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()"))
@@ -308,7 +308,7 @@ class Promotion(Base):  # type: ignore[misc, valid-type]  # SQLAlchemy 1.4 decla
     created_at = Column(DateTime(timezone=True), nullable=False, server_default=text("NOW()"))
 
 
-class Order(Base):  # type: ignore[misc, valid-type]  # SQLAlchemy 1.4 declarative_base() returns Any
+class Order(Base):  # type: ignore  # SQLAlchemy 1.4 declarative_base() returns Any
     """Partitioned by `placed_at`; composite PK (`order_id`, `placed_at`)."""
 
     order_id = Column(UUID(as_uuid=True), nullable=False, server_default=text("gen_random_uuid()"))
@@ -424,7 +424,7 @@ class Order(Base):  # type: ignore[misc, valid-type]  # SQLAlchemy 1.4 declarati
     )
 
 
-class OrdersArchive(Base):  # type: ignore[misc, valid-type]  # SQLAlchemy 1.4 declarative_base() returns Any
+class OrdersArchive(Base):  # type: ignore  # SQLAlchemy 1.4 declarative_base() returns Any
     """Archive table. Same schema as `orders`/`order_items`/`order_events`. Rows moved here by the archiver daemon after 48h in terminal state."""
 
     order_id = Column(UUID(as_uuid=True), nullable=False, server_default=text("gen_random_uuid()"))
@@ -540,7 +540,7 @@ class OrdersArchive(Base):  # type: ignore[misc, valid-type]  # SQLAlchemy 1.4 d
     )
 
 
-class OrderItem(Base):  # type: ignore[misc, valid-type]  # SQLAlchemy 1.4 declarative_base() returns Any
+class OrderItem(Base):  # type: ignore  # SQLAlchemy 1.4 declarative_base() returns Any
     """Partitioned by `order_placed_at`; composite PK (`order_item_id`, `order_placed_at`)."""
 
     order_item_id = Column(UUID(as_uuid=True), nullable=False, server_default=text("gen_random_uuid()"))
@@ -562,7 +562,7 @@ class OrderItem(Base):  # type: ignore[misc, valid-type]  # SQLAlchemy 1.4 decla
     )
 
 
-class OrderItemsArchive(Base):  # type: ignore[misc, valid-type]  # SQLAlchemy 1.4 declarative_base() returns Any
+class OrderItemsArchive(Base):  # type: ignore  # SQLAlchemy 1.4 declarative_base() returns Any
     """Archive table. Same schema as `orders`/`order_items`/`order_events`. Rows moved here by the archiver daemon after 48h in terminal state."""
 
     order_item_id = Column(UUID(as_uuid=True), nullable=False, server_default=text("gen_random_uuid()"))
@@ -584,7 +584,7 @@ class OrderItemsArchive(Base):  # type: ignore[misc, valid-type]  # SQLAlchemy 1
     )
 
 
-class OrderEvent(Base):  # type: ignore[misc, valid-type]  # SQLAlchemy 1.4 declarative_base() returns Any
+class OrderEvent(Base):  # type: ignore  # SQLAlchemy 1.4 declarative_base() returns Any
     """Partitioned by `order_placed_at`; composite PK (`event_id`, `order_placed_at`)."""
 
     event_id = Column(BigInteger, nullable=False, autoincrement=True)
@@ -605,7 +605,7 @@ class OrderEvent(Base):  # type: ignore[misc, valid-type]  # SQLAlchemy 1.4 decl
     )
 
 
-class OrderEventsArchive(Base):  # type: ignore[misc, valid-type]  # SQLAlchemy 1.4 declarative_base() returns Any
+class OrderEventsArchive(Base):  # type: ignore  # SQLAlchemy 1.4 declarative_base() returns Any
     """Archive table. Same schema as `orders`/`order_items`/`order_events`. Rows moved here by the archiver daemon after 48h in terminal state."""
 
     event_id = Column(BigInteger, nullable=False, autoincrement=True)
@@ -626,7 +626,7 @@ class OrderEventsArchive(Base):  # type: ignore[misc, valid-type]  # SQLAlchemy 
     )
 
 
-class FraudDecision(Base):  # type: ignore[misc, valid-type]  # SQLAlchemy 1.4 declarative_base() returns Any
+class FraudDecision(Base):  # type: ignore  # SQLAlchemy 1.4 declarative_base() returns Any
     __tablename__ = "fraud_decisions"
 
     decision_id = Column(BigInteger, primary_key=True, autoincrement=True)
@@ -641,7 +641,7 @@ class FraudDecision(Base):  # type: ignore[misc, valid-type]  # SQLAlchemy 1.4 d
     created_at = Column(DateTime(timezone=True), nullable=False, server_default=text("NOW()"))
 
 
-class Chargeback(Base):  # type: ignore[misc, valid-type]  # SQLAlchemy 1.4 declarative_base() returns Any
+class Chargeback(Base):  # type: ignore  # SQLAlchemy 1.4 declarative_base() returns Any
     __tablename__ = "chargebacks"
 
     chargeback_id = Column(UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()"))

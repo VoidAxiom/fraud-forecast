@@ -2,9 +2,9 @@ from __future__ import annotations
 from contextlib import contextmanager
 from typing import Iterator, Literal
 import os
-from sqlalchemy import create_engine  # type: ignore[import-untyped]  # SQLAlchemy 1.4 has no type stubs
-from sqlalchemy.engine import Engine  # type: ignore[import-untyped]  # SQLAlchemy 1.4 has no type stubs
-from sqlalchemy.orm import sessionmaker, Session  # type: ignore[import-untyped]  # SQLAlchemy 1.4 has no type stubs
+from sqlalchemy import create_engine  # type: ignore  # SQLAlchemy 1.4 has no type stubs
+from sqlalchemy.engine import Engine  # type: ignore  # SQLAlchemy 1.4 has no type stubs
+from sqlalchemy.orm import sessionmaker, Session  # type: ignore  # SQLAlchemy 1.4 has no type stubs
 
 Role = Literal["app", "scoring", "simulator", "analyst"]
 
