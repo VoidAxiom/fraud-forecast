@@ -21,7 +21,7 @@ and nothing more.
 
 ## This repo
 
-**fraud_forecast** — TODO — fill in once the stack is decided
+**fraud-forecast** — TODO — fill in once the stack is decided
 
 - Match existing component/file conventions; do not restyle or reorganise
   adjacent code. Strict typing — honor it; never `as`/`!` a type lie away.

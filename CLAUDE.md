@@ -1,6 +1,6 @@
-# fraud_forecast — agent operating guide
+# fraud-forecast — agent operating guide
 
-**fraud_forecast** — TODO — fill in once the stack is decided
+**fraud-forecast** — TODO — fill in once the stack is decided
 
 This file is the operating contract for Claude as **director / spec author /
 scope gate / final integrator**. It does not describe the product; it describes

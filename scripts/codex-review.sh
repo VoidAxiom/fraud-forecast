@@ -55,7 +55,7 @@ fi
 # flag-criteria, prefer zero findings over uncertain ones, state the
 # conditions for the bug, match codebase rigor, [P0]-[P3], correctness
 # verdict — plus this project's invariants.
-PROMPT="You are a STATELESS, ADVERSARIAL senior reviewer for fraud_forecast
+PROMPT="You are a STATELESS, ADVERSARIAL senior reviewer for fraud-forecast
 (TODO — fill in once the stack is decided). You have NO prior context and no stake. Review ONLY
 the diff below (changes vs ${BASE_REF}); judge only defects INTRODUCED by
 this change.
