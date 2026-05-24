@@ -61,7 +61,7 @@ services:
       postgres:
         condition: service_healthy
     environment:
-      - DATABASE_URL_SIMULATOR=postgresql://simulator_user:simulator_dev_password@postgres:5432/fraud_platform
+      - DATABASE_URL=postgresql://app:${POSTGRES_PASSWORD:-app_dev_password}@postgres:5432/fraud_platform
       - CHARGEBACK_DAEMON_INTERVAL_MIN=${CHARGEBACK_DAEMON_INTERVAL_MIN:-60}
       - TZ=Europe/London
     restart: unless-stopped

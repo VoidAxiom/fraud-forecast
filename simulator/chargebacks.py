@@ -13,7 +13,7 @@ from typing import Any
 import asyncpg  # type: ignore[import]
 
 LOGGER: logging.Logger = logging.getLogger(__name__)
-DATABASE_URL_SIMULATOR: str | None = os.environ.get("DATABASE_URL_SIMULATOR")
+DATABASE_URL: str | None = os.environ.get("DATABASE_URL")
 
 _CHARGEBACK_CANDIDATES_SQL = """
 SELECT
@@ -42,6 +42,7 @@ JOIN simulator_ground_truth gt USING (order_id)
 WHERE o.delivered_at >= NOW() - INTERVAL '90 days'
   AND o.chargeback_received_at IS NULL
   AND o.fraud_outcome IS NULL
+LIMIT 10000
 """
 
 _CHARGEBACK_INSERT_SQL = """
@@ -88,6 +89,7 @@ FROM orders_archive o
 JOIN simulator_ground_truth gt USING (order_id)
 WHERE o.delivered_at IS NOT NULL
   AND gt.fraud_category = 'refund_abuse'
+LIMIT 10000
 """
 
 _REFUND_INSERT_SQL = """
@@ -102,6 +104,7 @@ SET fraud_outcome = 'LEGIT'
 WHERE delivered_at < NOW() - INTERVAL '60 days'
   AND fraud_outcome IS NULL
   AND delivered_at IS NOT NULL
+  AND NOT EXISTS (SELECT 1 FROM refunds r WHERE r.order_id = orders.order_id)
 """
 
 _FINALIZE_ARCHIVE_SQL = """
@@ -110,6 +113,25 @@ SET fraud_outcome = 'LEGIT'
 WHERE delivered_at < NOW() - INTERVAL '60 days'
   AND fraud_outcome IS NULL
   AND delivered_at IS NOT NULL
+  AND NOT EXISTS (SELECT 1 FROM refunds r WHERE r.order_id = orders_archive.order_id)
+"""
+
+_FINALIZE_REFUND_ABUSE_ORDERS_SQL = """
+UPDATE orders
+SET fraud_outcome = 'REFUND_ABUSE'
+WHERE delivered_at < NOW() - INTERVAL '60 days'
+  AND fraud_outcome IS NULL
+  AND delivered_at IS NOT NULL
+  AND EXISTS (SELECT 1 FROM refunds r WHERE r.order_id = orders.order_id)
+"""
+
+_FINALIZE_REFUND_ABUSE_ARCHIVE_SQL = """
+UPDATE orders_archive
+SET fraud_outcome = 'REFUND_ABUSE'
+WHERE delivered_at < NOW() - INTERVAL '60 days'
+  AND fraud_outcome IS NULL
+  AND delivered_at IS NOT NULL
+  AND EXISTS (SELECT 1 FROM refunds r WHERE r.order_id = orders_archive.order_id)
 """
 
 
@@ -217,12 +239,14 @@ async def finalize_stale_labels(pool: Any) -> None:
     async with pool.acquire() as conn:
         await conn.execute(_FINALIZE_ORDERS_SQL)
         await conn.execute(_FINALIZE_ARCHIVE_SQL)
+        await conn.execute(_FINALIZE_REFUND_ABUSE_ORDERS_SQL)
+        await conn.execute(_FINALIZE_REFUND_ABUSE_ARCHIVE_SQL)
 
 
 def _get_database_url() -> str:
-    if DATABASE_URL_SIMULATOR is None:
-        raise RuntimeError("Missing DATABASE_URL_SIMULATOR environment variable")
-    return DATABASE_URL_SIMULATOR
+    if DATABASE_URL is None:
+        raise RuntimeError("Missing DATABASE_URL environment variable")
+    return DATABASE_URL
 
 
 async def run_once() -> None:
