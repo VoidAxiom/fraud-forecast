@@ -82,7 +82,7 @@ async def generate_stolen_card_fraud(
     cvv_result = "NO_MATCH" if ctx.rng.random() < 0.40 else "MATCH"
 
     order_total = ctx.rng.gauss(6500, 2500)
-    order_total_pence = max(2000, int(order_total))
+    order_total_pence: int = max(2000, round(order_total))
 
     address_type = _weighted_choice(
         ctx.rng,
@@ -107,7 +107,9 @@ async def generate_stolen_card_fraud(
         "is_high_end_cart": is_high_end_cart,
         "variant": variant,
         "is_digital_native_bank": False,
-        "is_night_order": 2 <= ctx.now.hour < 6,
+        # Probabilistic 40% night skew (spec §"Pattern 1"); re-derive from ctx.now when
+        # the generator passes simulated timestamps through ctx in a future iteration.
+        "is_night_order": ctx.rng.random() < 0.40,
     }
 
     # Spec says 40% of stolen-card fraud is night-hour oriented; record that signal.

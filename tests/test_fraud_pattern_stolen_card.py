@@ -68,15 +68,19 @@ def test_generate_stolen_card_fraud_is_deterministic_for_order_id() -> None:
     assert isinstance(gt1.order_id, uuid.UUID)
 
 
-def test_is_night_order_flag_tracks_uk_night_hours() -> None:
-    for hour in range(24):
-        ctx = FraudPatternContext(
-            rng=random.Random(1),
-            now=datetime(2026, 1, 2, hour, 0, tzinfo=ZoneInfo("Europe/London")),
-        )
-        order_dict, _ = asyncio.run(generate_stolen_card_fraud(ctx))
-        should_be_night = 2 <= hour < 6
-        assert order_dict["is_night_order"] is should_be_night
+def test_is_night_order_rate_is_approximately_40_percent() -> None:
+    """is_night_order must hit ~40% rate regardless of wall-clock (seeded RNG)."""
+    # daytime ctx.now to prove it's not wall-clock-dependent
+    ctx = FraudPatternContext(
+        rng=random.Random(42),
+        now=datetime(2026, 1, 2, 14, 0, tzinfo=ZoneInfo("Europe/London")),
+    )
+    results = [
+        asyncio.run(generate_stolen_card_fraud(ctx))[0]["is_night_order"]
+        for _ in range(500)
+    ]
+    rate = sum(results) / len(results)
+    assert 0.30 <= rate <= 0.50, f"night-order rate {rate:.3f} outside [0.30, 0.50]"
 
 
 def test_weighted_choice_returns_choice_from_values() -> None:
@@ -98,6 +102,7 @@ def test_generate_fraud_order_is_deterministic_with_seeded_rng() -> None:
     assert gt1.order_id == gt2.order_id
     assert order1["order_total_pence"] == order2["order_total_pence"]
     assert order1["variant"] == order2["variant"]
+    assert order1["is_night_order"] == order2["is_night_order"]
 
 
 def test_stolen_card_variants_are_within_generous_bounds() -> None:
