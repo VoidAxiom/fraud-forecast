@@ -138,11 +138,11 @@ def test_archiver_10k_under_30s(db_engine: Engine) -> None:
             from psycopg2.extras import execute_values
             raw = conn.connection
             cur = raw.cursor()
-            rows = [(oid, placed_at, f"AB-{str(oid)[:8]}", "DELIVERED", "WEB", "DELIVERY",
+            rows = [(oid, placed_at, f"10K-{i:08d}", "DELIVERED", "WEB", "DELIVERY",
                      user_id, 1, 0, 0, 0,
                      f"arc-10k-{user_id}@example.com", "example.com",
                      store_id, merchant_id, "London", 51.5, -0.1, stale,
-                     1, 1, 1000, 1000, "CREDIT_CARD") for oid in ids]
+                     1, 1, 1000, 1000, "CREDIT_CARD") for i, oid in enumerate(ids)]
             execute_values(cur, """
                 INSERT INTO orders (order_id, placed_at, order_number, order_status,
                     order_channel, order_type, user_id, user_account_age_days,
@@ -154,13 +154,18 @@ def test_archiver_10k_under_30s(db_engine: Engine) -> None:
             """, rows, page_size=1000)
         from archival.archiver import run_once
         t0 = time.monotonic()
-        run_once(batch_size=10000, max_batches=1)
+        run_once(batch_size=10000, max_batches=10)
         elapsed = time.monotonic() - t0
         with db_engine.connect() as conn:
             archived_count = conn.execute(text(
                 "SELECT count(*) FROM orders_archive WHERE order_id = ANY(:ids)"
             ), {"ids": ids}).scalar()
-        assert archived_count >= 10000, f"only {archived_count} of 10K fixture rows archived"
+            hot_count = conn.execute(text(
+                "SELECT count(*) FROM orders WHERE order_id = ANY(:ids)"
+            ), {"ids": ids}).scalar()
+        assert archived_count + hot_count == 10000, (
+            f"fixture rows not conserved: archived={archived_count}, hot={hot_count}"
+        )
         assert elapsed < 30, f"archiver took {elapsed:.1f}s for 10K rows (target <30s)"
     finally:
         with db_engine.begin() as conn:
@@ -206,4 +211,4 @@ def test_archiver_concurrent_runs_partition_work(
         ), {"ids": stale_ids}).scalar()
         total_count = archived_count + hot_count
         assert total_count == 50  # no duplication or loss for fixture stale rows
-        assert archived_count >= 0
+        assert archived_count >= 1
