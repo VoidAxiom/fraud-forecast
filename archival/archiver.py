@@ -7,14 +7,13 @@ import signal
 import threading
 import time
 from contextlib import contextmanager
-from typing import Iterator, Optional, cast
+from typing import Iterator, cast
 
-from apscheduler.schedulers.background import BackgroundScheduler  # type: ignore[import]
-from apscheduler.triggers.cron import CronTrigger  # type: ignore[import]
+from apscheduler.schedulers.background import BackgroundScheduler
+from apscheduler.triggers.cron import CronTrigger
 from psycopg2.extensions import connection as PsycopgConnection
 from psycopg2.extensions import cursor as PsycopgCursor
 from pythonjsonlogger import jsonlogger
-
 from shared.db import get_engine
 
 LOG = logging.getLogger("archiver")
@@ -113,10 +112,7 @@ def _archive_one_batch(batch_size: int, batch_num: int) -> int:
             cur.close()
         conn.commit()
 
-    if row is None:
-        moved = 0
-    else:
-        moved = int(row[2])
+    moved = 0 if row is None else int(row[2])
 
     LOG.info(
         "Archive batch complete",
@@ -153,7 +149,7 @@ def run_once(batch_size: int, max_batches: int) -> int:
     return moved_total
 
 
-def _parse_stop_signal(signum: int, frame: Optional[object]) -> None:
+def _parse_stop_signal(signum: int, frame: object | None) -> None:
     """Signal handler that flags daemon shutdown."""
     _ = signum
     _ = frame
