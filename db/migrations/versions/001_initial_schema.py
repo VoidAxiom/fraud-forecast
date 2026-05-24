@@ -42,7 +42,6 @@ CREATE TABLE users (
     CONSTRAINT users_status_check CHECK (account_status IN ('ACTIVE','SUSPENDED','BANNED','DELETED')),
     CONSTRAINT users_tier_check CHECK (risk_tier IN ('TRUSTED','STANDARD','ELEVATED','HIGH_RISK'))
 );
-CREATE INDEX idx_users_email ON users(email);
 CREATE INDEX idx_users_phone ON users(phone);
 CREATE INDEX idx_users_signup_ip ON users(signup_ip);
 CREATE INDEX idx_users_signup_device ON users(signup_device_id);
@@ -101,7 +100,6 @@ CREATE TABLE devices (
     risk_score           DECIMAL(5,4) DEFAULT 0.0,
     CONSTRAINT devices_type_check CHECK (device_type IN ('MOBILE_APP','MOBILE_WEB','DESKTOP_WEB','TABLET'))
 );
-CREATE INDEX idx_devices_fingerprint ON devices(device_fingerprint);
 """
     )
     op.execute(
