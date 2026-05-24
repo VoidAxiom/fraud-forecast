@@ -1007,16 +1007,28 @@ def seed_devices() -> None:
 
 
 def vacuum_analyze_all() -> None:
-    conn = _get_conn()
     try:
-        conn.autocommit = True
-        with conn.cursor() as cur:
-            cur.execute(
-                "VACUUM ANALYZE merchants, stores, store_hours, menu_items, drivers, users, "
-                "user_addresses, payment_methods, devices, user_devices, promotions;"
+        conn = _get_conn()
+        try:
+            conn.autocommit = True
+            with conn.cursor() as cur:
+                cur.execute(
+                    "VACUUM ANALYZE merchants, stores, store_hours, menu_items, drivers, users, "
+                    "user_addresses, payment_methods, devices, user_devices, promotions;"
+                )
+            logger.info("VACUUM ANALYZE complete")
+        except psycopg2.Error as exc:
+            logger.warning(
+                "VACUUM ANALYZE skipped (insufficient privileges — run manually as a superuser): %s",
+                exc,
             )
-    finally:
-        conn.close()
+        finally:
+            conn.close()
+    except psycopg2.Error as exc:
+        logger.warning(
+            "VACUUM ANALYZE skipped (insufficient privileges — run manually as a superuser): %s",
+            exc,
+        )
 
 
 def print_summary() -> None:
