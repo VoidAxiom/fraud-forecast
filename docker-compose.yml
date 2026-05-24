@@ -5,8 +5,6 @@ services:
       POSTGRES_DB: fraud_platform
       POSTGRES_USER: app
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-app_dev_password}
-    ports:
-      - "5432:5432"
     volumes:
       - pg_data:/var/lib/postgresql/data
       - ./infra/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
@@ -31,8 +29,6 @@ services:
 
   redis:
     image: redis:6-alpine
-    ports:
-      - "6379:6379"
     volumes:
       - redis_data:/data
       - ./infra/redis/redis.conf:/usr/local/etc/redis/redis.conf:ro

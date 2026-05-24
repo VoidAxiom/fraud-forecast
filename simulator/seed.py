@@ -16,8 +16,8 @@ import uuid
 from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
-import psycopg2  # type: ignore
-from faker import Faker
+import psycopg2
+from faker import Faker  # type: ignore[import]
 from shared.uk_data import (
     CARD_BRANDS,
     CUISINE_WEIGHTS,
@@ -487,9 +487,9 @@ def _get_conn() -> Any:
     conn = psycopg2.connect(db_url)
     conn.autocommit = False
     with conn.cursor() as cur:
-        cur.execute("SET synchronous_commit = OFF;")
-        cur.execute("SET work_mem = '256MB';")
-        cur.execute("SET maintenance_work_mem = '1GB';")
+        cur.execute("SET synchronous_commit = OFF;")  # type: ignore[attr-defined]
+        cur.execute("SET work_mem = '256MB';")  # type: ignore[attr-defined]
+        cur.execute("SET maintenance_work_mem = '1GB';")  # type: ignore[attr-defined]
     conn.commit()
     return conn
 
@@ -925,12 +925,14 @@ def seed_drivers(scale: float) -> None:
         writer = csv.writer(buf)
         vehicle_types = ["BIKE", "EBIKE", "SCOOTER", "CAR", "WALK"]
         vehicle_weights = [35, 25, 20, 18, 2]
-        for _ in range(target):
+        for driver_idx in range(target):
             driver_id = str(uuid.uuid4())
             first_name = fake.first_name()[:100]
             last_name = fake.last_name()[:100]
             domain = rng.choice(_DRIVER_EMAIL_DOMAINS)
-            email = f"{first_name.lower()}.{last_name.lower()}{rng.randint(1, 999)}@{domain}"
+            email_base = f"{first_name.lower()}.{last_name.lower()}".replace("'", "").replace(" ", "")
+            email = f"{email_base}{driver_idx}{rng.randint(1, 9999)}@{domain}"
+            email = email[:254]  # max email length
             phone = f"+44 7{rng.randint(100000000, 999999999)}"
             vehicle_type = rng.choices(vehicle_types, weights=vehicle_weights, k=1)[0]
             if vehicle_type in ("CAR", "SCOOTER"):
@@ -1084,8 +1086,13 @@ def _user_worker(
             domain = _wrng.choice(disposable_domains)
         else:
             domain = _wrng.choices(email_domains, weights=email_weights, k=1)[0]
-        email_local = f"{first_name.lower()}.{last_name.lower()}{_wrng.randint(1, 9999)}"
-        email_local = email_local.replace("'", "").replace(" ", "")[:100]
+        _clean_name = (
+            first_name.lower().replace("'", "").replace(" ", "")
+            + "."
+            + last_name.lower().replace("'", "").replace(" ", "")
+        )
+        email_local = f"{_clean_name}{worker_idx}{_wrng.randint(1, 999999)}"
+        email_local = "".join(c for c in email_local if (c.isascii() and c.isalnum()) or c in "._-")[:100]
         email = f"{email_local}@{domain}"
 
         phone = ""
@@ -1261,12 +1268,12 @@ def _user_worker(
     conn.autocommit = False
     try:
         with conn.cursor() as cur:
-            cur.execute("SET synchronous_commit = OFF;")
-            cur.execute("SET work_mem = '256MB';")
+            cur.execute("SET synchronous_commit = OFF;")  # type: ignore[attr-defined]
+            cur.execute("SET work_mem = '256MB';")  # type: ignore[attr-defined]
         conn.commit()
         user_buf.seek(0)
         with conn.cursor() as cur:
-            cur.copy_expert(
+            cur.copy_expert(  # type: ignore[attr-defined]
                 "COPY users (user_id, email, email_verified_at, phone, phone_verified_at, "
                 "password_hash, first_name, last_name, date_of_birth, account_status, risk_tier, "
                 "referral_source, referred_by_user_id, signup_ip, signup_device_id, signup_country, "
@@ -1277,7 +1284,7 @@ def _user_worker(
         conn.commit()
         addr_buf.seek(0)
         with conn.cursor() as cur:
-            cur.copy_expert(
+            cur.copy_expert(  # type: ignore[attr-defined]
                 "COPY user_addresses (address_id, user_id, label, address_line_1, address_line_2, "
                 "city, county, postcode, country, latitude, longitude, is_default, address_type, "
                 "delivery_instructions, times_used, created_at, first_used_at) "
@@ -1287,7 +1294,7 @@ def _user_worker(
         conn.commit()
         pay_buf.seek(0)
         with conn.cursor() as cur:
-            cur.copy_expert(
+            cur.copy_expert(  # type: ignore[attr-defined]
                 "COPY payment_methods (payment_method_id, user_id, payment_type, card_token, "
                 "card_bin, card_last_four, card_brand, card_funding_type, card_issuer_country, "
                 "card_issuer_bank, is_digital_native_bank, card_exp_month, card_exp_year, "
@@ -1526,7 +1533,8 @@ def seed_devices(scale: float = 1.0) -> None:
         # ---- user IDs from DB ----
         with conn.cursor() as cur:
             cur.execute("SELECT user_id::text FROM users ORDER BY created_at")
-            user_ids_db = [row[0] for row in cur.fetchall()]
+            rows = cur.fetchall()
+            user_ids_db = [row[0] for row in rows]
 
         if not user_ids_db:
             logger.warning("No users found in DB — skipping user_devices seeding")
