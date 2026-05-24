@@ -16,7 +16,7 @@ class FeatureSet:
     user_spend_24h_pence: int = 0
     user_unique_stores_24h: int = 0
     user_unique_payment_methods_24h: int = 0
-    user_last_order_age_minutes: int | None = None
+    user_last_order_age_minutes: int = 0
 
     # User batch fields
     user_lifetime_order_count: int | None = None

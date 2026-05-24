@@ -167,7 +167,14 @@ def test_get_features_with_partial_data(redis_client: redis.Redis) -> None:
         assert fs.user_orders_1h == 3
         assert fs.user_lifetime_order_count == 0
         assert fs.user_lifetime_chargeback_rate == 0.0
+        assert fs.user_last_order_age_minutes == 0
         assert user_batch_key in fs.missing_features
+        assert f"{user_stream_key}:orders_24h" in fs.missing_features
+        assert f"{user_stream_key}:spend_1h_pence" in fs.missing_features
+        assert f"{user_stream_key}:spend_24h_pence" in fs.missing_features
+        assert f"{user_stream_key}:unique_stores_24h" in fs.missing_features
+        assert f"{user_stream_key}:unique_payment_methods_24h" in fs.missing_features
+        assert f"{user_stream_key}:last_order_age_minutes" in fs.missing_features
         assert user_stream_key not in fs.missing_features
     finally:
         client.close()

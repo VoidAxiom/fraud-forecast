@@ -189,6 +189,160 @@ def _build_feature_set(
         if key is not None and payload == {}:
             missing_features.append(key)
 
+    expected_field_presence: list[tuple[str | None, tuple[str, ...]]] = [
+        (
+            user_stream_key,
+            (
+                "orders_1h",
+                "orders_24h",
+                "spend_1h_pence",
+                "spend_24h_pence",
+                "unique_stores_24h",
+                "unique_payment_methods_24h",
+                "last_order_age_minutes",
+            ),
+        ),
+        (
+            user_batch_key,
+            (
+                "lifetime_order_count",
+                "lifetime_spend_pence",
+                "avg_order_value_pence",
+                "lifetime_chargeback_count",
+                "lifetime_refund_count",
+                "lifetime_chargeback_rate",
+                "unique_devices_used",
+                "unique_payment_methods_used",
+                "unique_delivery_addresses",
+                "account_age_days",
+                "days_since_last_order",
+                "distinct_cities_ordered_from",
+            ),
+        ),
+        (
+            device_stream_key,
+            (
+                "orders_1h",
+                "orders_24h",
+                "unique_users_24h",
+                "unique_payment_methods_24h",
+            ),
+        ),
+        (
+            device_batch_key,
+            (
+                "lifetime_order_count",
+                "lifetime_chargeback_rate",
+                "unique_users_lifetime",
+                "first_seen_days_ago",
+                "distinct_payment_methods_lifetime",
+            ),
+        ),
+        (
+            payment_stream_key,
+            (
+                "orders_1h",
+                "orders_24h",
+                "unique_users_24h",
+                "decline_count_24h",
+            ),
+        ),
+        (
+            payment_batch_key,
+            (
+                "lifetime_order_count",
+                "lifetime_chargeback_count",
+                "lifetime_chargeback_rate",
+                "unique_users_lifetime",
+                "distinct_delivery_addresses_lifetime",
+            ),
+        ),
+        (
+            ip_stream_key,
+            (
+                "orders_1h",
+                "orders_24h",
+                "unique_users_24h",
+                "unique_devices_24h",
+            ),
+        ),
+        (
+            ip_batch_key,
+            (
+                "lifetime_order_count",
+                "unique_users_lifetime",
+                "chargeback_rate",
+                "first_seen_days_ago",
+            ),
+        ),
+        (
+            store_stream_key,
+            (
+                "orders_1h",
+                "orders_24h",
+                "unique_users_24h",
+                "unique_cards_1h",
+            ),
+        ),
+        (
+            store_batch_key,
+            (
+                "avg_order_value_pence",
+                "chargeback_rate",
+                "unique_cards_30d",
+                "total_orders_30d",
+            ),
+        ),
+        (
+            merchant_batch_key,
+            (
+                "chargeback_rate",
+                "total_stores",
+            ),
+        ),
+        (
+            email_domain_batch_key,
+            (
+                "chargeback_rate",
+                "total_orders",
+            ),
+        ),
+        (
+            address_stream_key,
+            (
+                "orders_24h",
+                "unique_users_24h",
+            ),
+        ),
+    ]
+
+    for key, expected_fields in expected_field_presence:
+        if key is None:
+            continue
+
+        payload = {
+            user_stream_key: user_stream,
+            user_batch_key: user_batch,
+            device_stream_key: device_stream,
+            device_batch_key: device_batch,
+            payment_stream_key: payment_stream,
+            payment_batch_key: payment_batch,
+            ip_stream_key: ip_stream,
+            ip_batch_key: ip_batch,
+            store_stream_key: store_stream,
+            store_batch_key: store_batch,
+            merchant_batch_key: merchant_batch,
+            email_domain_batch_key: email_domain_batch,
+            address_stream_key: address_stream,
+        }[key]
+
+        if payload == {}:
+            continue
+
+        for field_name in expected_fields:
+            if payload.get(field_name) in ("", None):
+                missing_features.append(f"{key}:{field_name}")
+
     return FeatureSet(
         user_orders_1h=_to_int(user_stream.get("orders_1h")),
         user_orders_24h=_to_int(user_stream.get("orders_24h")),
@@ -196,7 +350,7 @@ def _build_feature_set(
         user_spend_24h_pence=_to_int(user_stream.get("spend_24h_pence")),
         user_unique_stores_24h=_to_int(user_stream.get("unique_stores_24h")),
         user_unique_payment_methods_24h=_to_int(user_stream.get("unique_payment_methods_24h")),
-        user_last_order_age_minutes=_to_int_or_none(user_stream.get("last_order_age_minutes")),
+        user_last_order_age_minutes=_to_int(user_stream.get("last_order_age_minutes")),
 
         user_lifetime_order_count=_to_int(user_batch.get("lifetime_order_count")),
         user_lifetime_spend_pence=_to_int(user_batch.get("lifetime_spend_pence")),
