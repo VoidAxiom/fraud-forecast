@@ -70,6 +70,279 @@ _store_ids: list[str] = []
 _store_cuisines: dict[str, list[str]] = {}
 _store_price_tiers: dict[str, int] = {}
 
+CUISINE_MENU_TEMPLATES: dict[str, list[tuple[str, str, bool]]] = {
+    "Indian": [
+        ("Chicken Tikka Masala", "MAIN", True),
+        ("Lamb Rogan Josh", "MAIN", True),
+        ("Vegetable Biryani", "MAIN", True),
+        ("Garlic Naan", "SIDE", True),
+        ("Pilau Rice", "SIDE", True),
+        ("Onion Bhaji", "STARTER", True),
+        ("Samosa", "STARTER", True),
+        ("Tandoori Chicken", "MAIN", True),
+        ("Saag Aloo", "SIDE", True),
+        ("Mango Chutney", "SIDE", False),
+        ("Raita", "SIDE", False),
+        ("Mango Lassi", "DRINK", False),
+        ("Gulab Jamun", "DESSERT", False),
+    ],
+    "Chinese": [
+        ("Sweet & Sour Chicken", "MAIN", True),
+        ("Beef Chow Mein", "MAIN", True),
+        ("Dim Sum Selection", "STARTER", True),
+        ("Spring Rolls", "STARTER", True),
+        ("Egg Fried Rice", "SIDE", True),
+        ("Prawn Crackers", "SIDE", False),
+        ("Char Siu Pork", "MAIN", True),
+        ("Wonton Soup", "STARTER", True),
+        ("Jasmine Tea", "DRINK", False),
+        ("Fortune Cookie", "DESSERT", False),
+        ("Sesame Prawn Toast", "STARTER", True),
+        ("Crispy Duck", "MAIN", True),
+    ],
+    "Italian": [
+        ("Spaghetti Bolognese", "MAIN", True),
+        ("Lasagne", "MAIN", True),
+        ("Penne Arrabbiata", "MAIN", True),
+        ("Bruschetta", "STARTER", True),
+        ("Garlic Bread", "SIDE", True),
+        ("Tiramisu", "DESSERT", False),
+        ("Panna Cotta", "DESSERT", False),
+        ("Caprese Salad", "STARTER", False),
+        ("Minestrone Soup", "STARTER", True),
+        ("Sparkling Water", "DRINK", False),
+        ("Lemonade", "DRINK", False),
+    ],
+    "Pizza": [
+        ("Margherita", "MAIN", True),
+        ("Pepperoni", "MAIN", True),
+        ("Hawaiian", "MAIN", True),
+        ("Quattro Stagioni", "MAIN", True),
+        ("BBQ Chicken Pizza", "MAIN", True),
+        ("Veggie Supreme", "MAIN", True),
+        ("Garlic Bread", "SIDE", True),
+        ("Dough Balls", "STARTER", True),
+        ("Caesar Salad", "STARTER", False),
+        ("Tiramisu", "DESSERT", False),
+        ("Coca-Cola", "DRINK", False),
+        ("Lemonade", "DRINK", False),
+    ],
+    "Kebab": [
+        ("Doner Kebab", "MAIN", True),
+        ("Mixed Shish", "MAIN", True),
+        ("Chicken Shish", "MAIN", True),
+        ("Lamb Doner Wrap", "MAIN", True),
+        ("Falafel Wrap", "MAIN", True),
+        ("Chips", "SIDE", True),
+        ("Halloumi Wrap", "MAIN", True),
+        ("Garlic Sauce", "SIDE", False),
+        ("Chilli Sauce", "SIDE", False),
+        ("Salad Box", "SIDE", False),
+        ("Canned Drink", "DRINK", False),
+    ],
+    "Turkish": [
+        ("Adana Kebab", "MAIN", True),
+        ("Iskender Kebab", "MAIN", True),
+        ("Chicken Shish", "MAIN", True),
+        ("Lahmacun", "MAIN", True),
+        ("Pide", "MAIN", True),
+        ("Hummus", "STARTER", False),
+        ("Ezme Salad", "STARTER", False),
+        ("Baklava", "DESSERT", False),
+        ("Ayran", "DRINK", False),
+        ("Chips", "SIDE", True),
+    ],
+    "Fish & Chips": [
+        ("Cod & Chips", "MAIN", True),
+        ("Haddock & Chips", "MAIN", True),
+        ("Battered Sausage", "MAIN", True),
+        ("Mushy Peas", "SIDE", True),
+        ("Curry Sauce", "SIDE", True),
+        ("Pickled Egg", "SIDE", False),
+        ("Saveloy", "MAIN", True),
+        ("Scampi & Chips", "MAIN", True),
+        ("Bread & Butter", "SIDE", False),
+        ("Canned Drink", "DRINK", False),
+    ],
+    "Burger": [
+        ("Classic Cheeseburger", "MAIN", True),
+        ("Double Smash Burger", "MAIN", True),
+        ("Crispy Chicken Burger", "MAIN", True),
+        ("Veggie Burger", "MAIN", True),
+        ("Hot Dog", "MAIN", True),
+        ("Fries", "SIDE", True),
+        ("Onion Rings", "SIDE", True),
+        ("Coleslaw", "SIDE", False),
+        ("Milkshake", "DRINK", False),
+        ("Canned Drink", "DRINK", False),
+        ("Brownie", "DESSERT", False),
+    ],
+    "American": [
+        ("BBQ Ribs", "MAIN", True),
+        ("Mac & Cheese", "MAIN", True),
+        ("Buffalo Wings", "STARTER", True),
+        ("Pulled Pork Slider", "MAIN", True),
+        ("Sweet Potato Fries", "SIDE", True),
+        ("Corn on the Cob", "SIDE", True),
+        ("Caesar Salad", "STARTER", False),
+        ("Root Beer Float", "DRINK", False),
+        ("Chocolate Brownie", "DESSERT", False),
+    ],
+    "Thai": [
+        ("Pad Thai", "MAIN", True),
+        ("Green Curry", "MAIN", True),
+        ("Red Curry", "MAIN", True),
+        ("Tom Yum Soup", "STARTER", True),
+        ("Spring Rolls", "STARTER", True),
+        ("Jasmine Rice", "SIDE", True),
+        ("Som Tam Salad", "STARTER", False),
+        ("Mango Sticky Rice", "DESSERT", False),
+        ("Thai Iced Tea", "DRINK", False),
+    ],
+    "Japanese": [
+        ("Chicken Ramen", "MAIN", True),
+        ("Tonkotsu Ramen", "MAIN", True),
+        ("Gyoza", "STARTER", True),
+        ("Edamame", "STARTER", False),
+        ("Miso Soup", "STARTER", True),
+        ("Teriyaki Chicken", "MAIN", True),
+        ("Katsu Curry", "MAIN", True),
+        ("Green Tea", "DRINK", False),
+        ("Matcha Ice Cream", "DESSERT", False),
+    ],
+    "Sushi": [
+        ("Salmon Nigiri", "MAIN", False),
+        ("Tuna Maki", "MAIN", False),
+        ("California Roll", "MAIN", False),
+        ("Dragon Roll", "MAIN", False),
+        ("Spicy Tuna Roll", "MAIN", False),
+        ("Edamame", "STARTER", False),
+        ("Miso Soup", "STARTER", True),
+        ("Gyoza", "STARTER", True),
+        ("Matcha Ice Cream", "DESSERT", False),
+        ("Green Tea", "DRINK", False),
+        ("Seaweed Salad", "STARTER", False),
+    ],
+    "Caribbean": [
+        ("Jerk Chicken", "MAIN", True),
+        ("Curry Goat", "MAIN", True),
+        ("Ackee & Saltfish", "MAIN", True),
+        ("Rice & Peas", "SIDE", True),
+        ("Plantain", "SIDE", True),
+        ("Coleslaw", "SIDE", False),
+        ("Rum Punch", "DRINK", False),
+        ("Ginger Beer", "DRINK", False),
+        ("Festival Dumplings", "SIDE", True),
+        ("Bread Pudding", "DESSERT", False),
+    ],
+    "Lebanese": [
+        ("Mixed Mezze Platter", "STARTER", False),
+        ("Hummus", "STARTER", False),
+        ("Falafel", "STARTER", True),
+        ("Shawarma", "MAIN", True),
+        ("Kafta", "MAIN", True),
+        ("Fattoush Salad", "STARTER", False),
+        ("Tabbouleh", "STARTER", False),
+        ("Pita Bread", "SIDE", True),
+        ("Mint Lemonade", "DRINK", False),
+        ("Baklava", "DESSERT", False),
+    ],
+    "Polish": [
+        ("Pierogi", "MAIN", True),
+        ("Bigos", "MAIN", True),
+        ("Żurek Soup", "STARTER", True),
+        ("Kielbasa Sausage", "MAIN", True),
+        ("Placki Ziemniaczane", "MAIN", True),
+        ("Kapusniak", "STARTER", True),
+        ("Cucumber Salad", "SIDE", False),
+        ("Kompot", "DRINK", False),
+        ("Makowiec", "DESSERT", False),
+    ],
+    "British": [
+        ("Fish & Chips", "MAIN", True),
+        ("Bangers & Mash", "MAIN", True),
+        ("Cottage Pie", "MAIN", True),
+        ("Sunday Roast", "MAIN", True),
+        ("Ploughman's Lunch", "MAIN", False),
+        ("Scotch Egg", "STARTER", True),
+        ("Prawn Cocktail", "STARTER", False),
+        ("Sticky Toffee Pudding", "DESSERT", True),
+        ("English Breakfast Tea", "DRINK", False),
+        ("Cornish Pasty", "MAIN", True),
+    ],
+    "Pub": [
+        ("Steak & Ale Pie", "MAIN", True),
+        ("Fish & Chips", "MAIN", True),
+        ("Ploughman's Lunch", "MAIN", False),
+        ("Jacket Potato", "MAIN", True),
+        ("Scampi & Chips", "MAIN", True),
+        ("Garlic Mushrooms", "STARTER", True),
+        ("Caesar Salad", "STARTER", False),
+        ("Chips", "SIDE", True),
+        ("Soft Drink", "DRINK", False),
+        ("Apple Crumble", "DESSERT", True),
+    ],
+    "Vietnamese": [
+        ("Pho Bo", "MAIN", True),
+        ("Pho Ga", "MAIN", True),
+        ("Banh Mi", "MAIN", False),
+        ("Goi Cuon (Fresh Spring Rolls)", "STARTER", False),
+        ("Bun Cha", "MAIN", True),
+        ("Com Tam", "MAIN", True),
+        ("Jasmine Tea", "DRINK", False),
+        ("Cà Phê Sữa Đá", "DRINK", False),
+        ("Chè", "DESSERT", False),
+    ],
+    "Other": [
+        ("House Special", "MAIN", True),
+        ("Seasonal Salad", "STARTER", False),
+        ("Soup of the Day", "STARTER", True),
+        ("Chef's Pasta", "MAIN", True),
+        ("Grilled Chicken", "MAIN", True),
+        ("Soft Drink", "DRINK", False),
+        ("Water", "DRINK", False),
+        ("Ice Cream", "DESSERT", False),
+        ("Garlic Bread", "SIDE", True),
+        ("Chips", "SIDE", True),
+    ],
+}
+
+_CUISINE_PRICE_RANGES: dict[str, dict[str, tuple[int, int]]] = {
+    "MAIN": {
+        "Fish & Chips": (800, 1400),
+        "Burger": (700, 1200),
+        "American": (800, 1500),
+        "Kebab": (600, 1100),
+        "Turkish": (800, 1300),
+        "British": (900, 1500),
+        "Pub": (900, 1600),
+        "Pizza": (900, 1600),
+        "Italian": (1000, 1800),
+        "Indian": (1000, 1700),
+        "Chinese": (900, 1500),
+        "Thai": (900, 1500),
+        "Caribbean": (900, 1500),
+        "Lebanese": (800, 1400),
+        "Polish": (800, 1400),
+        "Vietnamese": (800, 1400),
+        "Japanese": (1200, 2200),
+        "Sushi": (1200, 2500),
+        "Other": (900, 1600),
+    },
+    "STARTER": {
+        "default": (400, 900),
+    },
+    "SIDE": {
+        "default": (200, 600),
+    },
+    "DRINK": {
+        "default": (150, 350),
+    },
+    "DESSERT": {
+        "default": (400, 900),
+    },
+}
+
 # Imported modules used for forward compatibility with downstream slices.
 _SEED_SKELETON_BUFFER = io.StringIO()
 _SIMULATOR_NAMESPACE = uuid.UUID(int=0)
@@ -484,9 +757,81 @@ def seed_store_hours() -> None:
         conn.close()
 
 
+def _compute_price(category: str, cuisine: str, price_tier: int) -> int:
+    cat_map: dict[str, tuple[int, int]] = _CUISINE_PRICE_RANGES.get(category, {})
+    price_range = cat_map.get(cuisine, cat_map.get("default", (500, 1000)))
+    lo, hi = price_range
+    tier_mult = {1: 0.80, 2: 1.00, 3: 1.30, 4: 1.70}.get(price_tier, 1.00)
+    noise = 1.0 + rng.uniform(-0.20, 0.20)
+    raw = rng.randint(lo, hi) * tier_mult * noise
+    return max(50, int(round(raw / 10.0)) * 10)
+
+
 def seed_menu_items(scale: float) -> None:
-    logger.info("TODO: seed_menu_items")
-    return
+    start = time.time()
+    rng.seed(random.random())
+    target_item_count = int(80000 * scale)
+    scale_factor = scale
+    logger.debug(
+        "Menu item target hint: %d (scale=%0.2f)",
+        target_item_count,
+        scale_factor,
+    )
+    now = datetime.now(timezone.utc)
+    if not _store_ids:
+        _timings["menu_items"] = (0, time.time() - start)
+        return
+
+    conn = _get_conn()
+    total_items = 0
+    try:
+        buf = io.StringIO()
+        writer = csv.writer(buf)
+        for store_id in _store_ids:
+            store_cuisines = _store_cuisines.get(store_id, [])
+            cuisines = store_cuisines if store_cuisines else ["Other"]
+            cuisine = cuisines[0]
+            price_tier = _store_price_tiers.get(store_id, 2)
+            raw_item_count = int(np.random.poisson(lam=6))
+            item_count = min(12, max(4, raw_item_count))
+
+            templates = CUISINE_MENU_TEMPLATES.get(
+                cuisine, CUISINE_MENU_TEMPLATES["Other"]
+            )
+            if len(templates) < item_count:
+                sampled_templates = rng.choices(templates, k=item_count)
+            else:
+                sampled_templates = rng.sample(templates, k=item_count)
+
+            for item_name, category, is_hot_food in sampled_templates:
+                price_pence = _compute_price(category, cuisine, price_tier)
+                created_at = (
+                    now - timedelta(days=rng.randint(300, 700))
+                ).replace(microsecond=0)
+                writer.writerow(
+                    [
+                        str(uuid.uuid4()),
+                        store_id,
+                        item_name,
+                        category,
+                        price_pence,
+                        is_hot_food,
+                        True,
+                        created_at.strftime("%Y-%m-%d %H:%M:%S+00"),
+                    ]
+                )
+                total_items += 1
+
+        buf.seek(0)
+        with conn.cursor() as cur:
+            cur.copy_expert(
+                "COPY menu_items (item_id, store_id, item_name, category, price_pence, is_hot_food, is_available, created_at) FROM STDIN WITH (FORMAT csv)",
+                buf,
+            )
+        conn.commit()
+        _timings["menu_items"] = (total_items, time.time() - start)
+    finally:
+        conn.close()
 
 
 def seed_drivers(scale: float) -> None:
