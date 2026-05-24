@@ -28,7 +28,11 @@ CREATE TABLE simulator_ground_truth (
     op.execute("CREATE INDEX idx_gt_ring ON simulator_ground_truth(ring_id);")
     op.execute("REVOKE ALL ON simulator_ground_truth FROM scoring_user;")
     op.execute("REVOKE SELECT ON simulator_ground_truth FROM PUBLIC;")
+    # simulator_user must be INSERT-only (override the broad DML grant from 003's default privileges)
+    op.execute("REVOKE ALL ON simulator_ground_truth FROM simulator_user;")
     op.execute("GRANT INSERT ON simulator_ground_truth TO simulator_user;")
+    # simulator_user is INSERT-only (cannot read/update/delete labels -- append-only integrity).
+    # analyst_user has SELECT for the monitoring dashboard.
     op.execute("GRANT SELECT ON simulator_ground_truth TO analyst_user;")
 
 
