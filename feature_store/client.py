@@ -84,8 +84,8 @@ class FeatureStoreClient:
         did = str(device_id)
         pipe: aioredis_client.Pipeline[str] = self._r.pipeline(transaction=False)
         pipe.hgetall(f"fs:device:{did}:stream")
-        pipe.hgetall(f"fs:device:{did}:batch")
-        stream_raw, _ = await pipe.execute()
+        results = await pipe.execute()
+        stream_raw = results[0]
         stream: dict[str, str] = stream_raw if isinstance(stream_raw, dict) else {}
         return DeviceFeatures(
             orders_1h=_to_int(stream.get("orders_1h")),
@@ -95,8 +95,8 @@ class FeatureStoreClient:
     async def get_ip_features(self, ip: str) -> IPFeatures:
         pipe: aioredis_client.Pipeline[str] = self._r.pipeline(transaction=False)
         pipe.hgetall(f"fs:ip:{ip}:stream")
-        pipe.hgetall(f"fs:ip:{ip}:batch")
-        stream_raw, _ = await pipe.execute()
+        results = await pipe.execute()
+        stream_raw = results[0]
         stream: dict[str, str] = stream_raw if isinstance(stream_raw, dict) else {}
         return IPFeatures(orders_1h=_to_int(stream.get("orders_1h")))
 
