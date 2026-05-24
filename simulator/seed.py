@@ -9,13 +9,12 @@ import os
 import random
 import time
 import uuid
-from datetime import date, datetime, timedelta
-from typing import Any, Dict, List, Optional, Tuple
+from datetime import date, timedelta
+from typing import Any
 
 import numpy as np
 import psycopg2  # type: ignore
 from faker import Faker
-
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
@@ -23,7 +22,7 @@ logger = logging.getLogger(__name__)
 _DEFAULT_SIMULATOR_DB_URL = (
     "postgresql://simulator_user:simulator_dev_password@postgres:5432/fraud_platform"
 )
-_timings: Dict[str, Tuple[int, float]] = {}
+_timings: dict[str, tuple[int, float]] = {}
 
 # Imported modules used for forward compatibility with downstream slices.
 _SEED_SKELETON_BUFFER = io.StringIO()
@@ -53,7 +52,7 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
 
-    skip_entities: List[str] = args.skip or []
+    skip_entities: list[str] = args.skip or []
     seed_everything(args.seed)
     apply_session_tunings()
     if "merchants" not in skip_entities:
@@ -104,7 +103,7 @@ def _get_conn() -> Any:
     return conn
 
 
-def _coalesce_database_url(database_url: Optional[str]) -> str:
+def _coalesce_database_url(database_url: str | None) -> str:
     if database_url is None:
         return _DEFAULT_SIMULATOR_DB_URL
     return database_url
