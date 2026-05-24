@@ -45,9 +45,11 @@ def _weighted_choice(rng: random.Random, choices: list[tuple[str, float]]) -> st
 @register("stolen_card", 0.30)
 async def generate_stolen_card_fraud(
     ctx: FraudPatternContext | None = None,
+    *,
+    rng: random.Random | None = None,
 ) -> tuple[dict[str, Any], GroundTruth]:
     if ctx is None:
-        ctx = FraudPatternContext()
+        ctx = FraudPatternContext(rng=rng) if rng is not None else FraudPatternContext()
 
     variant_roll = ctx.rng.random()
     if variant_roll < 0.60:
@@ -105,7 +107,7 @@ async def generate_stolen_card_fraud(
         "is_high_end_cart": is_high_end_cart,
         "variant": variant,
         "is_digital_native_bank": False,
-        "is_night_order": ctx.rng.random() < 0.40,
+        "is_night_order": 2 <= ctx.now.hour < 6,
     }
 
     # Spec says 40% of stolen-card fraud is night-hour oriented; record that signal.

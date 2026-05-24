@@ -48,7 +48,7 @@ for _info in pkgutil.iter_modules(__path__):
 
 
 async def generate_fraud_order(
-    rng: random.Random | None = None, *args: Any, **kwargs: Any
+    *args: Any, rng: random.Random | None = None, **kwargs: Any
 ) -> Any:
     """Pick a pattern by weighted random + invoke it. Spec § "Modified simulator/generator.py".
 
@@ -68,4 +68,6 @@ async def generate_fraud_order(
         _, (chosen_fn, _w) = random.choices(items, weights=weights, k=1)[0]
     else:
         _, (chosen_fn, _w) = rng.choices(items, weights=weights, k=1)[0]
+    if rng is not None:
+        kwargs["rng"] = rng
     return await chosen_fn(*args, **kwargs)
