@@ -99,17 +99,10 @@ WHERE o.delivered_at IS NOT NULL
   AND gt.fraud_category = 'refund_abuse'
 """
 
-_REFUND_CHECK_SQL = """
-SELECT refund_id
-FROM refunds
-WHERE order_id = $1
-LIMIT 1
-"""
-
 _REFUND_INSERT_SQL = """
 INSERT INTO refunds (order_id, order_placed_at, amount_pence, reason, initiated_by, issued_at)
 VALUES ($1, $2, $3, 'order_quality_complaint', 'USER', NOW())
-ON CONFLICT DO NOTHING
+ON CONFLICT (order_id) DO NOTHING
 """
 
 _FINALIZE_ORDERS_SQL = """
@@ -219,10 +212,6 @@ async def generate_refunds(pool: AsyncpgPool) -> None:
 
             delivered_age_hours = (now - delivered_at).total_seconds() / 3600
             if not (0 <= delivered_age_hours <= 120):
-                continue
-
-            existing = await conn.fetchval(_REFUND_CHECK_SQL, order_id)
-            if existing is not None:
                 continue
 
             await conn.execute(_REFUND_INSERT_SQL, order_id, order_placed_at, total_pence)

@@ -25,10 +25,12 @@ CREATE TABLE refunds (
 );
 """
     )
+    op.execute("ALTER TABLE refunds ADD CONSTRAINT refunds_order_id_unique UNIQUE (order_id);")
     op.execute("REVOKE ALL ON refunds FROM scoring_user;")
     op.execute("REVOKE SELECT ON refunds FROM PUBLIC;")
     op.execute("REVOKE ALL ON refunds FROM simulator_user;")
     op.execute("GRANT INSERT ON refunds TO simulator_user;")
+    op.execute("GRANT SELECT ON refunds TO simulator_user;")
     op.execute("GRANT SELECT ON refunds TO analyst_user;")
 
 
