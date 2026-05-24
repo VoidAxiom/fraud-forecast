@@ -381,7 +381,7 @@ _DEFAULT_SCALE_SQRT = math.sqrt(1.0)
 _TODAY = date.today()
 _ONE_DAY = timedelta(days=0)
 _SCRIPT_STARTED_AT = time.time()
-_SEED_BASE_NOW = datetime.now(timezone.utc).replace(microsecond=0)
+_SEED_BASE_NOW = datetime(2025, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
 _DRIVER_EMAIL_DOMAINS = ["gmail.com", "outlook.com", "hotmail.com", "yahoo.co.uk", "icloud.com"]
 _PROMOS_DATA: list[tuple[str, str, str, str, str, str, int, int | None, bool]] = [
     # (code, type, discount_pence_or_empty, discount_pct_or_empty, min_order, max_per_user, valid_from_offset_days, valid_until_offset_days_or_None, is_targeted)
@@ -1050,7 +1050,7 @@ def _user_worker(
         "109.146",
     ]
 
-    base_now = _datetime(2023, 1, 1, 0, 0, 0, tzinfo=_tz.utc)
+    base_now = _datetime(2025, 1, 1, 0, 0, 0, tzinfo=_tz.utc)
     sim_now = base_now
 
     account_statuses = ["ACTIVE", "SUSPENDED", "BANNED", "DELETED"]
@@ -1102,10 +1102,7 @@ def _user_worker(
         phone_verified_at = ""
         if _wrng.random() < 0.90:
             phone = f"+44 7{_wrng.randint(100000000, 999999999)}"
-            if _wrng.random() < 0.85:
-                phone_verified_at = (
-                    sim_now - _td(days=_wrng.randint(0, 400))
-                ).strftime("%Y-%m-%d %H:%M:%S+00")
+            phone_verified_at = ""
 
         age_years = int(max(18, min(75, _wrng.gauss(35, 12))))
         dob = _date(sim_now.year - age_years, _wrng.randint(1, 12), _wrng.randint(1, 28)).isoformat()
@@ -1120,6 +1117,10 @@ def _user_worker(
         exp_days = int(min(1500, max(1, _wrng.expovariate(1.0 / 400.0))))
         created_at = (sim_now - _td(days=exp_days)).replace(microsecond=0)
         created_at_str = created_at.strftime("%Y-%m-%d %H:%M:%S+00")
+        if phone and _wrng.random() < 0.85:
+            phone_verified_at = (created_at + _td(days=_wrng.randint(0, 30))).strftime(
+                "%Y-%m-%d %H:%M:%S+00"
+            )
 
         prefix = _wrng.choice(uk_isp_prefixes)
         signup_ip = f"{prefix}.{_wrng.randint(0, 255)}.{_wrng.randint(1, 254)}"
@@ -1195,7 +1196,7 @@ def _user_worker(
             )
             addresses_written += 1
 
-        n_pay = _wrng.choices([1, 2, 3], weights=[35, 45, 20], k=1)[0]
+        n_pay = _wrng.choices([1, 2, 3], weights=[20, 60, 20], k=1)[0]
         for p_idx in range(n_pay):
             pay_id = str(_uuid.UUID(int=_wrng.getrandbits(128), version=4))
             pay_type = _wrng.choices(payment_types, weights=payment_type_weights, k=1)[0]
@@ -1442,6 +1443,7 @@ def seed_devices(scale: float = 1.0) -> None:
         device_ids: list[str] = []
         buf = io.StringIO()
         writer = csv.writer(buf)
+        device_first_seen_days: dict[str, int] = {}
 
         for idx in range(n_devices):
             device_id = str(uuid.UUID(int=rng.getrandbits(128), version=4))
@@ -1487,9 +1489,11 @@ def seed_devices(scale: float = 1.0) -> None:
                 )
                 screen_res = rng.choice(["768x1024", "1024x1366", "810x1080"])
 
+            first_seen_days = rng.randint(0, 1200)
             fp_raw = f"{device_id}:{dtype}:{platform}:{idx}"
+            device_first_seen_days[device_id] = first_seen_days
             fingerprint = hashlib.sha256(fp_raw.encode()).hexdigest()
-            first_seen = (now - timedelta(days=rng.randint(0, 1200))).strftime(
+            first_seen = (now - timedelta(days=first_seen_days)).strftime(
                 "%Y-%m-%d %H:%M:%S+00"
             )
 
@@ -1567,7 +1571,11 @@ def seed_devices(scale: float = 1.0) -> None:
 
             for didx in rng.sample(range(n_device_pool), min(n_devs, n_device_pool)):
                 device_id = device_ids[didx]
-                first_used = (now - timedelta(days=rng.randint(0, 365))).strftime(
+                d_age_days = device_first_seen_days[device_id]
+                link_days = (
+                    rng.randint(0, min(365, d_age_days)) if d_age_days > 0 else 0
+                )
+                first_used = (now - timedelta(days=link_days)).strftime(
                     "%Y-%m-%d %H:%M:%S+00"
                 )
                 ud_writer.writerow(
@@ -1588,7 +1596,9 @@ def seed_devices(scale: float = 1.0) -> None:
             n_family_users = rng.randint(5, 10)
             family_users = rng.sample(extra_users, min(n_family_users, len(extra_users)))
             for fu_id in family_users:
-                first_used = (now - timedelta(days=rng.randint(0, 365))).strftime(
+                d_age_days = device_first_seen_days[fdi]
+                link_days = rng.randint(0, min(365, d_age_days)) if d_age_days > 0 else 0
+                first_used = (now - timedelta(days=link_days)).strftime(
                     "%Y-%m-%d %H:%M:%S+00"
                 )
                 ud_writer.writerow(
