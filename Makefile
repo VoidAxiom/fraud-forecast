@@ -10,6 +10,7 @@ reset:
 	docker compose down -v && $(MAKE) up
 
 migrate:
+	@ [ -f alembic.ini ] || { echo "ERROR: alembic.ini not found. Run 'make migrate' after P1-B (VOI-142) lands."; exit 1; }
 	docker compose --profile tools run --rm app alembic upgrade head
 
 psql:
@@ -19,9 +20,11 @@ redis-cli:
 	docker compose exec redis redis-cli
 
 test:
+	@ [ -d tests ] || { echo "ERROR: tests/ directory not found. Run 'make test' after P1-E (VOI-145) lands."; exit 1; }
 	docker compose --profile tools run --rm --build app pytest tests/ -v
 
 typecheck:
+	@ [ -d shared ] || { echo "ERROR: shared/ directory not found. Run 'make typecheck' after P1-C (VOI-143) lands."; exit 1; }
 	docker compose --profile tools run --rm --build app mypy --strict shared/
 
 lint:
