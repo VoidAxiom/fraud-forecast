@@ -39,7 +39,7 @@ class UserFeatures:
 @dataclass(frozen=True)
 class DeviceFeatures:
     orders_1h: int = 0
-    unique_users_count: int = 1
+    unique_users_count: int = 0
 
 
 @dataclass(frozen=True)
@@ -84,7 +84,7 @@ class FeatureStoreClient:
         o1h, uu = results[0], results[1]
         return DeviceFeatures(
             orders_1h=_to_int(o1h),
-            unique_users_count=_to_int(uu, default=1),
+            unique_users_count=_to_int(uu, default=0),
         )
 
     async def get_ip_features(self, ip: str) -> IPFeatures:
