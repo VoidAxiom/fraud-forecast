@@ -79,7 +79,10 @@ Define both named volumes (`pg_data`, `redis_data`) and a custom network `fraud_
 CREATE EXTENSION IF NOT EXISTS pgcrypto;
 CREATE EXTENSION IF NOT EXISTS citext;
 CREATE EXTENSION IF NOT EXISTS btree_gin;
-SET timezone = 'Europe/London';
+-- A bare `SET timezone = ...` only affects the init script's own session;
+-- subsequent connections revert to UTC. Use `ALTER DATABASE` so the
+-- setting persists across connections.
+ALTER DATABASE fraud_platform SET timezone = 'Europe/London';
 ```
 
 ### Alembic Setup

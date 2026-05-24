@@ -7,3 +7,22 @@
 
 # macOS finder noise
 .DS_Store
+
+# Per-worktree compose overrides — gitignored by design.
+# Each packet worktree may ship its own docker-compose.override.yml to
+# remap host ports (5432, 6379, ...) away from the primary stack so the
+# impl's gates don't collide with the always-on primary on main.
+docker-compose.override.yml
+
+# Local .env (the example is .env.example — tracked; .env is NOT)
+.env
+
+# Python caches + venvs
+__pycache__/
+*.pyc
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+*.egg-info/

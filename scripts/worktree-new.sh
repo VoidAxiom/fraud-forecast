@@ -65,9 +65,10 @@ case "$DIR" in
     mkdir -p "$WT_ROOT"
     DIR="$WT_ROOT/$DIR" ;;
 esac
-[ -d "$PRIMARY/node_modules" ] || {
-  echo "primary checkout has no node_modules ($PRIMARY) — run npm ci there first" >&2
-  exit 1; }
+# node_modules clone is JS-project-specific. For Python or other non-JS
+# projects, the primary won't have a node_modules dir and we skip cloning.
+HAS_NODE_MODULES=0
+[ -d "$PRIMARY/node_modules" ] && HAS_NODE_MODULES=1
 
 # Attach an existing branch (re-provisioning a feature branch's worktree)
 # or create a fresh one off BASE.
@@ -82,12 +83,16 @@ fi
 # plain recursive copy. NO hardlink fallback: a hardlink tree shares inodes
 # with the primary node_modules, so any in-place rewrite under a worker's
 # node_modules would corrupt the primary checkout and break isolation.
-SRC="$PRIMARY/node_modules"; DST="$DIR/node_modules"
-if cp -cR "$SRC" "$DST" 2>/dev/null; then
-  MODE="APFS clone"
+if [ "$HAS_NODE_MODULES" = 1 ]; then
+  SRC="$PRIMARY/node_modules"; DST="$DIR/node_modules"
+  if cp -cR "$SRC" "$DST" 2>/dev/null; then
+    MODE="APFS clone"
+  else
+    cp -R "$SRC" "$DST" || { echo "failed to provision node_modules in $DIR" >&2; exit 1; }
+    MODE="copy"
+  fi
 else
-  cp -R "$SRC" "$DST" || { echo "failed to provision node_modules in $DIR" >&2; exit 1; }
-  MODE="copy"
+  MODE="skipped (no node_modules in primary — non-JS project)"
 fi
 
 # Auto-wire the per-worktree pre-commit hook (impl-precommit-scope + shell-syntax).

@@ -1,11 +1,64 @@
 # fraud-forecast — agent operating guide
 
-**fraud-forecast** — TODO — fill in once the stack is decided
+**fraud-forecast** is a production-realistic UK food-delivery fraud
+detection platform: Postgres 12 (weekly-partitioned) + Redis 6 +
+TensorFlow 2.3/TFX + XGBoost ensemble, a synthetic order simulator at
+50 ord/sec with ~2% labeled fraud across 7 patterns, FastAPI scoring
+(p99 <100ms), Streamlit monitoring, weekly retraining. Python 3.8.
+Built in 7 phases (`spec/MASTER.md` + `spec/PHASE_1..7.md`).
 
 This file is the operating contract for Claude as **director / spec author /
 scope gate / final integrator**. It does not describe the product; it describes
 how the agent system behaves. Product intent lives in Linear (project
-**fraud-forecast**) and in `docs/`.
+**fraud-forecast**, command center [VOI-139](https://linear.app/voidaxiom/issue/VOI-139))
+and in `spec/`.
+
+## Scope: production-realistic, NOT production-deployed
+
+This project is **local-dev only**. It runs on the developer's machine via
+`docker compose` and is never redeployed, never multi-tenant, never staged.
+The "production-realistic" bar applies to **scale + architecture + schema
++ data distribution + ML quality** (so the system is a meaningful
+fraud-detection platform to learn from and demo) — NOT to deployment,
+operability, secrets management, multi-environment configuration, or
+backwards-compat hygiene. Concrete consequences for spec + impl decisions:
+
+- **Single environment.** No staging/prod/dev split. The compose stack
+  is the only deployment. `fraud_platform` is the only DB name and
+  `app`/`scoring_user`/`simulator_user`/`analyst_user` are the only
+  roles. Hardcode them.
+- **Dev passwords in plain config.** `.env.example` carries dev
+  defaults; we never wire HashiCorp Vault, AWS Secrets Manager,
+  sealed-secrets, etc. Don't suggest them.
+- **No multi-env configurability for its own sake.** If a value is the
+  same in every environment (because there IS only one), hardcode it.
+  Don't add `current_database()` dynamic SQL, don't add per-env
+  override files, don't add 12-factor env-var indirection for things
+  that never vary.
+- **No deployment automation.** No Terraform, no Helm, no Kubernetes
+  manifests, no GitHub Actions deploy workflows, no Dockerfile multi-
+  stage prod builds. The Dockerfile is the dev-image; the compose file
+  is the runtime; there is no "deploy".
+- **No backwards-compat shims.** Migrations are forward-only; we never
+  need to roll back. Don't waste a `downgrade()` body. Don't add
+  feature flags for "old behavior". If a refactor changes a public
+  function signature, change every caller — there is no legacy caller.
+- **No reusability/library packaging.** `shared/` is not a Python
+  package we publish. `setup.py` / `pyproject.toml` build metadata is
+  for tooling (mypy/ruff/pytest), not distribution. Don't add `tox`,
+  `poetry publish`, semver discipline, `__version__` strings.
+
+What we DO care about: schema correctness, partitioning + role-grant
+realism, simulator fidelity (50 ord/sec, correct distributions, ~2%
+labeled fraud), feature engineering, model quality (AUPRC/recall floors),
+scoring latency under load (p99 <100ms), drift monitoring. Those are
+production-realistic; they're the whole point of the project.
+
+Codex `/codex:review` findings about "this won't be portable to other
+envs" or "this hardcodes the DB name" or "no rollback path" can be
+closed by citing this section — they're not bugs in this project. The
+impl should add the rationale inline per the implementer.md § 8e
+re-review comment format and Claude will rule.
 
 ## Operating model
 
@@ -125,30 +178,116 @@ Linear is the planning ledger. GitHub is the delivery ledger. Per packet:
    `Closes VOI-N` auto-transitions the Linear issue to Done
    (verify, don't assume).
 
-10. **Teardown (Claude).** `git worktree remove <path>`; `git branch -D
-    <branch>` if local lingers; `bash scripts/codex-runs-gc.sh --aggressive
-    --days 3`. Conservative-mode GC is a no-op in this template (no
-    autonomous loop writes `loop-status.txt`) — always run aggressive. The
-    slug-protection check inside the GC script ensures live work is never
+10. **Live outcome on main (Claude) — the packet doesn't close without
+    this.** After every merge, the merged contribution MUST be observable
+    AND measured against its spec outcome target on the primary checkout
+    (not in the worktree, not in a test harness). Per the
+    "Outcome over output" doctrine above, output ≠ outcome. Concretely:
+    - Bring the primary stack up: `cd <primary> && make up` (idempotent
+      if already running; brings any new services online).
+    - Apply any migrations the packet introduced (`make migrate`).
+    - **Run the packet's live outcome check** — the Linear issue's
+      "Acceptance — live-on-main" section names the specific measurable.
+      Examples by phase:
+        * Phase 1 (foundation): tables exist on primary, partitions
+          present, roles enforce.
+        * Phase 2 (seeding + sim): row counts in primary tables match
+          spec scale (1M users, 15K stores, ...); `orders` growth rate
+          measured at 50 ord/sec sustained.
+        * Phase 3 (fraud): fraud rate measured in primary at
+          ~2.0% ±0.1% across last N orders; all 7 patterns present.
+        * Phase 5 (ML): AUPRC and per-category recall measured on
+          held-out; if short, **iterate** before closing the packet.
+        * Phase 6 (scoring): p99 measured under sustained load; <100ms
+          required.
+        * Phase 7 (monitoring): dashboard renders live data; drift cron
+          fires; retrain cron fires.
+    - **If the outcome target is short of spec, the packet is NOT
+      closed.** File a follow-up packet (or extend the current one) to
+      refine. Refinement can include: tuning hyperparams, adding
+      features, tweaking data distribution, even revising the spec
+      target — but the revision is conscious and documented (this
+      CLAUDE.md decision log + the packet's spec.md).
+    - Update VOI-139 "Live status" with the new live state + measured
+      outcome.
+    - Keep the primary stack RUNNING between packets — subsequent
+      worktrees use distinct `COMPOSE_PROJECT_NAME=ff-voi-<n>` to avoid
+      container-name collision; if a packet's gates need host port 5432
+      or 6379, it ships a per-worktree `docker-compose.override.yml`
+      (gitignored) remapping to alternate host ports rather than
+      tearing down the primary.
+
+11. **Teardown (Claude) — STRICT ORDER, no exceptions.** After every
+    squash-merge AND step 10 (live-on-main) succeeds, run these four
+    steps in this exact order:
+    1. `git worktree remove <worktree-path>` — kill the worktree FIRST.
+       Until the worktree is gone, the local feature branch is "checked
+       out" there and `git branch -D` will refuse to delete it. (This is
+       what bites `gh pr merge --squash --delete-branch` — its local-
+       delete sub-step fails silently while the worktree is still
+       attached; the remote-delete part succeeds.)
+    2. `git branch -D <feature-branch>` — now the local branch deletes
+       cleanly. Skip only if it never landed locally (e.g. the impl
+       worked from the worktree exclusively).
+    3. `git -C <primary-checkout> fetch origin --prune` — sync the
+       primary checkout's refs. `--prune` removes stale tracking refs
+       (the just-deleted `origin/sk/voi-N-*`).
+    4. `git -C <primary-checkout> checkout main && git pull --ff-only
+       origin main` — fast-forward the primary's `main` to the new tip
+       (the squash-merge commit). Without this, the primary's local
+       `main` still points at the pre-merge HEAD and the next packet's
+       worktree base could drift. `--ff-only` refuses any non-FF (which
+       should never happen if discipline holds).
+
+    Then `bash scripts/codex-runs-gc.sh --aggressive --days 3`.
+    Conservative-mode GC is a no-op in this template (no autonomous loop
+    writes `loop-status.txt`) — always run aggressive. The slug-
+    protection check inside the GC script ensures live work is never
     collected.
 
 **No commit, PR title, PR body, or Linear comment carries `Co-Authored-By`,
 `🤖`, "Generated with Claude Code", or any Claude/Anthropic credit
 footer.** Overrides any harness/tooling default.
 
-## Evidence (no change merges without it)
+## Outcome over output (no packet closes without it)
 
-Any number/claim a change asserts (computed outputs, metrics, behaviours)
-**must be really produced by real logic** — never fabricated, hardcoded, or
-mocked. The logic that produces it is unit-tested so "it is real" is
-enforced, not asserted. The implementer subagent's Impl Contract enforces
-this at the worker level; Claude verifies at pre-PR.
+**The deliverable is the live artifact at spec scale and quality — not
+the code that produces it.** A merged PR with green tests is necessary,
+not sufficient. A packet closes only when its contribution is
+*observable, measured, and meeting target* on the primary checkout.
 
-Per change:
-- `TODO` clean (typecheck + tests, incl. any determinism tests).
-- `TODO` clean.
-- If a visual/runtime inspection harness exists, `TODO` — say
-  what you observed and judged.
+| Artifact class | Output (insufficient) | Outcome (required) |
+| --- | --- | --- |
+| Schema / migrations | `make migrate` exits 0 | All tables + partitions + roles live on primary; queryable via `psql` |
+| Seed data | `seed.py` runs without error | 1M users, 15K stores, 80K menu items, 2K drivers actually in the primary tables — row counts measured against the spec scale |
+| Order simulator | `generator.py` produces an order | 50 ord/sec sustained for the documented duration; rate measured from `orders` row growth over wall-clock |
+| Fraud injection | `fraud_patterns.py` flags some orders | ~2.0% (±0.1%) labeled fraud rate measured across last N orders; all 7 patterns present per the spec distribution |
+| Feature store | `aggregator.py` writes to Redis | Features queryable at scoring time with sub-ms p99 read latency measured under sustained load |
+| ML training | `train_xgboost.py` writes a `.bst` file | AUPRC ≥0.75 on held-out; per-category recall floors (stolen_card ≥0.70, ATO ≥0.60, promo_abuse ≥0.80) met. **If short, iterate** — refine features, hyperparams, training data, even spec target (with rationale). The packet stays open. |
+| Scoring service | FastAPI returns 200 | p99 <100ms measured under sustained 50 ord/sec load; service runs as `scoring_user` (no `simulator_ground_truth` access — Postgres-enforced) |
+| Monitoring | Streamlit app renders | Dashboard shows live data from the primary stack; drift detection actually flags when input distributions shift; weekly retrain cron has actually fired at least once |
+
+**The iteration mandate is real.** When live measurement falls short of
+the spec target, the packet is not done. Refine and re-measure until the
+target is met or the spec target is consciously revised with rationale
+(documented in the packet's spec.md AND in this CLAUDE.md decision log).
+"The script ran" is never a closure signal.
+
+Code-correctness signals — necessary, not sufficient:
+- `make test` clean (`pytest tests/ -v` inside the compose stack).
+- `make typecheck` clean (`mypy --strict shared/` is the floor; expands
+  per phase).
+- `make lint` clean (`ruff check . && ruff format --check .`).
+- Any number/claim a change asserts (computed outputs, metrics,
+  behaviours) **must be really produced by real logic** — never
+  fabricated, hardcoded, or mocked. Unit-tested so "it is real" is
+  enforced, not asserted. The implementer subagent's Impl Contract
+  enforces this at the worker level; Claude verifies at pre-PR.
+
+The director runs the live outcome check on the primary checkout after
+every merge (build-loop step 10). The Linear issue body documents the
+specific outcome criterion the director measures; the packet is closed
+in Linear only when that criterion is met live.
 
 ## Internal review loop
 
@@ -172,11 +311,21 @@ for its own scope (rails / scripts / hooks / docs). `/codex:review` runs
 `gpt-5.5` by default — cross-family relative to the
 `gpt-5.3-codex-spark` worker, so its findings catch what the worker missed.
 
-**GH connector hygiene (avoid phantom cloud tasks).** ANY `@codex` PR
-comment that is not EXACTLY `@codex review` spawns a Codex cloud task that
-narrates sandbox commits/PRs which do **NOT** land in this repo. So:
-- Fix narration → comment with **NO** `@codex` mention; resolve the thread.
-- Re-review → a bare standalone **`@codex review`** and nothing else.
+**GH connector hygiene (avoid phantom cloud tasks).** The Codex bot
+parses the leading `@codex review` (case-insensitive, on its own line)
+as the review trigger; ANY OTHER `@codex` mention pattern (`@codex
+thanks`, `@codex can you check X`, `@codex looks good`, etc.) spawns a
+phantom Codex cloud task that narrates sandbox commits/PRs which do
+**NOT** land in this repo. So:
+- Fix-narration / acknowledgment comments → **NO** `@codex` mention
+  anywhere in the body; resolve the thread separately.
+- Re-review request → comment STARTS with `@codex review` on its own
+  line, optionally followed by a "Changes since last review" /
+  "Not changed (deliberate)" rationale block formatted per
+  `.claude/agents/implementer.md` § 8e. The leading `@codex review`
+  triggers the bot; the rationale gives the reviewer context for the
+  re-review (avoiding the same finding being re-raised on
+  spec-design-accepted classes).
 - Treat the connector as an adversarial *reader* only — act on its
   findings text; never on its self-reported commits/PRs/tests; verify repo
   state if in doubt (`gh pr list --state all`, `gh api …/commits/<sha>`).
@@ -206,24 +355,38 @@ Before hand-rolling any workflow mechanism, check `scripts/` for the
 canonical helper. If a mode is missing, extend the script — don't
 improvise a one-off.
 
-## File-scope contract (Claude's own scope)
+## File-scope contract
 
-Claude itself is bounded by `hooks/write-scope-guard.mjs`. Allowed Claude
-writes:
+Two complementary scopes, both enforced by `hooks/write-scope-guard.mjs`:
+
+**Claude's allowed writes** (agent-behaviour surface + authored docs):
 - `scripts/**`, `**/*.test.*` (orchestration tooling, tests)
 - `.claude/**`, `.codex/**`, `hooks/**` (agent behaviour surface)
-- `docs/**`, `**/*.md` (documentation; this CLAUDE.md, AGENTS.md, etc.)
+- `docs/**`, `**/*.md` (documentation; this CLAUDE.md, AGENTS.md,
+  README.md, spec/ docs, etc.)
 - `.gitignore` (root only — anchored exact-file rule, not `*.gitignore`)
 - `~/.claude/projects/<encoded-key>/memory/**` (Claude Code project memory
   — outside the project root by design)
 
-Anything else (including all `src/**`) is denied. To change
-production code, dispatch the implementer subagent. The hook explains in
-its deny message which subagent_type to spawn.
+Anything else (production code, config, infra, fixtures) is denied to
+Claude. To change those, dispatch the implementer subagent. The hook
+explains in its deny message which subagent_type to spawn.
 
-The implementer subagent's tools list strips `Edit`/`Write`/`MultiEdit`
-entirely (defense-in-depth — even if the hook were bypassed, the impl has
-no tool to write a file directly). The impl writes via codex exec, period.
+**Implementer's allowed writes** (everything else in the worktree):
+- Anywhere inside the active write root EXCEPT Claude's exclusive
+  territory: `.claude/**`, `.codex/**`, `hooks/**`, `docs/**`, `**/*.md`,
+  root `.gitignore`. The role allowlist deliberately mirrors Claude's
+  set; per-packet allowlists from the spec narrow it further.
+- Production code (`shared/`, `db/`, `archival/`, `simulator/`,
+  `feature_store/`, `ml/`, `scoring_service/`, `monitoring/`, `infra/`),
+  root config (`docker-compose.yml`, `Makefile`, `.env.example`,
+  `Dockerfile`, `requirements*.txt`, `pyproject.toml`, `.dockerignore`),
+  and tests (`tests/**`) are all in role-scope.
+
+The implementer subagent's tools list also strips `Edit`/`Write`/
+`MultiEdit` entirely (defense-in-depth — even if the hook were bypassed,
+the impl has no tool to write a file directly). The impl writes via codex
+exec, period.
 
 ## Recurring failure classes (earned; kept current)
 
@@ -321,8 +484,28 @@ than --days, collect."
 
 ## Project specifics
 
-- Build/test/inspect commands: see "Evidence" above (configured at
-  template instantiation; edit here as the project evolves).
-- `.env` (gitignored) holds optional keys for a *possible* future feature.
-  Never commit/log them; never spend them without an explicit go-ahead.
+- **Stack:** Python 3.8 · Postgres 12 (weekly-partitioned on `placed_at`) ·
+  Redis 6 · SQLAlchemy 1.4 + Alembic · FastAPI 0.65 · TF 2.3 + TFX 0.22 +
+  TF Transform + TF Serving 2.3 · XGBoost 1.2 · APScheduler 3.7 ·
+  Streamlit 0.85 · Faker `en_GB` · Docker Compose · pytest 6 ·
+  mypy --strict · ruff.
+- **Build/test/inspect commands:** see "Evidence" above. Compose is the
+  primary runtime — `make up` brings the stack; `make test` and
+  `make typecheck` run inside `docker compose run --rm app …` so the
+  impl never needs a host venv. Worktrees inherit the same Docker
+  daemon; use distinct compose project names per worktree when running
+  packets in parallel (`COMPOSE_PROJECT_NAME=ff-voi-<n>`) to avoid port
+  collisions on 5432/6379.
+- **Phase ordering:** strictly serial (each phase depends on the previous).
+  Within a phase, sub-issues that touch disjoint surfaces can parallelize;
+  the per-packet allowlist + final-head re-gate enforce the disjoint-seam
+  contract at merge time.
+- **Linear:** project `fraud-forecast`; command center is **VOI-139**
+  (always In Progress); per-phase milestones (Phase 1 … Phase 7); one
+  parent issue per phase, sub-issues per deliverable cluster; one PR per
+  sub-issue with `Closes VOI-N` in the body. Recovery contract: any new
+  session reads VOI-139 first and works from its "Live status" section.
+- `.env` (gitignored) holds optional keys for a *possible* future feature
+  (third-party API enrichment is OUT of scope for v1). Never commit/log
+  them; never spend them without an explicit go-ahead.
 - See `~/.claude` project memory for goal/architecture/autonomy notes.

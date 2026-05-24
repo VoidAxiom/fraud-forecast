@@ -152,10 +152,22 @@ for t in th:
     ;;
 
   wait)
-    [ -n "$arg" ] || { echo "usage: review-gate.sh wait <pr> [maxSec]" >&2; exit 2; }
-    MAX="${3:-360}"
-    INT=15
-    WQ='query($o:String!,$r:String!,$n:Int!){repository(owner:$o,name:$r){pullRequest(number:$n){mergeStateStatus headRefOid reviews(last:30){nodes{author{login} commit{oid}}} comments(last:50){nodes{author{login} body createdAt}} reviewThreads(first:100){nodes{isResolved}}}}}'
+    [ -n "$arg" ] || { echo "usage: review-gate.sh wait <pr> [ackWaitSec] [verdictMaxSec]" >&2; exit 2; }
+    # Two-phase, dead-simple eye-emoji loop:
+    #   Phase 1 (ack): wait ackWaitSec (default 120s = 2 min) after the
+    #     LATEST `@codex review` request was posted, then check whether
+    #     codex 👀-acknowledged it. If not, post a fresh `@codex review`
+    #     and repeat. Once 👀 lands, move to phase 2.
+    #   Phase 2 (verdict): poll every 30s until codex produces FINDINGS or
+    #     a clean verdict, or until verdictMaxSec (default 1800s = 30 min)
+    #     elapses. No further re-triggers in phase 2.
+    #
+    # The impl calls `wait` ONCE per pushed head. No outer retry loop in
+    # the impl; this helper owns the entire post→ack→verdict cycle.
+    ACK_WAIT="${3:-120}"
+    VERDICT_MAX="${4:-1800}"
+    INT=30
+    WQ='query($o:String!,$r:String!,$n:Int!){repository(owner:$o,name:$r){pullRequest(number:$n){mergeStateStatus headRefOid reviews(last:30){nodes{author{login} commit{oid}}} comments(last:50){nodes{author{login} body createdAt reactions(first:20){nodes{content user{login}}}}} reviewThreads(first:100){nodes{isResolved}}}}}'
     # Capture BOTH the Codex-comment count AND the latest Codex-comment
     # timestamp at invocation. The timestamp is the load-bearing baseline:
     # a fresh clean comment must post-date it (server-side createdAt, no
@@ -188,71 +200,118 @@ except Exception:
       exit 3; }
     [ "$BASE_TS" = "-" ] && BASE_TS=""
     echo "baseline: $BASE_CODEX prior Codex comment(s), latest @ ${BASE_TS:-none} — waiting for a clean verdict newer than that"
+    # ── Unified single loop. Each tick (every $INT seconds) fetches state
+    # and decides ONE action:
+    #
+    #   1. If a terminal verdict has landed (FINDINGS / REVIEWED-CLEAN /
+    #      CLEAN-COMMENT-MANUAL) for the current head → exit with that.
+    #      This check is FIRST, so a clean verdict that arrives BEFORE
+    #      codex 👀-acks the latest request (codex sometimes skips 👀 on
+    #      duplicate requests and just replies on the original) is not
+    #      missed.
+    #
+    #   2. Else if codex has 👀-acked the latest non-codex `@codex
+    #      review` request → keep waiting (codex is processing).
+    #
+    #   3. Else if (now - latest request createdAt) ≥ ACK_WAIT → post a
+    #      fresh `@codex review` (codex appears to have missed it).
+    #
+    #   4. Else → just sleep $INT (still inside grace window since the
+    #      last request).
+    #
+    #   5. After $VERDICT_MAX total wall-clock with no verdict → exit
+    #      ACK-TIMEOUT (escalate; do NOT spam more requests).
+    INT=30
     elapsed=0
     while :; do
       ci="$(gh pr checks "$arg" --json bucket -q '.[0].bucket' 2>/dev/null || echo '?')"
       resp="$(gh api graphql -F o="$OWNER" -F r="$REPO" -F n="$arg" -f query="$WQ" 2>/dev/null)"
-      verdict="$(printf '%s' "$resp" | CI="$ci" BASE="${BASE_CODEX:-0}" BASE_TS="${BASE_TS:-}" python3 -c '
-import json,os,sys,re
+      decision="$(printf '%s' "$resp" | CI="$ci" BASE="${BASE_CODEX:-0}" BASE_TS="${BASE_TS:-}" ACK_WAIT="$ACK_WAIT" python3 -c '
+import json,os,sys,re,datetime
 try:
     d=json.load(sys.stdin)["data"]["repository"]["pullRequest"]
 except Exception:
     print("ERR retry"); sys.exit()
+CODEX_LOGINS=("chatgpt-codex-connector","chatgpt-codex-connector[bot]")
 th=d["reviewThreads"]["nodes"]
 openn=sum(1 for t in th if not t["isResolved"])
-codex=sum(1 for c in d["comments"]["nodes"] if (c.get("author") or {}).get("login") in ("chatgpt-codex-connector","chatgpt-codex-connector[bot]"))
-base=int(os.environ.get("BASE","0")); fresh=codex-base
 mss=d["mergeStateStatus"]; ci=os.environ.get("CI","?")
-# Verdict on the CURRENT head. Codex signals CLEAN as a COMMENT — accept iff
-# it post-dates the head commit and the wait baseline (resolve-then-rereview
-# on the same commit must not short-circuit). A commit-pinned review still
-# counts but the review path also requires a fresh comment since baseline.
-# 0 threads alone is never clean (false-CLEAN guard).
 head=d.get("headRefOid")
-CODEX_LOGINS=("chatgpt-codex-connector","chatgpt-codex-connector[bot]")
+revs=(d.get("reviews") or {}).get("nodes") or []
 review_on_head=any((r.get("author") or {}).get("login") in CODEX_LOGINS
-            and ((r.get("commit") or {}).get("oid"))==head
-            for r in ((d.get("reviews") or {}).get("nodes") or []))
-base_ts=os.environ.get("BASE_TS","")
+            and ((r.get("commit") or {}).get("oid"))==head for r in revs)
 coms=(d.get("comments") or {}).get("nodes") or []
-# Per-head baseline = most recent `@codex review` REQUEST comment from a
-# non-Codex login. Our ship flow always re-requests AFTER pushing a head,
-# so a clean verdict post-dating it pertains to the pushed head. Also keep
-# the wait-baseline (base_ts) guard so a clean comment pre-dating this wait
-# cannot short-circuit via resolve-then-rereview. Fail-safe: no
-# review-request comment → do not accept a bare clean comment (require
-# SHA-pinned review_on_head).
-rr=[(c.get("createdAt") or "") for c in coms
+codex_coms=[c for c in coms if (c.get("author") or {}).get("login") in CODEX_LOGINS]
+base=int(os.environ.get("BASE","0")); fresh=len(codex_coms)-base
+base_ts=os.environ.get("BASE_TS","")
+rr=[c for c in coms
     if "@codex review" in (c.get("body") or "").lower()
     and (c.get("author") or {}).get("login") not in CODEX_LOGINS]
-rr_anchor=max(rr) if rr else None
+latest_rr=max(rr, key=lambda c: c.get("createdAt") or "") if rr else None
+rr_anchor=(latest_rr.get("createdAt") or "") if latest_rr else None
 clean_comment=bool(rr_anchor) and any(
             (c.get("author") or {}).get("login") in CODEX_LOGINS
             and re.search(r"(did not|didn.?t) find any major issues", c.get("body") or "", re.I)
             and (c.get("createdAt") or "")>rr_anchor
             and (not base_ts or (c.get("createdAt") or "")>base_ts)
             for c in coms)
-# Clean path: the fresh clean comment is itself the verdict. Review path:
-# require fresh comment too (so resolve-then-rereview on the same head
-# cannot short-circuit before Codex actually re-replies).
-# SAFE auto-clean = head-PINNED review only (+ fresh-comment guard).
-# A clean COMMENT cannot be tied to a head — NEVER auto-clean; exits the
-# wait promptly with a DISTINCT status that tells the caller a manual
-# head-correspondence check is required before merge.
+# Also detect a clean comment that post-dates the wait BASELINE even if it
+# pre-dates the latest @codex review request — codex sometimes returns a
+# clean verdict against the FIRST request and skips 👀-acking duplicates.
+# If the post-baseline clean comment exists AND there are no unresolved
+# threads AND merge state is clean, that verdict still applies.
+clean_comment_baseline=bool(base_ts) and any(
+            (c.get("author") or {}).get("login") in CODEX_LOGINS
+            and re.search(r"(did not|didn.?t) find any major issues", c.get("body") or "", re.I)
+            and (c.get("createdAt") or "")>base_ts
+            for c in coms)
+# 1. Terminal verdicts — exit immediately.
 if openn>0:
-    print("FINDINGS open=%d mss=%s ci=%s" % (openn,mss,ci))
-elif review_on_head and fresh>0 and ci!="pending":
-    print("REVIEWED-CLEAN review_on_head=1 fresh=%d open=0 mss=%s ci=%s" % (fresh,mss,ci))
-elif clean_comment and ci!="pending":
-    print("CLEAN-COMMENT-MANUAL clean_comment=1 open=0 mss=%s ci=%s — comment-only clean note, NOT a validatable verdict (no SHA / no head-pinned review / pushedDate null; a stale in-flight request can fake plausible timestamps). Re-run @codex review for the current head and wait for a head-pinned review, OR the operator confirms from this session it answered a request issued AFTER this head was pushed. Never auto-merge." % (mss,ci))
+    print("EXIT|FINDINGS open=%d mss=%s ci=%s" % (openn,mss,ci))
+    sys.exit()
+if review_on_head and fresh>0 and ci!="pending":
+    print("EXIT|REVIEWED-CLEAN review_on_head=1 fresh=%d open=0 mss=%s ci=%s" % (fresh,mss,ci))
+    sys.exit()
+if (clean_comment or clean_comment_baseline) and ci!="pending":
+    print("EXIT|CLEAN-COMMENT-MANUAL clean_comment=1 open=0 mss=%s ci=%s — comment-only clean note, NOT a head-pinned verdict (no SHA in body, no head-pinned review). Director must manually confirm this answered an @codex review issued AFTER the current head was pushed." % (mss,ci))
+    sys.exit()
+# 2/3/4. Non-terminal. Check 👀 + grace window.
+acked=False
+if latest_rr:
+    for r in ((latest_rr.get("reactions") or {}).get("nodes") or []):
+        if (r.get("content") or "").upper()=="EYES" and (((r.get("user") or {}).get("login") or "") in CODEX_LOGINS):
+            acked=True; break
+if acked:
+    print("WAIT|ACK-WAITING — codex 👀-acked %s; verdict in flight." % rr_anchor)
+    sys.exit()
+# Not acked. Compute age of latest request.
+ack_wait=int(os.environ.get("ACK_WAIT","120"))
+if not latest_rr:
+    print("POST|NO-REQUEST — no @codex review request yet; posting first.")
+    sys.exit()
+try:
+    rr_dt=datetime.datetime.strptime(rr_anchor,"%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=datetime.timezone.utc)
+    now=datetime.datetime.now(datetime.timezone.utc)
+    age=int((now-rr_dt).total_seconds())
+except Exception:
+    age=0
+if age>=ack_wait:
+    print("POST|NO-ACK latest=%s age=%ds — past %ds grace window; posting fresh @codex review." % (rr_anchor,age,ack_wait))
 else:
-    print("WAITING codex=%d fresh=%d clean_comment=%d review_on_head=%d open=%d ci=%s" % (codex,fresh,int(clean_comment),int(review_on_head),openn,ci))
+    print("WAIT|GRACE latest=%s age=%ds — within %ds grace window for codex 👀." % (rr_anchor,age,ack_wait))
 ')"
-      echo "t=${elapsed}s ${verdict}"
-      case "$verdict" in
-        FINDINGS*|REVIEWED-CLEAN*|CLEAN-COMMENT-MANUAL*) exit 0 ;;
+      action="${decision%%|*}"
+      message="${decision#*|}"
+      echo "t=${elapsed}s [${action}] ${message}"
+      case "$action" in
+        EXIT) exit 0 ;;
+        POST)
+          gh pr comment "$arg" --body "@codex review" >/dev/null || {
+            echo "failed to post @codex review; aborting" >&2; exit 1; }
+          ;;
+        WAIT|ERR) : ;;
       esac
-      [ "$elapsed" -ge "$MAX" ] && { echo "TIMEOUT after ${MAX}s"; exit 0; }
+      [ "$elapsed" -ge "$VERDICT_MAX" ] && { echo "VERDICT-TIMEOUT after ${VERDICT_MAX}s — never landed a terminal verdict; escalate to Claude (do NOT spam more @codex review requests)."; exit 0; }
       sleep "$INT"; elapsed=$((elapsed+INT))
     done
     ;;

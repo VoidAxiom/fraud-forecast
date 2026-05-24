@@ -21,42 +21,70 @@ and nothing more.
 
 ## This repo
 
-**fraud-forecast** — TODO — fill in once the stack is decided
+**fraud-forecast** is a UK food-delivery fraud detection platform —
+Python 3.8 backend on Postgres 12 (weekly-partitioned) + Redis 6, a 50
+ord/sec synthetic simulator with labeled fraud injection, TF/XGBoost
+ensemble, FastAPI scoring (p99 <100ms), Streamlit monitoring. Built in 7
+phases under `spec/PHASE_1.md` … `spec/PHASE_7.md`. No frontend yet.
 
-- Match existing component/file conventions; do not restyle or reorganise
-  adjacent code. Strict typing — honor it; never `as`/`!` a type lie away.
+- Match existing module/file conventions; do not restyle or reorganise
+  adjacent code. Strict typing — honor it; never lie a type away (no
+  `# type: ignore` without a comment naming the exact reason; never cast
+  `Any` over a real type).
 - Authored content (domain text, claims, pedagogy, metrics) is authored by
   Claude. Do **not** invent or alter facts — if a packet gives you content,
   transcribe it faithfully into the typed structure; if content is missing
   or seems wrong, stop and report it under `risks`/`needs_followup`.
 - Any number a change displays or asserts must be **computed by real
-  in-app/in-lib logic**, never hardcoded/mocked/faked. Add/extend unit tests
-  so the logic is verifiable.
-- No new dependencies unless Allowed changes scopes them (you have no network
-  and cannot install anyway — flag if one is needed).
-- Verify with the packet's command (typically `TODO`) before
-  returning.
+  in-app/in-lib logic**, never hardcoded/mocked/faked. Add/extend pytest
+  cases so the logic is verifiable (especially VAT math, fraud-injection
+  rates, partition routing).
+- No new dependencies unless Allowed changes scopes them (you have no
+  network and cannot install anyway — flag if one is needed). When a packet
+  DOES add a dep, pin it in `requirements.txt` to the version family in
+  `spec/MASTER.md` (mid-2020 representative).
+- Verify with the packet's command — for Phase 1+ this is typically:
+  ```
+  docker compose run --rm app pytest tests/ -v
+  docker compose run --rm app mypy --strict shared/
+  docker compose run --rm app ruff check .
+  ```
+  Run only the subset the packet scope touches if a full run would be
+  prohibitively slow. Report the exact command + output in
+  `verification_result`.
 
-## UI / styling contract (learned from real fan-in misses)
+## Backend / contract correctness (learned from real fan-in misses)
 
-A component that renders is not done; it must be *styled to this project's
-design system* and every class must resolve. Recurring review-failure
-classes — self-check before returning:
+This is a backend data platform — no UI. Recurring review-failure classes
+to self-check before returning:
 
-- **No undefined classes.** Every non-utility class you write MUST resolve to
-  a real rule in the project's stylesheet. An undefined class = invisible/
-  unstyled UI. After writing a component, grep each such class against the
-  stylesheet; if it is not defined, add the rule.
-- **Mirror the existing design system.** Before building UI, read a sibling
-  component + its style block. Reuse the project's naming convention and
-  shared design tokens (CSS custom properties / theme vars). Add a parallel
-  style block of the same shape/quality, including the responsive collapse.
-- **Responsive:** no horizontal scroll / overflow / overlap at the smallest
-  supported width; vector math (e.g. SVG `viewBox`) must match rendered size.
-- **Determinism:** no nondeterministic source (RNG / clock) in logic or
-  render — use the project's seeded RNG; same seed ⇒ same output.
-- **A11y:** real controls (`<button>`, labeled inputs via `htmlFor`/`id`),
-  accessible names, an `sr-only` `aria-live` status, reduced-motion safe.
+- **Money is integer pence, never float.** GBP fields are `BIGINT` in
+  Postgres and `int` in Python. Any `Decimal`/`float` for money is a bug.
+  VAT (`shared/money.py`) is the only place that does rounding — every
+  caller uses its output verbatim.
+- **Timezone discipline.** All `TIMESTAMPTZ`; all clock reads in code use
+  `Europe/London` (`zoneinfo.ZoneInfo("Europe/London")`). Naive
+  `datetime.now()` / `datetime.utcnow()` is a bug. Test fixtures pass a
+  clock; production reads it once at top-of-call.
+- **Migrations are forward-only and idempotent within the migration.**
+  Use `op.execute(...)` with raw SQL for DDL the autogenerate path
+  mangles (partitioning, roles, functions). Never rewrite a merged
+  migration — add a new one.
+- **Partition routing is a real check.** When a change touches the
+  partitioned tables (`orders`, `order_items`, `order_events`, their
+  archives), add a test that inserts rows across two weeks and asserts
+  the rows land in the expected child partitions (query `pg_class`).
+- **Determinism for the simulator.** No nondeterministic source
+  (`random.random()` without a seeded `Random()`, `datetime.now()`
+  without injection, `uuid.uuid4()` in seeded contexts) in any path the
+  tests assert on. Same seed ⇒ same output is a unit-tested invariant.
+- **Role-separation is enforced at the DB.** The scoring service has a
+  dedicated `scoring_user` Postgres role with no `SELECT` on
+  `simulator_ground_truth` (Phase 3). Don't paper over a permission
+  error by escalating to the `app` role — surface the failing assert.
+- **Hand-computed expected values must be correct.** A wrong literal
+  in a pytest is as bad as wrong logic; re-derive every expected literal
+  step by step and put the arithmetic in a comment next to it.
 
 ## Test-value contract (learned from real fan-in misses)
 

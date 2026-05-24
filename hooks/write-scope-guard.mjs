@@ -13,13 +13,23 @@
 // Allowlists (evaluated against the active-write-root-relative resolved path;
 // each prefix means "this dir at the active write root, or anything under it"):
 //   Claude (no agent_id):    scripts/** · **/*.test.* · .claude/** · .codex/** ·
-//                            hooks/** · docs/** · **/*.md · .gitignore
+//                            .codex-runs/** · hooks/** · docs/** · **/*.md ·
+//                            .gitignore
 //                            PLUS: ~/.claude/projects/<key>/memory/**
 //                            (project memory lives outside the project root)
-//   implementer:      scripts/** · **/*.test.* · src/**
-//                            (the impl subagent's tools strip Edit/Write/
-//                            MultiEdit, so this branch is defense-in-depth
-//                            for the case where the tools list ever drifts)
+//                            (.codex-runs/** is per-packet orchestration:
+//                            Claude authors spec.md + scope.txt there; impl
+//                            writes git_diff.patch + events.jsonl via Bash.)
+//   implementer:      EVERYTHING inside the active write root EXCEPT
+//                            Claude's exclusive territory: .claude/** ·
+//                            .codex/** · hooks/** · docs/** · **/*.md ·
+//                            root .gitignore. Claude is sole author of
+//                            those files; the impl writes production code,
+//                            config, infra, fixtures, tests — everything
+//                            else. (Tools-list strip still applies as
+//                            defense-in-depth: even with this scope, the
+//                            impl subagent has no Edit/Write/MultiEdit and
+//                            must dispatch codex exec for any actual write.)
 //   any other subagent:      scripts/** · **/*.test.* only
 //
 // Tier 0 (every caller except Claude-memory writes): the resolved path MUST
@@ -39,26 +49,16 @@ import path from 'node:path'
 
 const IMPL_ROLE = "implementer"
 
-// Comma- or whitespace-separated dir-prefix globs from template.answers.
-// Each entry ends in `/**` by convention; strip the suffix to get the
-// active-write-root-relative prefix for path-matching. Explicit single-file
-// entries (e.g. `src/index.css`) are also supported — entries without a
-// trailing `/` or `/**` are treated as exact file paths.
-const IMPL_SCOPE_RAW = "src/**"
-const _scopeEntries = IMPL_SCOPE_RAW.split(/[,\s]+/).map(s => s.trim()).filter(Boolean)
-const IMPL_PREFIXES = []
-const IMPL_FILES = []
-for (const entry of _scopeEntries) {
-  if (entry.endsWith('/**')) {
-    IMPL_PREFIXES.push(entry.slice(0, -3).replace(/\/$/, ''))
-  } else if (entry.endsWith('/')) {
-    IMPL_PREFIXES.push(entry.slice(0, -1))
-  } else if (entry.endsWith('**')) {
-    IMPL_PREFIXES.push(entry.slice(0, -2).replace(/\/$/, ''))
-  } else {
-    IMPL_FILES.push(entry)
-  }
-}
+// Implementer scope is defined NEGATIVELY: impl can write anywhere inside the
+// active write root EXCEPT Claude's exclusive territory (the CLAUDE_ONLY_*
+// constants below). This matches the project shape (a Python data-platform
+// repo with no single `src/` dir — code lives under `shared/`, `db/`,
+// `archival/`, `simulator/`, etc.) and the doctrine that Claude is the sole
+// author of agent-behavior surface + authored markdown docs while the impl
+// owns all production code, config, infra, and tests.
+const CLAUDE_ONLY_DIRS = ['.claude', '.codex', 'hooks', 'docs']
+const CLAUDE_ONLY_FILES = ['.gitignore']
+const CLAUDE_ONLY_BASENAME_RE = /\.md$/i
 
 const MAIN_PROJECT_ROOT = path.resolve(
   process.env.CLAUDE_PROJECT_DIR || process.cwd(),
@@ -386,44 +386,45 @@ process.stdin.on('end', () => {
       if (
         startsWithDir('.claude') ||
         startsWithDir('.codex') ||
+        startsWithDir('.codex-runs') ||
         startsWithDir('hooks') ||
         startsWithDir('docs')
       ) return allow()
       return deny(
         'Claude',
-        'scripts/**, **/*.test.*, .claude/**, .codex/**, hooks/**, docs/**, **/*.md, or .gitignore (root only)',
+        'scripts/**, **/*.test.*, .claude/**, .codex/**, .codex-runs/**, hooks/**, docs/**, **/*.md, or .gitignore (root only)',
         rawFp,
         resolved,
       )
     }
 
-    // Subagent — per-agent_type additive scope.
-    let extraOk = false
+    // Subagent — per-agent_type scope.
     if (agentType === IMPL_ROLE) {
-      for (const pfx of IMPL_PREFIXES) {
-        if (startsWithDir(pfx)) { extraOk = true; break }
-      }
-      if (!extraOk) {
-        for (const f of IMPL_FILES) {
-          if (rel === f) { extraOk = true; break }
-        }
-      }
+      // Impl can write anywhere in the active write root EXCEPT Claude's
+      // exclusive territory. Strict-prefix dir match + exact-file match +
+      // anchored basename match (no substring-anywhere).
+      const claudeOnly =
+        CLAUDE_ONLY_DIRS.some((d) => startsWithDir(d)) ||
+        CLAUDE_ONLY_FILES.some((f) => rel === f) ||
+        CLAUDE_ONLY_BASENAME_RE.test(base)
+      if (!claudeOnly) return allow()
+      return deny(
+        who,
+        'anywhere in the active write root EXCEPT Claude\'s exclusive ' +
+          'territory: .claude/**, .codex/**, hooks/**, docs/**, **/*.md, ' +
+          'or root .gitignore (those are Claude-authored; ask Claude to ' +
+          'make the change)',
+        rawFp,
+        resolved,
+      )
     }
 
-    if (extraOk) return allow()
-
-    const implScopeDesc = (() => {
-      const parts = []
-      for (const pfx of IMPL_PREFIXES) parts.push(`${pfx}/**`)
-      for (const f of IMPL_FILES) parts.push(f)
-      return parts.join(', ')
-    })()
-    const allowDesc =
-      agentType === IMPL_ROLE
-        ? `scripts/**, **/*.test.*, or ${implScopeDesc || '(no impl scope configured)'} (under the active write root)`
-        : 'scripts/** or **/*.test.* (under the active write root)'
-
-    return deny(who, allowDesc, rawFp, resolved)
+    return deny(
+      who,
+      'scripts/** or **/*.test.* (under the active write root)',
+      rawFp,
+      resolved,
+    )
   } catch {
     return allow()  // fail open on parse error; the per-commit + pre-PR gates are authoritative
   }

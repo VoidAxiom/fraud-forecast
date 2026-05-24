@@ -30,13 +30,15 @@ Why this matters: the audit trail (`.codex-runs/<run-id>/`) is what makes the ru
 
 ### Path scope (applies to codex-exec workers you dispatch, AND to your own commits)
 
-Codex-exec workers dispatched from your worktree write within `src/**` plus tests (`**/*.test.*`). Workers MAY also touch `scripts/**` if and only if a packet acceptance criterion explicitly requires a rails change.
+Codex-exec workers dispatched from your worktree write anywhere in the worktree EXCEPT Claude's exclusive territory: `.claude/**`, `.codex/**`, `hooks/**`, `docs/**`, `**/*.md`, and root `.gitignore`. Claude is the sole author of those files (agent contracts + authored markdown). Everything else — `shared/`, `db/`, `archival/`, `simulator/`, `feature_store/`, `ml/`, `scoring_service/`, `monitoring/`, `infra/`, `tests/`, root config like `docker-compose.yml`, `Makefile`, `.env.example`, `Dockerfile`, `requirements*.txt`, `pyproject.toml`, etc. — is in scope.
 
-Out of scope: anything outside `src/**` other than tests. If a packet acceptance criterion needs a change there, STOP and notify Claude.
+The per-packet allowlist Claude hands you narrows this role scope further. Touch only what the packet allowlist lists.
+
+If a packet acceptance criterion needs a change inside Claude's exclusive territory (e.g. a markdown doc, a hook tweak), STOP and notify Claude — those changes are authored by Claude, not codex.
 
 Enforcement layers:
 - **No direct writes (tools)**: you have no Edit/Write/MultiEdit. Cannot accidentally bypass codex.
-- **Direct writes (hook)**: even if those tools were re-granted, `hooks/write-scope-guard.mjs` would deny non-allowlisted writes for `agent_type=implementer`. Defense-in-depth.
+- **Direct writes (hook)**: even if those tools were re-granted, `hooks/write-scope-guard.mjs` would deny writes inside Claude's exclusive territory for `agent_type=implementer`. Defense-in-depth.
 - **Codex-exec writes (git-side)**: codex's own sandbox cannot reach outside the worktree. After codex returns and you stage the diff, you MUST run `bash scripts/impl-precommit-scope.sh --cached` (catch-early role-only check) before every commit. The opt-in tracked worktree pre-commit hook (`hooks/worktree-impl-hooks/pre-commit`) auto-wires when `worktree-new.sh` provisions your worktree, so this also fires automatically at every `git commit` — but the explicit step-5 invocation is the load-bearing check.
 - **Per-packet allowlist (Claude, at pre-PR review)**: Claude additionally re-runs `impl-precommit-scope.sh --base origin/main --worktree <path> --scope-file <packet allowlist>` against your committed diff to verify the packet-specific allowlist (a subset of the role scope, defined by the spec). Role-allowed but packet-out-of-scope work is caught here.
 
@@ -268,26 +270,28 @@ When Claude approves:
 gh pr comment <PR#> --body "@codex review"
 ```
 
-Then drive the eye-emoji loop. `scripts/review-gate.sh wait` polls codex state every ~15s but does NOT itself re-trigger `@codex review` comments — you do that when needed. Concretely:
+Then drive the eye-emoji loop. `scripts/review-gate.sh wait` polls codex state every ~15s, detects codex's 👀 acknowledgement on the latest `@codex review` request comment, and uses a two-tier timeout so you don't re-trigger while the bot is actively processing. The helper does NOT post `@codex review` itself — you do that, but ONLY when the helper tells you it's safe to.
 
 ```bash
-# Inside a 2-min wait window per attempt:
 bash scripts/review-gate.sh wait <PR#>
 ```
 
-When `wait` returns, read its status line:
-- **WAITING / TIMEOUT / no codex activity after ~2 min** → no 👀 reaction landed. Post a fresh `@codex review` comment and re-run `wait`.
-  ```bash
-  gh pr comment <PR#> --body "@codex review"
-  bash scripts/review-gate.sh wait <PR#>
-  ```
-- **FINDINGS** → codex left review-thread findings. Proceed to step 8.
-- **REVIEWED-CLEAN** → a head-pinned codex review on the current HEAD with no findings landed. This is the only automatic-clean gate. Proceed to step 9.
-- **CLEAN-COMMENT-MANUAL** → an issue-comment "no issues" note landed but is NOT head-pinned. Do NOT treat as automatic clean. Either:
+When `wait` returns or while it polls, read the status line. There are six states; only three are terminal exits:
+
+**Non-terminal (helper keeps polling — informational):**
+- `WAITING …` — no codex 👀 yet on the latest `@codex review` request. Helper will exit with `TIMEOUT` after `maxSec` (default 360 s) if no 👀 lands.
+- `ACK-WAITING …` — codex 👀-acknowledged the request; verdict is in flight. Helper extends its deadline to `maxAckSec` (default 1800 s). **DO NOT re-trigger** — codex is working.
+
+**Terminal exits:**
+- `FINDINGS …` → codex left review-thread findings. Proceed to step 8.
+- `REVIEWED-CLEAN …` → head-pinned codex review on the current HEAD with no findings landed. The only automatic-clean gate. Proceed to step 9.
+- `CLEAN-COMMENT-MANUAL …` → an issue-comment "no issues" note landed but is NOT head-pinned. Do NOT treat as automatic clean. Either:
   1. Post a fresh `@codex review` and re-run `wait` until you get `REVIEWED-CLEAN` (preferred), OR
   2. Notify Claude with the comment URL + your current head SHA + the comment's `created_at` and ask Claude to manually confirm the comment answered a request issued after your current head. Only proceed to step 9 with Claude's explicit confirmation.
+- `TIMEOUT …` → no 👀 ever landed within `maxSec`. Codex may have missed the request. **Safe to re-trigger:** post a fresh bare `@codex review` and re-run `wait`. Cap yourself at 2 such re-triggers per head; after that, escalate to Claude (codex may be down).
+- `ACK-TIMEOUT …` → codex 👀-acknowledged but never produced a verdict within `maxAckSec`. **DO NOT re-trigger** — re-triggering after a 👀 ack just queues another redundant cloud task. Escalate to Claude with the PR # and head SHA.
 
-You — the impl — own the 2-min retrigger discipline. The helper polls; you decide when to re-trigger. You never advance to step 9 on a non-head-pinned verdict without Claude's explicit confirmation.
+The re-trigger discipline is now anchored on the 👀 reaction state, not on a wall-clock timeout: re-trigger only on `TIMEOUT` (no ack), never on `ACK-WAITING` or `ACK-TIMEOUT`. The helper enforces this by extending its own deadline once it sees the 👀 — so a single `wait` invocation with default args is the safe long-running path; you should not need to call `wait` more than once per push unless you actually hit `TIMEOUT`.
 
 ### 8. Iterate on findings (with thread hygiene)
 
@@ -318,10 +322,32 @@ d. **Resolve the prior codex review threads** that you just addressed. The merge
    bash scripts/review-gate.sh resolve <thread_id>
    ```
 
-e. Post a **new** `@codex review` comment (not a reply on a resolved thread) to request fresh review against the new head:
+e. Post a **new** review-request comment that LEADS with `@codex review` and then briefly tells the reviewer what changed and what was deliberately not changed. Codex parses the leading `@codex review` as the trigger; the rationale that follows is read by the reviewer as context for the re-review. This is the only `@codex` mention pattern allowed — see step 8e format below.
+
+   Format (in this exact order; use a HEREDOC with quoted `'EOF'` to preserve newlines and Markdown):
    ```bash
-   gh pr comment <PR#> --body "@codex review"
+   gh pr comment <PR#> --body "$(cat <<'EOF'
+   @codex review
+
+   **Changes since the last review (head <new-SHA-short>):**
+
+   - <thread-id-or-summary>: <one-line description of the fix>
+   - <thread-id-or-summary>: <one-line description of the fix>
+
+   **Not changed (deliberate — explanation for the reviewer):**
+
+   - <thread-id-or-summary>: <one-line rationale — usually "spec design;
+     accepted by Claude (director). See <file>:<line> for the inline
+     comment documenting why."> 
+
+   (Omit either section if it would be empty. If every finding was
+   addressed, include only "Changes" and a trailing line: "No findings
+   were left unaddressed.")
+   EOF
+   )"
    ```
+
+   Why this matters: a bare `@codex review` after a fix iteration makes the reviewer re-derive what changed from the diff alone, often re-raising the same architectural finding for the third time. A short "what changed / what didn't and why" block lets the reviewer focus on whether the NEW diff introduced regressions and skip the deliberately-accepted findings.
 
 f. Re-run the eye-emoji loop on the new comment: `bash scripts/review-gate.sh wait <PR#>`.
 
