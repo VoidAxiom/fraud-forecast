@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import io
+import json
 import logging
 import math
 import multiprocessing
@@ -463,7 +465,7 @@ def main() -> None:
     if "promotions" not in skip_entities:
         seed_promotions()
     if "devices" not in skip_entities:
-        seed_devices()
+        seed_devices(args.scale)
     vacuum_analyze_all()
     print_summary()
 
@@ -1402,9 +1404,223 @@ def seed_promotions() -> None:
         conn.close()
 
 
-def seed_devices() -> None:
-    logger.info("TODO: seed_devices")
-    return
+def seed_devices(scale: float = 1.0) -> None:
+    start = time.time()
+    rng.seed(random.random())
+    n_devices = max(1, int(300_000 * scale))
+
+    device_types_dist = [
+        ("MOBILE_APP", "iOS", 50),
+        ("MOBILE_APP", "Android", 35),
+        ("MOBILE_WEB", "", 10),
+        ("DESKTOP_WEB", "", 4),
+        ("TABLET", "", 1),
+    ]
+    type_choices: list[tuple[str, str]] = []
+    for dtype, platform, weight in device_types_dist:
+        type_choices.extend([(dtype, platform)] * weight)
+
+    app_versions = ["4.30.1", "4.31.0", "4.32.1", "4.33.0", "4.34.2", "4.35.0"]
+    ios_browsers = ["Safari", "Chrome", "Firefox"]
+    android_browsers = ["Chrome", "Firefox", "Samsung"]
+    desktop_browsers = ["Chrome", "Safari", "Firefox", "Edge"]
+
+    now = _SEED_BASE_NOW
+    conn = _get_conn()
+    try:
+        # ---- devices ----
+        device_ids: list[str] = []
+        buf = io.StringIO()
+        writer = csv.writer(buf)
+
+        for idx in range(n_devices):
+            device_id = str(uuid.uuid4())
+            device_ids.append(device_id)
+            dtype, platform = rng.choice(type_choices)
+
+            app_version = ""
+            browser_name = ""
+            browser_version = ""
+            os_version = ""
+            screen_res = ""
+
+            if dtype == "MOBILE_APP" and platform == "iOS":
+                app_version = rng.choice(app_versions)
+                os_version = f"iOS {rng.randint(14, 17)}.{rng.randint(0, 5)}"
+                screen_res = rng.choice(["390x844", "414x896", "375x667", "428x926"])
+            elif dtype == "MOBILE_APP" and platform == "Android":
+                app_version = rng.choice(app_versions)
+                os_version = f"Android {rng.randint(10, 14)}"
+                screen_res = rng.choice(["360x800", "390x844", "412x915", "360x780"])
+            elif dtype == "MOBILE_WEB":
+                browser_name = rng.choice(ios_browsers + android_browsers)
+                browser_version = f"{rng.randint(100, 120)}.0"
+                platform = rng.choice(["iOS", "Android"])
+                os_version = (
+                    f"iOS {rng.randint(14, 17)}"
+                    if platform == "iOS"
+                    else f"Android {rng.randint(10, 14)}"
+                )
+            elif dtype == "DESKTOP_WEB":
+                browser_name = rng.choice(desktop_browsers)
+                browser_version = f"{rng.randint(100, 120)}.0"
+                platform = rng.choice(["Windows", "macOS", "Linux"])
+                os_version = platform
+                screen_res = rng.choice(["1920x1080", "2560x1440", "1440x900", "1280x720"])
+            else:
+                app_version = rng.choice(app_versions)
+                platform = rng.choice(["iOS", "Android"])
+                os_version = (
+                    f"iPadOS {rng.randint(14, 17)}"
+                    if platform == "iOS"
+                    else f"Android {rng.randint(10, 14)}"
+                )
+                screen_res = rng.choice(["768x1024", "1024x1366", "810x1080"])
+
+            fp_raw = f"{device_id}:{dtype}:{platform}:{idx}"
+            fingerprint = hashlib.sha256(fp_raw.encode()).hexdigest()
+            first_seen = (now - timedelta(days=rng.randint(0, 1200))).strftime(
+                "%Y-%m-%d %H:%M:%S+00"
+            )
+
+            is_rooted = rng.random() < 0.01
+            is_emulator = rng.random() < 0.005
+            is_vpn = rng.random() < 0.05
+
+            writer.writerow(
+                [
+                    device_id,
+                    fingerprint,
+                    dtype,
+                    platform,
+                    os_version,
+                    app_version,
+                    browser_name,
+                    browser_version,
+                    screen_res,
+                    "Europe/London",
+                    "en-GB",
+                    is_rooted,
+                    is_emulator,
+                    is_vpn,
+                    first_seen,
+                    first_seen,
+                    "1",
+                    "0.0",
+                ]
+            )
+
+        buf.seek(0)
+        with conn.cursor() as cur:
+            cur.copy_expert(
+                "COPY devices (device_id, device_fingerprint, device_type, platform, os_version, "
+                "app_version, browser_name, browser_version, screen_resolution, timezone, language, "
+                "is_rooted_jailbroken, is_emulator, is_vpn_detected, first_seen_at, last_seen_at, "
+                "unique_users_count, risk_score) FROM STDIN WITH (FORMAT csv)",
+                buf,
+            )
+        conn.commit()
+        _timings["devices"] = (n_devices, time.time() - start)
+        logger.info("Devices seeded: %d", n_devices)
+
+        # ---- user IDs from DB ----
+        with conn.cursor() as cur:
+            cur.execute("SELECT user_id::text FROM users ORDER BY created_at")
+            user_ids_db = [row[0] for row in cur.fetchall()]
+
+        if not user_ids_db:
+            logger.warning("No users found in DB — skipping user_devices seeding")
+            _timings["user_devices"] = (0, time.time() - start)
+            return
+
+        # ---- Plant 50 shared family devices ----
+        n_shared = min(50, len(device_ids))
+        shared_device_indices = rng.sample(range(len(device_ids)), n_shared)
+        family_device_ids = [device_ids[i] for i in shared_device_indices]
+        logger.info(
+            "Planted %d shared family devices for Phase 3 awareness",
+            n_shared,
+        )
+        logger.info("Family device IDs: %s", json.dumps(family_device_ids))
+
+        # ---- user_devices ----
+        ud_buf = io.StringIO()
+        ud_writer = csv.writer(ud_buf)
+        ud_count = 0
+        n_device_pool = len(device_ids)
+
+        for user_id in user_ids_db:
+            n_devs = rng.choices([1, 2, 3, 4], weights=[80, 15, 4, 1], k=1)[0]
+            if n_devs == 4:
+                n_devs += rng.randint(0, 1)
+
+            for didx in rng.sample(range(n_device_pool), min(n_devs, n_device_pool)):
+                device_id = device_ids[didx]
+                first_used = (now - timedelta(days=rng.randint(0, 365))).strftime(
+                    "%Y-%m-%d %H:%M:%S+00"
+                )
+                ud_writer.writerow(
+                    [
+                        user_id,
+                        device_id,
+                        first_used,
+                        first_used,
+                        rng.randint(1, 50),
+                        False,
+                    ]
+                )
+                ud_count += 1
+
+        # Add shared family links (5-10 users per shared device)
+        extra_users = rng.sample(user_ids_db, min(500, len(user_ids_db)))
+        for fdi in family_device_ids:
+            n_family_users = rng.randint(5, 10)
+            family_users = rng.sample(extra_users, min(n_family_users, len(extra_users)))
+            for fu_id in family_users:
+                first_used = (now - timedelta(days=rng.randint(0, 365))).strftime(
+                    "%Y-%m-%d %H:%M:%S+00"
+                )
+                ud_writer.writerow(
+                    [
+                        fu_id,
+                        fdi,
+                        first_used,
+                        first_used,
+                        rng.randint(1, 20),
+                        True,
+                    ]
+                )
+                ud_count += 1
+
+        ud_buf.seek(0)
+        with conn.cursor() as cur:
+            # psycopg2 copy_expert doesn't support ON CONFLICT, so use a temp table.
+            cur.execute("CREATE TEMP TABLE _ud_import (LIKE user_devices INCLUDING ALL)")
+            cur.copy_expert(
+                "COPY _ud_import (user_id, device_id, first_used_at, last_used_at, "
+                "session_count, is_trusted) FROM STDIN WITH (FORMAT csv)",
+                ud_buf,
+            )
+            cur.execute(
+                "INSERT INTO user_devices SELECT * FROM _ud_import "
+                "ON CONFLICT (user_id, device_id) DO NOTHING"
+            )
+            cur.execute("DROP TABLE _ud_import")
+        conn.commit()
+
+        # Update unique_users_count.
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE devices SET unique_users_count = subq.cnt "
+                "FROM (SELECT device_id, COUNT(*) AS cnt FROM user_devices GROUP BY device_id) subq "
+                "WHERE devices.device_id = subq.device_id"
+            )
+        conn.commit()
+
+        _timings["user_devices"] = (ud_count, time.time() - start)
+        logger.info("User-device links seeded: %d", ud_count)
+    finally:
+        conn.close()
 
 
 def vacuum_analyze_all() -> None:
