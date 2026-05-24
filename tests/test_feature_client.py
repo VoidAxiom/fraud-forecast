@@ -65,7 +65,7 @@ def test_get_features_cold_start(redis_client: redis.Redis) -> None:
 
         assert fs.user_orders_1h == 0
         assert fs.user_orders_24h == 0
-        assert fs.user_lifetime_order_count is None
+        assert fs.user_lifetime_order_count == 0
         assert fs.device_orders_1h == 0
 
         expected_missing = set(
@@ -165,8 +165,8 @@ def test_get_features_with_partial_data(redis_client: redis.Redis) -> None:
         )
 
         assert fs.user_orders_1h == 3
-        assert fs.user_lifetime_order_count is None
-        assert fs.user_lifetime_chargeback_rate is None
+        assert fs.user_lifetime_order_count == 0
+        assert fs.user_lifetime_chargeback_rate == 0.0
         assert user_batch_key in fs.missing_features
         assert user_stream_key not in fs.missing_features
     finally:
@@ -290,9 +290,9 @@ def test_optional_entity_ids(redis_client: redis.Redis) -> None:
         )
 
         assert fs.device_orders_1h == 0
-        assert fs.device_lifetime_order_count is None
+        assert fs.device_lifetime_order_count == 0
         assert fs.payment_orders_1h == 0
-        assert fs.payment_lifetime_order_count is None
+        assert fs.payment_lifetime_order_count == 0
         assert fs.address_orders_24h == 0
 
         assert not any(key.startswith("fs:device:") for key in fs.missing_features)

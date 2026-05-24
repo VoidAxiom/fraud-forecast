@@ -32,6 +32,13 @@ def _to_int_or_none(val: object) -> int | None:
     return int(str(val))
 
 
+def _to_float(val: object, default: float = 0.0) -> float:
+    """Convert a Redis value (str, None, or already float) to float."""
+    if val is None or val == "":
+        return default
+    return float(str(val))
+
+
 def _to_float_or_none(val: object) -> float | None:
     """Convert Redis optional numeric values, including blank values, to float."""
     if val is None or val == "":
@@ -81,7 +88,12 @@ def _build_feature_set(
     email_domain: str,
     latency_ms: float,
 ) -> FeatureSet:
-    """Assemble a full Phase-6 `FeatureSet` from a pipeline result array."""
+    """Assemble a full Phase-6 `FeatureSet` from a pipeline result array.
+
+    Applies spec cold-start defaults (0/0.0) for batch fields when entity hash is
+    absent. `missing_features` list provides observability on which keys were
+    empty.
+    """
 
     def _result_hash(index: int) -> dict[str, str]:
         raw = results[index]
@@ -181,40 +193,40 @@ def _build_feature_set(
         user_unique_payment_methods_24h=_to_int(user_stream.get("unique_payment_methods_24h")),
         user_last_order_age_minutes=_to_int_or_none(user_stream.get("last_order_age_minutes")),
 
-        user_lifetime_order_count=_to_int_or_none(user_batch.get("lifetime_order_count")),
-        user_lifetime_spend_pence=_to_int_or_none(user_batch.get("lifetime_spend_pence")),
-        user_avg_order_value_pence=_to_int_or_none(user_batch.get("avg_order_value_pence")),
-        user_lifetime_chargeback_count=_to_int_or_none(user_batch.get("lifetime_chargeback_count")),
-        user_lifetime_refund_count=_to_int_or_none(user_batch.get("lifetime_refund_count")),
-        user_lifetime_chargeback_rate=_to_float_or_none(user_batch.get("lifetime_chargeback_rate")),
-        user_unique_devices_used=_to_int_or_none(user_batch.get("unique_devices_used")),
-        user_unique_payment_methods_used=_to_int_or_none(user_batch.get("unique_payment_methods_used")),
-        user_unique_delivery_addresses=_to_int_or_none(user_batch.get("unique_delivery_addresses")),
-        user_account_age_days=_to_int_or_none(user_batch.get("account_age_days")),
-        user_days_since_last_order=_to_int_or_none(user_batch.get("days_since_last_order")),
-        user_distinct_cities_ordered_from=_to_int_or_none(user_batch.get("distinct_cities_ordered_from")),
+        user_lifetime_order_count=_to_int(user_batch.get("lifetime_order_count")),
+        user_lifetime_spend_pence=_to_int(user_batch.get("lifetime_spend_pence")),
+        user_avg_order_value_pence=_to_int(user_batch.get("avg_order_value_pence")),
+        user_lifetime_chargeback_count=_to_int(user_batch.get("lifetime_chargeback_count")),
+        user_lifetime_refund_count=_to_int(user_batch.get("lifetime_refund_count")),
+        user_lifetime_chargeback_rate=_to_float(user_batch.get("lifetime_chargeback_rate")),
+        user_unique_devices_used=_to_int(user_batch.get("unique_devices_used")),
+        user_unique_payment_methods_used=_to_int(user_batch.get("unique_payment_methods_used")),
+        user_unique_delivery_addresses=_to_int(user_batch.get("unique_delivery_addresses")),
+        user_account_age_days=_to_int(user_batch.get("account_age_days")),
+        user_days_since_last_order=_to_int(user_batch.get("days_since_last_order")),
+        user_distinct_cities_ordered_from=_to_int(user_batch.get("distinct_cities_ordered_from")),
 
         device_orders_1h=_to_int(device_stream.get("orders_1h")),
         device_orders_24h=_to_int(device_stream.get("orders_24h")),
         device_unique_users_24h=_to_int(device_stream.get("unique_users_24h")),
         device_unique_payment_methods_24h=_to_int(device_stream.get("unique_payment_methods_24h")),
 
-        device_lifetime_order_count=_to_int_or_none(device_batch.get("lifetime_order_count")),
-        device_lifetime_chargeback_rate=_to_float_or_none(device_batch.get("lifetime_chargeback_rate")),
-        device_unique_users_lifetime=_to_int_or_none(device_batch.get("unique_users_lifetime")),
-        device_first_seen_days_ago=_to_int_or_none(device_batch.get("first_seen_days_ago")),
-        device_distinct_payment_methods_lifetime=_to_int_or_none(device_batch.get("distinct_payment_methods_lifetime")),
+        device_lifetime_order_count=_to_int(device_batch.get("lifetime_order_count")),
+        device_lifetime_chargeback_rate=_to_float(device_batch.get("lifetime_chargeback_rate")),
+        device_unique_users_lifetime=_to_int(device_batch.get("unique_users_lifetime")),
+        device_first_seen_days_ago=_to_int(device_batch.get("first_seen_days_ago")),
+        device_distinct_payment_methods_lifetime=_to_int(device_batch.get("distinct_payment_methods_lifetime")),
 
         payment_orders_1h=_to_int(payment_stream.get("orders_1h")),
         payment_orders_24h=_to_int(payment_stream.get("orders_24h")),
         payment_unique_users_24h=_to_int(payment_stream.get("unique_users_24h")),
         payment_decline_count_24h=_to_int(payment_stream.get("decline_count_24h")),
 
-        payment_lifetime_order_count=_to_int_or_none(payment_batch.get("lifetime_order_count")),
-        payment_lifetime_chargeback_count=_to_int_or_none(payment_batch.get("lifetime_chargeback_count")),
-        payment_lifetime_chargeback_rate=_to_float_or_none(payment_batch.get("lifetime_chargeback_rate")),
-        payment_unique_users_lifetime=_to_int_or_none(payment_batch.get("unique_users_lifetime")),
-        payment_distinct_delivery_addresses_lifetime=_to_int_or_none(
+        payment_lifetime_order_count=_to_int(payment_batch.get("lifetime_order_count")),
+        payment_lifetime_chargeback_count=_to_int(payment_batch.get("lifetime_chargeback_count")),
+        payment_lifetime_chargeback_rate=_to_float(payment_batch.get("lifetime_chargeback_rate")),
+        payment_unique_users_lifetime=_to_int(payment_batch.get("unique_users_lifetime")),
+        payment_distinct_delivery_addresses_lifetime=_to_int(
             payment_batch.get("distinct_delivery_addresses_lifetime")
         ),
 
@@ -223,26 +235,26 @@ def _build_feature_set(
         ip_unique_users_24h=_to_int(ip_stream.get("unique_users_24h")),
         ip_unique_devices_24h=_to_int(ip_stream.get("unique_devices_24h")),
 
-        ip_lifetime_order_count=_to_int_or_none(ip_batch.get("lifetime_order_count")),
-        ip_unique_users_lifetime=_to_int_or_none(ip_batch.get("unique_users_lifetime")),
-        ip_chargeback_rate=_to_float_or_none(ip_batch.get("chargeback_rate")),
-        ip_first_seen_days_ago=_to_int_or_none(ip_batch.get("first_seen_days_ago")),
+        ip_lifetime_order_count=_to_int(ip_batch.get("lifetime_order_count")),
+        ip_unique_users_lifetime=_to_int(ip_batch.get("unique_users_lifetime")),
+        ip_chargeback_rate=_to_float(ip_batch.get("chargeback_rate")),
+        ip_first_seen_days_ago=_to_int(ip_batch.get("first_seen_days_ago")),
 
         store_orders_1h=_to_int(store_stream.get("orders_1h")),
         store_orders_24h=_to_int(store_stream.get("orders_24h")),
         store_unique_users_24h=_to_int(store_stream.get("unique_users_24h")),
         store_unique_cards_1h=_to_int(store_stream.get("unique_cards_1h")),
 
-        store_avg_order_value_pence=_to_int_or_none(store_batch.get("avg_order_value_pence")),
-        store_chargeback_rate=_to_float_or_none(store_batch.get("chargeback_rate")),
-        store_unique_cards_30d=_to_int_or_none(store_batch.get("unique_cards_30d")),
-        store_total_orders_30d=_to_int_or_none(store_batch.get("total_orders_30d")),
+        store_avg_order_value_pence=_to_int(store_batch.get("avg_order_value_pence")),
+        store_chargeback_rate=_to_float(store_batch.get("chargeback_rate")),
+        store_unique_cards_30d=_to_int(store_batch.get("unique_cards_30d")),
+        store_total_orders_30d=_to_int(store_batch.get("total_orders_30d")),
 
-        merchant_chargeback_rate=_to_float_or_none(merchant_batch.get("chargeback_rate")),
-        merchant_total_stores=_to_int_or_none(merchant_batch.get("total_stores")),
+        merchant_chargeback_rate=_to_float(merchant_batch.get("chargeback_rate")),
+        merchant_total_stores=_to_int(merchant_batch.get("total_stores")),
 
-        email_domain_chargeback_rate=_to_float_or_none(email_domain_batch.get("chargeback_rate")),
-        email_domain_total_orders=_to_int_or_none(email_domain_batch.get("total_orders")),
+        email_domain_chargeback_rate=_to_float(email_domain_batch.get("chargeback_rate")),
+        email_domain_total_orders=_to_int(email_domain_batch.get("total_orders")),
 
         address_orders_24h=_to_int(address_stream.get("orders_24h")),
         address_unique_users_24h=_to_int(address_stream.get("unique_users_24h")),
