@@ -24,6 +24,12 @@ def _to_int(val: object, default: int = 0) -> int:
 
 @dataclass(frozen=True)
 class UserFeatures:
+    """User feature payload used by scoring consumers (Phase 6).
+
+    first_order_at_epoch and last_order_at_epoch are reserved for future
+    extension; in P4 the batch schema (spec/PHASE_4.md) omits these fields so
+    they remain at 0.
+    """
     orders_1h: int = 0
     orders_24h: int = 0
     lifetime_total_orders: int = 0
@@ -31,8 +37,8 @@ class UserFeatures:
     avg_order_value_pence: int = 0
     chargeback_count: int = 0
     refund_count: int = 0
-    first_order_at_epoch: int = 0
-    last_order_at_epoch: int = 0
+    first_order_at_epoch: int = 0  # reserved; spec/PHASE_4.md batch schema omits this field
+    last_order_at_epoch: int = 0   # reserved; spec/PHASE_4.md batch schema omits this field
 
 
 @dataclass(frozen=True)
@@ -70,8 +76,8 @@ class FeatureStoreClient:
             avg_order_value_pence=_to_int(batch.get("avg_order_value_pence")),
             chargeback_count=_to_int(batch.get("lifetime_chargeback_count")),
             refund_count=_to_int(batch.get("lifetime_refund_count")),
-            first_order_at_epoch=0,
-            last_order_at_epoch=0,
+            first_order_at_epoch=0,  # not in spec/PHASE_4.md batch schema; P4-B does not write this field
+            last_order_at_epoch=0,   # not in spec/PHASE_4.md batch schema; P4-B does not write this field
         )
 
     async def get_device_features(self, device_id: UUID) -> DeviceFeatures:
