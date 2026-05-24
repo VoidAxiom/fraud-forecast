@@ -10,8 +10,8 @@ reset:
 	docker compose down -v && $(MAKE) up
 
 migrate:
-	@ [ -f alembic.ini ] || { echo "ERROR: alembic.ini not found. Run 'make migrate' after P1-B (VOI-142) lands."; exit 1; }
-	docker compose --profile tools run --rm app alembic upgrade head
+	@ [ -f db/alembic.ini ] || { echo "ERROR: db/alembic.ini not found. Run 'make migrate' after P1-B (VOI-142) lands."; exit 1; }
+	docker compose --profile tools run --rm app alembic -c db/alembic.ini upgrade head
 
 psql:
 	docker compose exec postgres psql -U app -d fraud_platform
