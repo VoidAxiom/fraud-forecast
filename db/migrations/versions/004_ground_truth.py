@@ -14,31 +14,23 @@ def upgrade() -> None:
     op.execute(
         """
 CREATE TABLE simulator_ground_truth (
-    order_id          UUID NOT NULL,
-    order_placed_at   TIMESTAMPTZ NOT NULL,
-    fraud_pattern     VARCHAR(40) NOT NULL,
-    injection_seed    BIGINT NOT NULL,
-    scenario_metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
-    created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    PRIMARY KEY (order_id, order_placed_at),
-    CONSTRAINT gt_pattern_check CHECK (fraud_pattern IN (
-        'stolen_card', 'account_takeover', 'promo_abuse',
-        'friendly_fraud', 'refund_abuse', 'collusion', 'bot_attack'
-    ))
+    order_id        UUID PRIMARY KEY,
+    is_fraud        BOOLEAN NOT NULL,
+    fraud_category  VARCHAR(50),
+    pattern_notes   TEXT,
+    ring_id         UUID,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 """
     )
-    op.execute("CREATE INDEX idx_gt_pattern ON simulator_ground_truth(fraud_pattern);")
-    op.execute("CREATE INDEX idx_gt_created ON simulator_ground_truth(created_at);")
+    op.execute("CREATE INDEX idx_gt_fraud ON simulator_ground_truth(is_fraud);")
+    op.execute("CREATE INDEX idx_gt_category ON simulator_ground_truth(fraud_category);")
+    op.execute("CREATE INDEX idx_gt_ring ON simulator_ground_truth(ring_id);")
     op.execute("REVOKE ALL ON simulator_ground_truth FROM scoring_user;")
-    op.execute("REVOKE ALL ON simulator_ground_truth FROM PUBLIC;")
-    op.execute(
-        "GRANT SELECT, INSERT, UPDATE, DELETE ON simulator_ground_truth TO simulator_user;"
-    )
-    op.execute("GRANT SELECT ON simulator_ground_truth TO app;")
+    op.execute("REVOKE SELECT ON simulator_ground_truth FROM PUBLIC;")
+    op.execute("GRANT INSERT ON simulator_ground_truth TO simulator_user;")
     op.execute("GRANT SELECT ON simulator_ground_truth TO analyst_user;")
-    op.execute("ALTER DEFAULT PRIVILEGES IN SCHEMA public REVOKE ALL ON TABLES FROM scoring_user;")
 
 
 def downgrade() -> None:
-    op.execute("DROP TABLE IF EXISTS simulator_ground_truth;")
+    pass
