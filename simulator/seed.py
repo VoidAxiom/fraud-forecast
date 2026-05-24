@@ -8,6 +8,7 @@ import math
 import multiprocessing
 import os
 import random
+import string
 import time
 import uuid
 from datetime import date, datetime, timedelta, timezone
@@ -351,6 +352,40 @@ _TODAY = date.today()
 _ONE_DAY = timedelta(days=0)
 _SCRIPT_STARTED_AT = time.time()
 _SEED_BASE_NOW = datetime.now(timezone.utc).replace(microsecond=0)
+_DRIVER_EMAIL_DOMAINS = ["gmail.com", "outlook.com", "hotmail.com", "yahoo.co.uk", "icloud.com"]
+_PROMOS_DATA: list[tuple[str, str, str, str, str, str, int, int | None, bool]] = [
+    # (code, type, discount_pence_or_empty, discount_pct_or_empty, min_order, max_per_user, valid_from_offset_days, valid_until_offset_days_or_None, is_targeted)
+    ("WELCOME10", "NEW_USER", "", "10.00", "1500", "1", -3650, None, False),
+    ("NEWUK20", "NEW_USER", "", "20.00", "2000", "1", -3650, None, False),
+    ("FREEDEL", "FREE_DELIVERY", "", "", "1000", "5", -3650, None, False),
+    ("SUMMER24", "PERCENT_OFF", "", "15.00", "1500", "2", -365, None, False),
+    ("MIDWEEK", "PERCENT_OFF", "", "10.00", "1200", "3", -3650, None, False),
+    ("SUNDAYROAST", "PERCENT_OFF", "", "15.00", "2500", "2", -365, 365, False),
+    ("FRIDAY5", "POUND_OFF", "500", "", "2000", "1", -365, 365, False),
+    ("LUNCHTIME", "PERCENT_OFF", "", "20.00", "800", "1", -3650, None, False),
+    ("BIRTHDAY", "PERCENT_OFF", "", "25.00", "1500", "1", -3650, None, True),
+    ("FIRSTORDER", "NEW_USER", "", "15.00", "1000", "1", -3650, None, False),
+    ("STUDENTUK", "PERCENT_OFF", "", "10.00", "1000", "5", -3650, None, True),
+    ("NEWNHS", "PERCENT_OFF", "", "20.00", "1500", "2", -3650, None, True),
+    ("LOYALTY5", "POUND_OFF", "500", "", "2500", "1", -3650, None, False),
+    ("VEGGIE20", "PERCENT_OFF", "", "20.00", "1200", "2", -3650, None, False),
+    ("FREESHIP", "FREE_DELIVERY", "", "", "500", "10", -3650, None, False),
+    ("WINTER10", "PERCENT_OFF", "", "10.00", "1500", "2", -365, 180, False),
+    ("EASTER15", "PERCENT_OFF", "", "15.00", "2000", "1", -365, 60, False),
+    ("XMAS25", "PERCENT_OFF", "", "25.00", "3000", "1", -365, 30, False),
+    ("NEWYEAR", "PERCENT_OFF", "", "20.00", "2000", "1", -365, 7, False),
+    ("GROUPORDER", "PERCENT_OFF", "", "10.00", "5000", "3", -3650, None, False),
+    ("REFER100", "REFERRAL", "1000", "", "0", "1", -3650, None, False),
+    ("REFER101", "REFERRAL", "1000", "", "0", "1", -3650, None, False),
+    ("REFER102", "REFERRAL", "1000", "", "0", "1", -3650, None, False),
+    ("REFER103", "REFERRAL", "1000", "", "0", "1", -3650, None, False),
+    ("REFER104", "REFERRAL", "1000", "", "0", "1", -3650, None, False),
+    ("REFER105", "REFERRAL", "1000", "", "0", "1", -3650, None, False),
+    ("REFER106", "REFERRAL", "1000", "", "0", "1", -3650, None, False),
+    ("REFER107", "REFERRAL", "1000", "", "0", "1", -3650, None, False),
+    ("REFER108", "REFERRAL", "1000", "", "0", "1", -3650, None, False),
+    ("REFER109", "REFERRAL", "1000", "", "0", "1", -3650, None, False),
+]
 
 
 def _poisson_sample(lam: float) -> int:
@@ -412,15 +447,7 @@ def seed_everything(seed_value: int) -> None:
 
 
 def apply_session_tunings() -> None:
-    conn = _get_conn()
-    try:
-        with conn.cursor() as cur:
-            cur.execute("SET synchronous_commit = OFF;")
-            cur.execute("SET work_mem = '256MB';")
-            cur.execute("SET maintenance_work_mem = '1GB';")
-        conn.commit()
-    finally:
-        conn.close()
+    pass  # Tunings now applied in _get_conn() for each connection.
 
 
 def _get_conn() -> Any:
@@ -429,6 +456,11 @@ def _get_conn() -> Any:
     )
     conn = psycopg2.connect(db_url)
     conn.autocommit = False
+    with conn.cursor() as cur:
+        cur.execute("SET synchronous_commit = OFF;")
+        cur.execute("SET work_mem = '256MB';")
+        cur.execute("SET maintenance_work_mem = '1GB';")
+    conn.commit()
     return conn
 
 
@@ -843,9 +875,69 @@ def seed_menu_items(scale: float) -> None:
         conn.close()
 
 
+def _lognormal_sample(mu_log: float, sigma: float) -> float:
+    return math.exp(rng.gauss(mu_log, sigma))
+
+
 def seed_drivers(scale: float) -> None:
-    logger.info("TODO: seed_drivers")
-    return
+    start = time.time()
+    rng.seed(random.random())
+    target = max(1, int(2000 * scale))
+    now = _SEED_BASE_NOW
+    conn = _get_conn()
+    try:
+        buf = io.StringIO()
+        writer = csv.writer(buf)
+        vehicle_types = ["BIKE", "EBIKE", "SCOOTER", "CAR", "WALK"]
+        vehicle_weights = [35, 25, 20, 18, 2]
+        for _ in range(target):
+            driver_id = str(uuid.uuid4())
+            first_name = fake.first_name()[:100]
+            last_name = fake.last_name()[:100]
+            domain = rng.choice(_DRIVER_EMAIL_DOMAINS)
+            email = f"{first_name.lower()}.{last_name.lower()}{rng.randint(1, 999)}@{domain}"
+            phone = f"+44 7{rng.randint(100000000, 999999999)}"
+            vehicle_type = rng.choices(vehicle_types, weights=vehicle_weights, k=1)[0]
+            if vehicle_type in ("CAR", "SCOOTER"):
+                letters2 = "".join(rng.choices(string.ascii_uppercase, k=2))
+                digits2 = "".join(str(rng.randint(0, 9)) for _ in range(2))
+                letters3 = "".join(rng.choices(string.ascii_uppercase, k=3))
+                licence_plate = f"{letters2}{digits2} {letters3}"
+            else:
+                licence_plate = ""
+            onboarded_at = (now - timedelta(days=rng.randint(30, 1000))).replace(microsecond=0)
+            rating = round(max(3.0, min(5.0, rng.gauss(4.7, 0.3))), 2)
+            completed = int(min(5000, max(0, _lognormal_sample(4.6, 1.0))))
+            home_city = rng.choices(_CITY_NAMES, weights=_CITY_WEIGHTS, k=1)[0]
+            writer.writerow(
+                [
+                    driver_id,
+                    first_name,
+                    last_name,
+                    email,
+                    phone,
+                    vehicle_type,
+                    licence_plate,
+                    onboarded_at.strftime("%Y-%m-%d %H:%M:%S+00"),
+                    "ACTIVE",
+                    f"{rating:.2f}",
+                    completed,
+                    home_city,
+                    "0.0",
+                ]
+            )
+        buf.seek(0)
+        with conn.cursor() as cur:
+            cur.copy_expert(
+                "COPY drivers (driver_id, first_name, last_name, email, phone, vehicle_type, "
+                "licence_plate, onboarded_at, status, rating, completed_deliveries, home_city, "
+                "risk_score) FROM STDIN WITH (FORMAT csv)",
+                buf,
+            )
+        conn.commit()
+        _timings["drivers"] = (target, time.time() - start)
+    finally:
+        conn.close()
 
 
 def seed_users_parallel(scale: float, workers: int) -> None:
@@ -854,8 +946,59 @@ def seed_users_parallel(scale: float, workers: int) -> None:
 
 
 def seed_promotions() -> None:
-    logger.info("TODO: seed_promotions")
-    return
+    start = time.time()
+    conn = _get_conn()
+    try:
+        buf = io.StringIO()
+        writer = csv.writer(buf)
+        created_at = _SEED_BASE_NOW.strftime("%Y-%m-%d %H:%M:%S+00")
+        for (
+            code,
+            promo_type,
+            disc_pence,
+            disc_pct,
+            min_order,
+            max_per_user,
+            vf_offset,
+            vu_offset,
+            is_targeted,
+        ) in _PROMOS_DATA:
+            promo_id = str(uuid.uuid4())
+            valid_from = (_SEED_BASE_NOW + timedelta(days=vf_offset)).strftime(
+                "%Y-%m-%d %H:%M:%S+00"
+            )
+            valid_until = (
+                (_SEED_BASE_NOW + timedelta(days=vu_offset)).strftime("%Y-%m-%d %H:%M:%S+00")
+                if vu_offset is not None
+                else ""
+            )
+            writer.writerow(
+                [
+                    promo_id,
+                    code,
+                    promo_type,
+                    disc_pence,
+                    disc_pct,
+                    min_order,
+                    max_per_user,
+                    valid_from,
+                    valid_until,
+                    is_targeted,
+                    created_at,
+                ]
+            )
+        buf.seek(0)
+        with conn.cursor() as cur:
+            cur.copy_expert(
+                "COPY promotions (promo_id, promo_code, promo_type, discount_amount_pence, "
+                "discount_percent, min_order_pence, max_redemptions_per_user, valid_from, "
+                "valid_until, is_targeted, created_at) FROM STDIN WITH (FORMAT csv)",
+                buf,
+            )
+        conn.commit()
+        _timings["promotions"] = (len(_PROMOS_DATA), time.time() - start)
+    finally:
+        conn.close()
 
 
 def seed_devices() -> None:
