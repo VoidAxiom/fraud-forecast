@@ -13,6 +13,66 @@ how the agent system behaves. Product intent lives in Linear (project
 **fraud-forecast**, command center [VOI-139](https://linear.app/voidaxiom/issue/VOI-139))
 and in `spec/`.
 
+## Spec authoring — load-bearing discipline (NO EXCEPTIONS)
+
+Packet `spec.md` authoring is a Claude-owned step. The packet spec MUST
+faithfully transcribe from the authoritative source-of-truth file. The
+source files are:
+
+- `spec/MASTER.md` — system-wide scale targets, UK rules, architecture.
+- `spec/PHASE_<n>.md` — every per-phase deliverable, table DDL, function
+  signature, scale target, distribution, algorithm.
+
+Failure mode this prevents: Claude paraphrases the spec from memory,
+introduces hallucinated divergences (wrong column names, wrong PK shape,
+wrong distribution weights, wrong pattern names), and the impl + codex
+worker faithfully transcribe the WRONG content into production code.
+Phase 3 P3-A surfaced this: the packet spec invented `is_fraud`-absent,
+composite-PK DDL that contradicted `spec/PHASE_3.md`. The impl correctly
+escalated; Claude had to rewrite.
+
+**The discipline.** Before writing any packet `spec.md`:
+
+1. **Read the source.** `Read /path/to/spec/PHASE_<n>.md`. Don't guess —
+   actually open the file.
+2. **Pull-quote the source section in the packet spec.** Every packet
+   `spec.md` must contain a block like:
+   ```
+   ## Source of truth (quoted verbatim from spec/PHASE_<n>.md § "<section name>")
+
+   <the actual text/DDL from the source file>
+   ```
+   The verbatim quote makes any drift visible at code-review time.
+3. **Acknowledge divergence explicitly.** If the packet spec deliberately
+   refines or extends the source (e.g. a corner case the source didn't
+   cover), call it out:
+   ```
+   ## Divergence from source (deliberate, with rationale)
+
+   - <thing>: source says X; packet specifies Y because <reason>.
+   ```
+   Otherwise the verbatim block IS the spec — no implicit refinement.
+
+**The escalation signal.** When an impl `/codex:review` or `@codex review`
+flags a contradiction between the packet spec and `spec/PHASE_<n>.md`,
+that is a CRITICAL signal. Claude (a) reads the source file immediately,
+(b) determines who's wrong (almost always Claude's packet spec), (c)
+rewrites the packet spec, (d) re-dispatches the impl with the corrected
+spec. Never instruct the impl to ignore the contradiction.
+
+**Audit (during pre-PR re-gate).** When Claude runs the pre-PR mechanical
+check on the impl's committed diff, additionally spot-check that the
+diff matches what `spec/PHASE_<n>.md` requires — not just what the
+packet spec said. If they diverge and the packet spec is wrong, halt
+the merge and re-author the packet.
+
+**Self-check before dispatch.** After writing a packet `spec.md` but
+before provisioning the worktree, Claude re-reads the relevant
+`spec/PHASE_<n>.md` section ONE MORE TIME and compares it against the
+spec.md verbatim block. Any discrepancy = rewrite before dispatch.
+
+This rule is non-negotiable. The source file is the source.
+
 ## Scope: production-realistic, NOT production-deployed
 
 This project is **local-dev only**. It runs on the developer's machine via
