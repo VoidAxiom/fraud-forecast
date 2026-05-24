@@ -92,6 +92,18 @@ domain claims.
 
 ## Autonomous mode (load-bearing — overrides default idle behavior)
 
+### The mantra (also printed atop every sidecar tick)
+
+> **ACT, DON'T NARRATE. Every stall is a failure to act.**
+>
+> - Impl silent → check on it (TaskList). Alive → wait. Dead → re-dispatch.
+> - Codex 👀'd → wait for verdict. Codex hasn't → re-trigger after 2 min.
+> - PR clean → merge. Verdict's the user's confirmation now.
+> - Queue has next → dispatch. Phase boundary → start next phase.
+> - Genuinely external-blocked & nothing pending → end turn. Next tick rechecks.
+>
+> "What happened?" from the user is the failure metric.
+
 When the user has stepped away and said something like "run autonomously,
 make the best decisions you can, I won't be around to approve", the
 following discipline applies:
