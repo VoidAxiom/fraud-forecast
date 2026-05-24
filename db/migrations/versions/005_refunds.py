@@ -30,6 +30,7 @@ CREATE TABLE refunds (
     op.execute("REVOKE SELECT ON refunds FROM PUBLIC;")
     op.execute("REVOKE ALL ON refunds FROM simulator_user;")
     op.execute("GRANT INSERT ON refunds TO simulator_user;")
+    op.execute("GRANT UPDATE ON refunds TO simulator_user;")
     op.execute("GRANT SELECT ON refunds TO simulator_user;")
     op.execute("GRANT SELECT ON refunds TO analyst_user;")
     op.execute("GRANT SELECT ON simulator_ground_truth TO simulator_user;")
