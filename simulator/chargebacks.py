@@ -105,6 +105,22 @@ VALUES ($1, $2, $3, 'order_quality_complaint', 'USER', NOW())
 ON CONFLICT (order_id) DO NOTHING
 """
 
+_REFUND_OUTCOME_UPDATE_SQL = """
+UPDATE orders
+SET fraud_outcome = 'REFUND_ABUSE'
+WHERE order_id = $1
+  AND placed_at = $2
+  AND fraud_outcome IS NULL
+"""
+
+_REFUND_ARCHIVE_OUTCOME_UPDATE_SQL = """
+UPDATE orders_archive
+SET fraud_outcome = 'REFUND_ABUSE'
+WHERE order_id = $1
+  AND placed_at = $2
+  AND fraud_outcome IS NULL
+"""
+
 _FINALIZE_ORDERS_SQL = """
 UPDATE orders
 SET fraud_outcome = 'LEGIT'
@@ -132,7 +148,12 @@ def _chargeback_probability(is_fraud: bool, fraud_category: Optional[str]) -> fl
     if not is_fraud:
         return 0.002
 
-    if fraud_category in {"stolen_card", "ATO", "triangulation", "collusive"}:
+    if fraud_category in {
+        "stolen_card",
+        "account_takeover",
+        "triangulation",
+        "collusive_merchant",
+    }:
         return 0.60
     if fraud_category == "refund_abuse":
         return 0.30
@@ -215,6 +236,8 @@ async def generate_refunds(pool: AsyncpgPool) -> None:
                 continue
 
             await conn.execute(_REFUND_INSERT_SQL, order_id, order_placed_at, total_pence)
+            await conn.execute(_REFUND_OUTCOME_UPDATE_SQL, order_id, order_placed_at)
+            await conn.execute(_REFUND_ARCHIVE_OUTCOME_UPDATE_SQL, order_id, order_placed_at)
 
 
 async def finalize_stale_labels(pool: AsyncpgPool) -> None:
