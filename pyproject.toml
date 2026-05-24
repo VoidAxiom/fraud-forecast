@@ -1,0 +1,50 @@
+[tool.mypy]
+python_version = "3.8"
+strict = true
+files = ["shared", "db/migrations/versions"]
+exclude = [
+    "db/migrations/versions/.*_initial_schema\\.py",
+]
+
+[[tool.mypy.overrides]]
+module = ["apscheduler.*", "pythonjsonlogger", "sqlalchemy_utils.*"]
+ignore_missing_imports = true
+
+[tool.ruff]
+line-length = 100
+target-version = "py38"
+src = ["shared", "simulator", "archival", "scoring_service", "feature_store",
+       "ml", "monitoring", "db", "tests"]
+extend-exclude = [
+    "db/migrations/versions/001_initial_schema.py",
+    "db/migrations/versions/002_create_partitions.py",
+    "db/migrations/versions/003_create_roles.py",
+    "shared/models.py",
+    "shared/money.py",
+    "shared/uk_data.py",
+    "db/migrations/env.py",
+]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "SIM"]
+ignore = ["E501"]
+
+[tool.ruff.lint.per-file-ignores]
+"db/migrations/**" = ["I001", "B007", "E501", "UP"]
+"shared/db.py" = ["I001"]
+"shared/money.py" = ["I001"]
+"shared/models.py" = ["I001"]
+"shared/enums.py" = ["I001"]
+"tests/**" = ["I001"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-v --strict-markers"
+markers = [
+    "slow: tests that take >5s",
+    "concurrent: tests that spawn subprocesses",
+]
