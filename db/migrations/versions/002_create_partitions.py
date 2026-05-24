@@ -1,4 +1,22 @@
-"""Create weekly partitions for partitioned order tables."""
+"""Create weekly partitions for partitioned order tables.
+
+The partition window is anchored to the migration date (``date.today()``),
+not a fixed calendar date. Each environment gets ±26 weeks of weekly
+partitions centered on its install/reset date. This is intentional:
+
+- Forward coverage: ``ensure_future_partitions(weeks_ahead)`` (defined
+  below) is scheduled as a cron by Phase 7 to roll the window forward
+  indefinitely. A fixed-anchor design would create stale partitions a
+  year after install.
+- Backward coverage: 26 weeks of past partitions accept historical
+  backfill data without manual partition creation.
+
+Consequence acknowledged: two databases migrated on different calendar
+weeks have different physical partition names (e.g. ``orders_p_2026_21``
+vs ``orders_p_2026_22``). Tests (Phase 1-E) assert structural properties
+(count, ranges, routing correctness) rather than specific partition
+names, so this divergence is benign.
+"""
 
 from datetime import date, timedelta
 

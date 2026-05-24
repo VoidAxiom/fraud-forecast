@@ -1,4 +1,13 @@
-"""Create database roles and scoped grants for P1-B components."""
+"""Create database roles and scoped grants for P1-B components.
+
+``fraud_platform`` is the only database name this platform uses; it is
+hardcoded in ``docker-compose.yml``, ``.env.example``, ``Dockerfile``,
+``db/alembic.ini``, and every ``DATABASE_URL_*`` env var. The hardcoded
+``GRANT CONNECT ON DATABASE fraud_platform`` reflects this platform
+constant. If the database is ever renamed, every connection string +
+compose env + this GRANT must be updated together — making the GRANT
+dynamic via ``current_database()`` would mask, not fix, that coupling.
+"""
 
 from alembic import op
 

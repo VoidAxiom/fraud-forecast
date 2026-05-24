@@ -427,6 +427,24 @@ CREATE INDEX idx_orders_fraud_review ON orders(fraud_decision)
     WHERE fraud_decision = 'REVIEW';
 """
     )
+    # Note: order_items and order_events deliberately omit a composite FK
+    # (order_id, order_placed_at) REFERENCES orders(order_id, placed_at).
+    # Three reasons:
+    #
+    # 1. Performance — at 50 orders/sec sustained, FK checks across
+    #    partitioned parents add measurable per-INSERT overhead.
+    # 2. Snapshot design — order_items carry denormalized snapshot fields
+    #    (item_name_snapshot, unit_price_pence, line_total_pence,
+    #    is_hot_food) so partition data is self-contained for analytics.
+    # 3. Archival algorithm — archival/archiver.py (Phase 1-D) moves rows in
+    #    events → items → orders order with no FK constraints to block the
+    #    DELETE phase. Adding FKs would require deferrable constraints +
+    #    transaction-internal ordering complexity that the spec
+    #    deliberately avoids.
+    #
+    # Application-level integrity is enforced by the order-creation
+    # transaction in simulator/generator.py (Phase 2), which inserts
+    # orders + items + events atomically.
     op.execute(
         """
 CREATE TABLE order_items (
