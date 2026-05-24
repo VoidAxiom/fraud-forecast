@@ -449,6 +449,8 @@ def main() -> None:
     parser.add_argument("--workers", type=int, default=8)
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
+    if args.workers < 1:
+        parser.error(f"--workers must be >= 1, got {args.workers}")
 
     skip_entities: list[str] = args.skip or []
     seed_everything(args.seed)
