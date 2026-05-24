@@ -17,6 +17,11 @@ import redis.asyncio.client as aioredis_client
 
 from feature_store.schema import FeatureSet
 
+# Class hierarchy:
+# FeatureStoreClient (sync) — primary Phase 6 scoring client; `get_features()` → FeatureSet.
+# AsyncFeatureStoreClient (async) — formerly FeatureStoreClient (P4-A); renamed because
+#   a sync FeatureStoreClient per spec replaces it as the primary named type. No legacy
+#   callers exist (grep-confirmed). Per CLAUDE.md: no backwards-compat shims.
 
 def _to_int(val: object, default: int = 0) -> int:
     """Convert a Redis value (str, None, or already int) to int."""
@@ -328,6 +333,12 @@ class FeatureStoreClient:
 
 
 class AsyncFeatureStoreClient:
+    """Renamed from ``FeatureStoreClient`` (P4-A); no legacy callers exist in the
+    codebase.
+    The sync ``FeatureStoreClient`` is the new primary class for Phase 6 scoring.
+    Per CLAUDE.md: 'no backwards-compat shims; change every caller — there is no
+    legacy caller.'"""
+
     def __init__(self, url: str | None = None) -> None:
         resolved = url if url is not None else os.environ.get("REDIS_URL", "redis://redis:6379/0")
         self._r: aioredis.Redis[str] = aioredis.from_url(resolved, decode_responses=True)
