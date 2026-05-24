@@ -5,7 +5,13 @@ from __future__ import annotations
 import asyncio
 import math
 import random
+import sys
 from datetime import datetime
+
+if sys.version_info >= (3, 9):
+    from zoneinfo import ZoneInfo
+else:
+    from backports.zoneinfo import ZoneInfo
 
 from simulator.fraud_patterns import GroundTruth, _REGISTRY, generate_fraud_order
 from simulator.fraud_patterns.stolen_card import (
@@ -24,7 +30,7 @@ def test_stolen_card_pattern_is_registered_with_expected_weight() -> None:
 def test_generate_stolen_card_fraud_returns_expected_shape_and_truth() -> None:
     ctx = FraudPatternContext(
         rng=random.Random(123),
-        now=datetime(2026, 1, 2, 3, 45),
+        now=datetime(2026, 1, 2, 3, 45, tzinfo=ZoneInfo("Europe/London")),
     )
     order_dict, gt = asyncio.run(generate_stolen_card_fraud(ctx))
     required_keys = {
@@ -49,6 +55,17 @@ def test_generate_stolen_card_fraud_returns_expected_shape_and_truth() -> None:
     assert isinstance(gt, GroundTruth)
 
 
+def test_is_night_order_flag_tracks_uk_night_hours() -> None:
+    for hour in range(24):
+        ctx = FraudPatternContext(
+            rng=random.Random(1),
+            now=datetime(2026, 1, 2, hour, 0, tzinfo=ZoneInfo("Europe/London")),
+        )
+        order_dict, _ = asyncio.run(generate_stolen_card_fraud(ctx))
+        should_be_night = 2 <= hour < 6
+        assert order_dict["is_night_order"] is should_be_night
+
+
 def test_weighted_choice_returns_choice_from_values() -> None:
     value = _weighted_choice(random.Random(7), [("A", 1.0), ("B", 2.0), ("C", 3.0)])
     assert value in {"A", "B", "C"}
@@ -64,7 +81,7 @@ def test_generate_fraud_order_dispatches_to_stolen_card_pattern() -> None:
 def test_stolen_card_variants_are_within_generous_bounds() -> None:
     ctx = FraudPatternContext(
         rng=random.Random(888),
-        now=datetime(2026, 1, 4, 13, 0),
+        now=datetime(2026, 1, 4, 13, 0, tzinfo=ZoneInfo("Europe/London")),
     )
     variant_counts: dict[str, int] = {"A": 0, "B": 0, "C": 0}
     for _ in range(1000):
@@ -79,7 +96,7 @@ def test_stolen_card_variants_are_within_generous_bounds() -> None:
 def test_stolen_card_total_is_floored_to_two_thousand_pence() -> None:
     ctx = FraudPatternContext(
         rng=random.Random(99),
-        now=datetime(2026, 1, 5, 14, 0),
+        now=datetime(2026, 1, 5, 14, 0, tzinfo=ZoneInfo("Europe/London")),
     )
     for _ in range(100):
         order_dict, _gt = asyncio.run(generate_stolen_card_fraud(ctx))

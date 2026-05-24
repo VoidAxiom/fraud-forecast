@@ -3,10 +3,16 @@
 from __future__ import annotations
 
 import random
+import sys
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
+
+if sys.version_info >= (3, 9):
+    from zoneinfo import ZoneInfo
+else:
+    from backports.zoneinfo import ZoneInfo
 
 from simulator.fraud_patterns import GroundTruth, register
 
@@ -17,7 +23,7 @@ if TYPE_CHECKING:
 @dataclass
 class FraudPatternContext:
     rng: random.Random = field(default_factory=random.Random)
-    now: datetime = field(default_factory=datetime.utcnow)
+    now: datetime = field(default_factory=lambda: datetime.now(tz=ZoneInfo("Europe/London")))
 
 
 def _weighted_choice(rng: random.Random, choices: list[tuple[str, float]]) -> str:
