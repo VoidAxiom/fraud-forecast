@@ -13,7 +13,6 @@ import uuid
 from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
-import numpy as np
 import psycopg2  # type: ignore
 from faker import Faker
 from shared.uk_data import (
@@ -351,6 +350,18 @@ _DEFAULT_SCALE_SQRT = math.sqrt(1.0)
 _TODAY = date.today()
 _ONE_DAY = timedelta(days=0)
 _SCRIPT_STARTED_AT = time.time()
+_SEED_BASE_NOW = datetime.now(timezone.utc).replace(microsecond=0)
+
+
+def _poisson_sample(lam: float) -> int:
+    """Knuth Poisson sampler (stdlib only)."""
+    lam_tail = math.exp(-lam)
+    k = 0
+    p = 1.0
+    while p > lam_tail:
+        k += 1
+        p *= rng.random()
+    return k - 1
 
 
 def main() -> None:
@@ -396,7 +407,6 @@ def main() -> None:
 
 def seed_everything(seed_value: int) -> None:
     random.seed(seed_value)
-    np.random.seed(seed_value)
     Faker.seed(seed_value)
     print(f"[seed] seed={seed_value}")
 
@@ -433,7 +443,7 @@ def seed_merchants(scale: float) -> None:
     rng.seed(random.random())
     _merchant_store_allocs.clear()
 
-    now = datetime.now(timezone.utc)
+    now = _SEED_BASE_NOW
     target_merchants = max(1, int(5000 * scale))
     target_total_stores = max(1, int(15000 * scale))
 
@@ -580,15 +590,15 @@ def seed_stores(scale: float) -> None:
         _timings["stores"] = (0, time.time() - start)
         return
 
-    now = datetime.now(timezone.utc)
+    now = _SEED_BASE_NOW
     conn = _get_conn()
     try:
-        merchant_ids = [uuid.UUID(merchant_id) for merchant_id, _ in _merchant_store_allocs]
+        merchant_id_texts = [merchant_id for merchant_id, _ in _merchant_store_allocs]
         merchant_brand_by_id: dict[str, str] = {}
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT merchant_id::text, brand_name FROM merchants WHERE merchant_id = ANY(%s)",
-                (merchant_ids,),
+                "SELECT merchant_id::text, brand_name FROM merchants WHERE merchant_id::text = ANY(%s)",
+                (merchant_id_texts,),
             )
             for row in cur.fetchall():
                 if len(row) == 2:
@@ -619,7 +629,7 @@ def seed_stores(scale: float) -> None:
                         cuisines.append(extra)
 
                 cuisine_types = "{" + ",".join(cuisines) + "}"
-                price_tier = int(np.random.choice([1, 2, 3, 4], p=[0.30, 0.45, 0.20, 0.05]))
+                price_tier = int(rng.choices([1, 2, 3, 4], weights=[30, 45, 20, 5], k=1)[0])
                 accepts_cash = rng.random() < 0.05
                 accepts_in_store = rng.random() < 0.75
                 accepts_delivery = rng.random() < 0.92
@@ -678,8 +688,8 @@ def seed_stores(scale: float) -> None:
                         county,
                         random_uk_postcode(city, rng=rng),
                         "GB",
-                        float(lat + np.random.normal(0, 0.02)),
-                        float(lon + np.random.normal(0, 0.02)),
+                        float(lat + rng.gauss(0, 0.02)),
+                        float(lon + rng.gauss(0, 0.02)),
                         "Europe/London",
                         f"+44 {rng.randint(1000000000, 9999999999)}",
                         pos_system,
@@ -792,8 +802,7 @@ def seed_menu_items(scale: float) -> None:
             cuisines = store_cuisines if store_cuisines else ["Other"]
             cuisine = cuisines[0]
             price_tier = _store_price_tiers.get(store_id, 2)
-            raw_item_count = int(np.random.poisson(lam=6))
-            item_count = min(12, max(4, raw_item_count))
+            item_count = max(4, min(12, _poisson_sample(6)))
 
             templates = CUISINE_MENU_TEMPLATES.get(
                 cuisine, CUISINE_MENU_TEMPLATES["Other"]
