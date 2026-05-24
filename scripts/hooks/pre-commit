@@ -1,0 +1,36 @@
+#!/bin/sh
+# Main-repo pre-commit hook — runs check-shell-syntax.sh against the staged
+# set. Auto-wired by init.sh via `git config core.hooksPath scripts/hooks`.
+set -eu
+
+CHECK_SCRIPT="$(git rev-parse --show-toplevel)/scripts/check-shell-syntax.sh"
+TMP_DIR="$(mktemp -d)"
+trap 'rm -rf "$TMP_DIR"' EXIT
+FAIL_MARKER="$TMP_DIR/failed"
+
+if ! command -v bash >/dev/null 2>&1; then
+  echo "pre-commit: bash is not available; skipping shell-syntax gate" >&2
+  exit 0
+fi
+
+if [ ! -x "$CHECK_SCRIPT" ]; then
+  echo "pre-commit: missing shell-syntax checker at $CHECK_SCRIPT" >&2
+  exit 1
+fi
+
+git diff --cached -z --name-only --diff-filter=ACMR > "$TMP_DIR/staged" 2>/dev/null || true
+[ -s "$TMP_DIR/staged" ] || exit 0
+
+xargs -0 -I{} sh -c '
+  f="$1"
+  case "$f" in
+    *.sh|scripts/hooks/*|hooks/worktree-impl-hooks/*)
+      if ! bash "$2" "$f"; then
+        touch "$3"
+      fi
+      ;;
+  esac
+' _ "{}" "$CHECK_SCRIPT" "$FAIL_MARKER" < "$TMP_DIR/staged"
+
+[ -e "$FAIL_MARKER" ] && exit 1
+exit 0

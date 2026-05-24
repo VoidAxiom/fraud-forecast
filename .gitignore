@@ -1,0 +1,9 @@
+
+# --- agent orchestration (append to the target repo's .gitignore) ---
+.codex-runs/
+
+# runtime hook breadcrumbs (generated; .claude/settings.json IS tracked)
+.claude/hooks/
+
+# macOS finder noise
+.DS_Store

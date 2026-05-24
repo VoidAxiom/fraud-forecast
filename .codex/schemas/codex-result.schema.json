@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "CodexExecResult",
+  "description": "Structured result a codex exec worker/explorer must return (see .codex/DELEGATION.md).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "summary",
+    "files_inspected",
+    "files_changed",
+    "commands_run",
+    "verification_result",
+    "evidence",
+    "artifacts_created",
+    "assumptions",
+    "risks",
+    "recommended_next_step",
+    "working_tree_dirty",
+    "needs_followup"
+  ],
+  "properties": {
+    "summary": { "type": "array", "items": { "type": "string" } },
+    "files_inspected": { "type": "array", "items": { "type": "string" } },
+    "files_changed": { "type": "array", "items": { "type": "string" } },
+    "commands_run": { "type": "array", "items": { "type": "string" } },
+    "verification_result": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "details"],
+      "properties": {
+        "status": { "type": "string", "enum": ["passed", "failed", "not_run"] },
+        "details": { "type": "string" }
+      }
+    },
+    "evidence": { "type": "array", "items": { "type": "string" } },
+    "artifacts_created": { "type": "array", "items": { "type": "string" } },
+    "assumptions": { "type": "array", "items": { "type": "string" } },
+    "risks": { "type": "array", "items": { "type": "string" } },
+    "recommended_next_step": { "type": "string" },
+    "working_tree_dirty": { "type": "boolean" },
+    "needs_followup": { "type": "boolean" }
+  }
+}

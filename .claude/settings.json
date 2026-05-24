@@ -1,0 +1,136 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "permissions": {
+    "allow": [
+      "Bash(npm test:*)",
+      "Bash(npm run build:*)",
+      "Bash(npx tsc:*)",
+      "Bash(npx vitest run:*)",
+      "Bash(pnpm typecheck:*)",
+      "Bash(pnpm lint:*)",
+      "Bash(node:*)",
+      "Bash(git status:*)",
+      "Bash(git diff:*)",
+      "Bash(git log:*)",
+      "Bash(git add:*)",
+      "Bash(git switch:*)",
+      "Bash(git checkout:*)",
+      "Bash(git branch:*)",
+      "Bash(git commit:*)",
+      "Bash(git pull --ff-only:*)",
+      "Bash(git push:*)",
+      "Bash(git worktree:*)",
+      "Bash(git config:*)",
+      "Bash(gh pr view:*)",
+      "Bash(gh pr list:*)",
+      "Bash(gh pr checks:*)",
+      "Bash(gh pr diff:*)",
+      "Bash(gh pr create:*)",
+      "Bash(gh pr comment:*)",
+      "Bash(gh pr merge:*)",
+      "Bash(gh repo view:*)",
+      "Bash(gh api:*)",
+      "Bash(scripts/review-gate.sh:*)",
+      "Bash(bash scripts/review-gate.sh:*)",
+      "Bash(scripts/codex-run.sh:*)",
+      "Bash(bash scripts/codex-run.sh:*)",
+      "Bash(scripts/codex-review.sh:*)",
+      "Bash(bash scripts/codex-review.sh:*)",
+      "Bash(scripts/worktree-new.sh:*)",
+      "Bash(bash scripts/worktree-new.sh:*)",
+      "Bash(scripts/codex-runs-gc.sh:*)",
+      "Bash(bash scripts/codex-runs-gc.sh:*)",
+      "Bash(scripts/impl-precommit-scope.sh:*)",
+      "Bash(bash scripts/impl-precommit-scope.sh:*)",
+      "Bash(scripts/check-shell-syntax.sh:*)",
+      "Bash(bash scripts/check-shell-syntax.sh:*)",
+      "Bash(codex exec:*)",
+      "Bash(codex exec resume:*)",
+      "mcp__linear__*",
+      "mcp__chrome-devtools__*",
+      "mcp__playwright__*"
+    ],
+    "deny": [
+      "Bash(codex exec:* --dangerously-bypass-approvals-and-sandbox)",
+      "Bash(codex exec:* danger-full-access)",
+      "Bash(codex exec:* network_access=true)",
+      "Bash(git push --force:*)",
+      "Bash(git push -f:*)",
+      "Bash(git push:* --force)",
+      "Bash(git push:* --force-with-lease)",
+      "Bash(git reset --hard:*)",
+      "Bash(git rebase:*)",
+      "Bash(git filter-branch:*)",
+      "Bash(git update-ref -d:*)",
+      "Bash(gh pr merge:* --admin)",
+      "Bash(gh repo delete:*)",
+      "Bash(rm -rf:*)",
+      "Bash(rm -fr:*)",
+      "Bash(sudo rm:*)",
+      "Read(./.env)",
+      "Read(./.env.*)"
+    ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Edit|Write|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$CLAUDE_PROJECT_DIR/hooks/write-scope-guard.mjs\"",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "matcher": "startup|resume|compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "p=\"$CLAUDE_PROJECT_DIR/hooks/session-recovery.sh\"; [ -f \"$p\" ] && bash \"$p\" || true",
+            "timeout": 20
+          }
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "matcher": "auto|manual",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "p=\"$CLAUDE_PROJECT_DIR/hooks/compaction-sidecar.sh\"; [ -f \"$p\" ] && bash \"$p\" || true",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PostCompact": [
+      {
+        "matcher": "auto|manual",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "p=\"$CLAUDE_PROJECT_DIR/hooks/compaction-sidecar.sh\"; [ -f \"$p\" ] && bash \"$p\" || true",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "p=\"$CLAUDE_PROJECT_DIR/hooks/delegation-sidecar.sh\"; [ -f \"$p\" ] || p=\"$CLAUDE_PROJECT_DIR/.claude/hooks/delegation-sidecar.sh\"; [ -f \"$p\" ] && bash \"$p\" || true",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}

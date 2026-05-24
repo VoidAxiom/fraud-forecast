@@ -1,0 +1,52 @@
+#!/usr/bin/env bash
+# pre-commit — shared worktree-impl pre-commit hook (lives in MAIN repo,
+# referenced by spawned impl worktrees via `git config --worktree
+# core.hooksPath`). Spawned out-of-repo worktrees set this absolute path at
+# provisioning time (see scripts/worktree-new.sh) so the worktree directory
+# itself stays clean.
+#
+# Git invokes this script with the worktree as cwd. We delegate to the
+# canonical scope script (also in main repo), which validates every staged
+# path against the impl role allowlist via the same hook the editor
+# PreToolUse guard uses, then runs the shell-syntax gate against staged
+# shell files.
+
+set -euo pipefail
+
+WORKTREE_ROOT="$(git rev-parse --show-toplevel)"
+GIT_COMMON_DIR="$(git rev-parse --git-common-dir 2>/dev/null || echo '')"
+if [[ -z "$GIT_COMMON_DIR" ]]; then
+  echo "pre-commit: cannot resolve git-common-dir; refusing to commit" >&2
+  exit 1
+fi
+MAIN_REPO_ROOT="$(cd "$GIT_COMMON_DIR/.." && pwd)"
+
+SCOPE_SCRIPT="${MAIN_REPO_ROOT}/scripts/impl-precommit-scope.sh"
+if [[ ! -x "$SCOPE_SCRIPT" ]]; then
+  echo "pre-commit: scope script missing or non-executable at $SCOPE_SCRIPT; refusing to commit" >&2
+  exit 1
+fi
+
+# Default --cached mode reads the staging area.
+if ! bash "$SCOPE_SCRIPT"; then
+  exit 1
+fi
+
+CHECK_SCRIPT="${MAIN_REPO_ROOT}/scripts/check-shell-syntax.sh"
+if [ ! -x "$CHECK_SCRIPT" ]; then
+  echo "pre-commit: missing shell-syntax checker at $CHECK_SCRIPT" >&2
+  exit 1
+fi
+
+STATUS=0
+while IFS= read -r -d '' FILE; do
+  case "$FILE" in
+    *.sh|scripts/hooks/*|hooks/worktree-impl-hooks/*)
+      if ! bash "$CHECK_SCRIPT" "$FILE"; then
+        STATUS=1
+      fi
+      ;;
+  esac
+done < <(git diff --cached -z --name-only --diff-filter=ACMR)
+
+exit "$STATUS"
