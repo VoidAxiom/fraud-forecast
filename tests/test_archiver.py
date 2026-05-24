@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import datetime as dt
 from collections.abc import Iterator
+import os
 import subprocess
 import sys
 import time
@@ -153,9 +154,13 @@ def test_archiver_10k_under_30s(db_engine: Engine) -> None:
             """, rows, page_size=1000)
         from archival.archiver import run_once
         t0 = time.monotonic()
-        moved = run_once(batch_size=10000, max_batches=10)
+        run_once(batch_size=10000, max_batches=10)
         elapsed = time.monotonic() - t0
-        assert moved >= 10000
+        with db_engine.connect() as conn:
+            archived_count = conn.execute(text(
+                "SELECT count(*) FROM orders_archive WHERE order_id = ANY(:ids)"
+            ), {"ids": ids}).scalar()
+        assert archived_count >= 10000, f"only {archived_count} of 10K fixture rows archived"
         assert elapsed < 30, f"archiver took {elapsed:.1f}s for 10K rows (target <30s)"
     finally:
         with db_engine.begin() as conn:
@@ -173,16 +178,20 @@ def test_archiver_concurrent_runs_partition_work(
 ) -> None:
     """Two parallel --once runs partition the stale rows via row-locking discipline."""
     _, _, _, stale_ids, _, _ = arc_fixture
+    sub_env = os.environ.copy()
+    sub_env["ARCHIVE_BATCH_SIZE"] = "100"
+    sub_env["ARCHIVE_MAX_BATCHES"] = "2"
     procs = [
         subprocess.Popen(
             [sys.executable, "-m", "archival.archiver", "--once"],
             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            env=sub_env,
         )
         for _ in range(2)
     ]
     for p in procs:
         try:
-            stdout, stderr = p.communicate(timeout=60)
+            _, stderr = p.communicate(timeout=60)
         except subprocess.TimeoutExpired:
             p.kill()
             pytest.fail("concurrent archiver run timed out")
