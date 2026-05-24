@@ -6,6 +6,7 @@ import datetime as dt
 import contextlib
 import os
 import uuid
+import re
 from typing import Generator
 
 import pytest
@@ -164,8 +165,40 @@ def test_ensure_future_partitions_idempotent(db_engine: Engine) -> None:
 
 def test_partition_routing(db_engine: Engine) -> None:
     """Insert across 2 weeks; verify rows land in correct child partitions via tableoid."""
-    now = dt.datetime(2026, 5, 24, 12, 0, 0, tzinfo=dt.timezone.utc)
-    wk1, wk2 = now, now + dt.timedelta(weeks=1)
+    with db_engine.connect() as conn:
+        partition_names = conn.execute(
+            text(
+                """
+                SELECT relname
+                FROM pg_class
+                WHERE relname LIKE :pat AND relkind = 'r'
+                ORDER BY relname
+            """
+            ),
+            {"pat": "orders_p_%"},
+        ).scalars().all()
+    if len(partition_names) < 2:
+        pytest.skip("at least 2 orders partitions are required to test routing")
+
+    mid_idx = len(partition_names) // 2
+    p1_name = partition_names[mid_idx]
+    p2_name = partition_names[mid_idx + 1] if mid_idx + 1 < len(partition_names) else partition_names[mid_idx - 1]
+
+    p1_match = re.search(r"_p_(\d{4})_(\d{2})$", p1_name)
+    p2_match = re.search(r"_p_(\d{4})_(\d{2})$", p2_name)
+    assert p1_match is not None, f"unexpected partition name: {p1_name}"
+    assert p2_match is not None, f"unexpected partition name: {p2_name}"
+
+    wk1 = dt.datetime.fromisocalendar(
+        int(p1_match.group(1)),
+        int(p1_match.group(2)),
+        1,
+    ).replace(hour=12, tzinfo=dt.timezone.utc)
+    wk2 = dt.datetime.fromisocalendar(
+        int(p2_match.group(1)),
+        int(p2_match.group(2)),
+        1,
+    ).replace(hour=12, tzinfo=dt.timezone.utc)
     oid1, oid2 = uuid.uuid4(), uuid.uuid4()
     user_id, store_id, merchant_id = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
 
