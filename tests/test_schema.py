@@ -245,25 +245,23 @@ def test_partition_routing(db_engine: Engine) -> None:
 
 def test_citext_case_insensitive_email(db_engine: Engine) -> None:
     user1, user2 = uuid.uuid4(), uuid.uuid4()
+    # Use a unique suffix to avoid conflicts with pre-existing rows.
+    suffix = str(uuid.uuid4())[:8]
+    email_upper = f"CITEXT-Test-{suffix}@example.com"
+    email_lower = f"citext-test-{suffix}@example.com"
     from sqlalchemy.exc import IntegrityError
 
     try:
         with db_engine.begin() as conn:
             conn.execute(
-                text(
-                    "INSERT INTO users (user_id, email, password_hash) "
-                    "VALUES (:u, 'CITEXT-Test@example.com', 'p')"
-                ),
-                {"u": user1},
+                text("INSERT INTO users (user_id, email, password_hash) VALUES (:u, :e, 'p')"),
+                {"u": user1, "e": email_upper},
             )
             with pytest.raises(IntegrityError):
                 conn.execute(
-                    text(
-                        "INSERT INTO users (user_id, email, password_hash) "
-                        "VALUES (:u, 'citext-test@example.com', 'p')"
-                    ),
-                    {"u": user2},
+                    text("INSERT INTO users (user_id, email, password_hash) VALUES (:u, :e, 'p')"),
+                    {"u": user2, "e": email_lower},
                 )
     finally:
         with db_engine.begin() as conn:
-            conn.execute(text("DELETE FROM users WHERE email = 'CITEXT-Test@example.com'"))
+            conn.execute(text("DELETE FROM users WHERE user_id = :u"), {"u": user1})
