@@ -90,6 +90,100 @@ Domain correctness, taste, and architecture are Claude-owned and never
 delegated. Codex transcribes content Claude specifies but does not invent
 domain claims.
 
+## Autonomous mode (load-bearing — overrides default idle behavior)
+
+When the user has stepped away and said something like "run autonomously,
+make the best decisions you can, I won't be around to approve", the
+following discipline applies:
+
+**Default failure mode this prevents.** Without it, Claude tends to:
+- narrate a stall instead of acting (e.g. "impl agent failed, awaiting
+  guidance") and then wait for the user to come back and say "what
+  happened";
+- treat a 5-min lull between background-agent notifications as "nothing
+  to do" and idle;
+- skip the obvious next packet because "the user might want to confirm
+  the queue first".
+
+In autonomous mode, those are all violations. The user's
+pre-authorization is the confirmation; idling instead of advancing the
+build loop wastes the autonomy they granted.
+
+**The sidecar rail.** `scripts/autonomous-sidecar.sh` is the source-of-
+truth state surveyor. It prints `=== PRIMARY ===` / `=== WORKTREES ===`
+/ `=== OPEN PRS ===` / `=== LINEAR ===` / `=== ACTIONS PENDING ===`
+blocks reflecting:
+- Primary main HEAD + uncommitted state + live container roster.
+- Every per-packet worktree's branch + HEAD + ahead/behind/dirty +
+  pushed-state + codex-run slice/review activity.
+- Every open PR's review-gate verdict (CLEAN / BLOCKED /
+  CLEAN-COMMENT-MANUAL) + unresolved thread count.
+- A heuristic "actions pending" list synthesized from the above.
+
+**Cadence.** When entering autonomous mode, invoke the `loop` skill at
+20-min interval with the sidecar as the prompt:
+```
+/loop 20m bash scripts/autonomous-sidecar.sh   # then act on output
+```
+Every 20 min, Claude re-enters its turn with the sidecar output. The
+loop ends when the user explicitly cancels OR all phases are complete.
+
+**Per-tick discipline (the contract that makes autonomy reliable).**
+
+Each sidecar tick, Claude:
+1. Runs the sidecar; reads the output.
+2. For each item in `ACTIONS PENDING`, takes the action **immediately**
+   without asking for confirmation, per the standing autonomy
+   boundary. Concretely:
+   - "PR #N has unresolved codex thread(s) — impl iteration owed" →
+     re-dispatch impl in background with explicit fix instructions per
+     the unresolved threads (read them via `review-gate.sh threads`).
+   - "PR #N has CLEAN-COMMENT-MANUAL" → judge head-pin via the standing
+     framework (clean comment must post-date the head push); if it
+     does, run final-head re-gate + squash-merge.
+   - "PR #N has head-pinned CLEAN" → final-head re-gate + squash-merge.
+   - "Worktree X has committed-but-unpushed commit(s)" → impl notify-
+     done likely never arrived (agent stalled). Run the pre-PR gate
+     directly; if clean, re-dispatch impl to do push + PR + wait.
+   - "Worktree X has pushed commits but no PR" → re-dispatch impl to
+     open the PR + drive the eye-emoji loop.
+   - "No worktrees, no open PRs — between packets" → read VOI-139
+     "Phase queue", spec + dispatch the next packet. Phase boundaries
+     bump to next phase per `spec/PHASE_<n>.md`.
+3. If a background impl agent has been silent for >20 min AND the
+   sidecar shows its worktree has unpushed/unreviewed work, treat the
+   agent as STALLED and re-dispatch with a resume prompt that gives
+   it the exact next step. NEVER wait for the user.
+4. If everything in flight is genuinely blocked on an external clock
+   (codex bot processing, docker build in progress, gh remote latency)
+   and there are no actionable items, end the turn cleanly. The next
+   20-min tick will recheck.
+
+**Failure handling — auto-recover, don't escalate prematurely.**
+- Impl agent stalled (stream watchdog, timeout, completed-with-no-
+  progress) → re-dispatch with state-aware resume prompt.
+- Cloudflare WAF block on a Linear MCP write → retry with prose-only
+  body (no SQL fragments).
+- Docker port collision with primary → ship a worktree
+  `docker-compose.override.yml` with `ports: []` (or `!reset []`).
+- `make migrate` hangs on a stale alembic version → `make reset` and
+  re-apply; live data on primary is dev-only and never load-bearing.
+- Genuinely-blocking unknown (no precedent in this CLAUDE.md, an
+  ambiguous Linear MCP error, an unexpected codex finding requiring
+  a real spec decision) → escalate via VOI-139 "Live status" with
+  the question stated precisely, then continue any non-blocked work.
+
+**End conditions.** Autonomy ends when:
+- Phase 7 closes (the whole project is delivered per `spec/MASTER.md`
+  acceptance), OR
+- A genuine spec-level decision arises that requires the user (see
+  "Genuinely-blocking" above), OR
+- The user re-engages and explicitly says "I'm back" / similar.
+
+VOI-139 "Live status" + "Decisions log" are the audit trail. Every
+sidecar tick that produces an action also produces a VOI-139 update so
+the user can read one issue on return and recover the whole arc.
+
 ## Autonomy boundary
 
 Authorized to run the full build loop unattended: spec authoring; spawning
@@ -185,6 +279,17 @@ Linear is the planning ledger. GitHub is the delivery ledger. Per packet:
     "Outcome over output" doctrine above, output ≠ outcome. Concretely:
     - Bring the primary stack up: `cd <primary> && make up` (idempotent
       if already running; brings any new services online).
+    - **Rebuild the app image** if the packet added/changed any Python
+      source under a baked-in directory (`shared/`, `simulator/`,
+      `archival/`, `feature_store/`, `ml/`, `scoring_service/`,
+      `monitoring/`): `docker compose --profile tools build app`.
+      The `app` image bakes source via Dockerfile `COPY . .`, so a
+      `make up` against a stale image runs OLD code. P1-C surfaced
+      this: post-merge import smoke errored with
+      `ModuleNotFoundError: No module named 'shared'` until the
+      rebuild. (Future improvement: mount `./` as a volume in
+      docker-compose to skip the rebuild; tracked as a deferred small
+      packet.)
     - Apply any migrations the packet introduced (`make migrate`).
     - **Run the packet's live outcome check** — the Linear issue's
       "Acceptance — live-on-main" section names the specific measurable.
