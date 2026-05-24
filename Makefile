@@ -4,10 +4,10 @@ up:
 	docker compose up -d postgres redis && bash scripts/wait_for_postgres.sh
 
 down:
-	docker compose down
+	docker compose --profile tools down
 
 reset:
-	docker compose down -v && $(MAKE) up
+	docker compose --profile tools down -v && $(MAKE) up
 
 migrate:
 	@ [ -f db/alembic.ini ] || { echo "ERROR: db/alembic.ini not found. Run 'make migrate' after P1-B (VOI-142) lands."; exit 1; }
