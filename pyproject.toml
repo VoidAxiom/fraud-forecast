@@ -10,6 +10,10 @@ exclude = [
 module = ["apscheduler.*", "pythonjsonlogger", "sqlalchemy_utils.*"]
 ignore_missing_imports = true
 
+[[tool.mypy.overrides]]
+module = ["alembic", "alembic.*"]
+ignore_missing_imports = true
+
 [tool.ruff]
 line-length = 100
 target-version = "py38"

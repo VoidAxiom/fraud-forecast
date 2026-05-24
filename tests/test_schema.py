@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import datetime as dt
+import contextlib
 import os
 import uuid
+from typing import Generator
 
 import pytest
 import shared.db
@@ -33,6 +35,22 @@ EXPECTED_BASE_TABLES = {
     "order_items_archive",
     "order_events_archive",
 }
+
+
+@contextlib.contextmanager
+def _scoring_env_override(url: str) -> Generator[None, None, None]:
+    """Set DATABASE_URL_SCORING to url and flush engine cache; restore on exit."""
+    prior = os.environ.get("DATABASE_URL_SCORING")
+    os.environ["DATABASE_URL_SCORING"] = url
+    shared.db._engines.pop("scoring", None)
+    try:
+        yield
+    finally:
+        if prior is None:
+            os.environ.pop("DATABASE_URL_SCORING", None)
+        else:
+            os.environ["DATABASE_URL_SCORING"] = prior
+        shared.db._engines.pop("scoring", None)
 
 
 def test_all_20_tables_exist(db_engine: Engine) -> None:
@@ -91,20 +109,12 @@ def test_scoring_user_cannot_delete() -> None:
     from shared.db import get_engine
 
     scoring_url = "postgresql://scoring_user:scoring_dev_password@postgres:5432/fraud_platform"
-    os.environ["DATABASE_URL_SCORING"] = scoring_url
-    if "scoring" in shared.db._engines:
-        del shared.db._engines["scoring"]
-    try:
+    with _scoring_env_override(scoring_url):
         scoring = get_engine("scoring")
         with pytest.raises(ProgrammingError) as exc_info:  # noqa: SIM117
             with scoring.connect() as conn:
                 conn.execute(text("DELETE FROM users WHERE 1 = 0"))
         assert "permission denied" in str(exc_info.value).lower()
-    finally:
-        if "DATABASE_URL_SCORING" in os.environ:
-            del os.environ["DATABASE_URL_SCORING"]
-        if "scoring" in shared.db._engines:
-            del shared.db._engines["scoring"]
 
 
 def test_scoring_user_cannot_update_total_pence() -> None:
@@ -113,30 +123,19 @@ def test_scoring_user_cannot_update_total_pence() -> None:
     from shared.db import get_engine
 
     scoring_url = "postgresql://scoring_user:scoring_dev_password@postgres:5432/fraud_platform"
-    os.environ["DATABASE_URL_SCORING"] = scoring_url
-    if "scoring" in shared.db._engines:
-        del shared.db._engines["scoring"]
-    try:
+    with _scoring_env_override(scoring_url):
         scoring = get_engine("scoring")
         with pytest.raises(ProgrammingError) as exc_info:  # noqa: SIM117
             with scoring.connect() as conn:
                 conn.execute(text("UPDATE orders SET total_pence = 0 WHERE order_id IS NULL"))
         assert "permission denied" in str(exc_info.value).lower()
-    finally:
-        if "DATABASE_URL_SCORING" in os.environ:
-            del os.environ["DATABASE_URL_SCORING"]
-        if "scoring" in shared.db._engines:
-            del shared.db._engines["scoring"]
 
 
 def test_scoring_user_can_update_fraud_columns() -> None:
     from shared.db import get_engine
 
     scoring_url = "postgresql://scoring_user:scoring_dev_password@postgres:5432/fraud_platform"
-    os.environ["DATABASE_URL_SCORING"] = scoring_url
-    if "scoring" in shared.db._engines:
-        del shared.db._engines["scoring"]
-    try:
+    with _scoring_env_override(scoring_url):
         scoring = get_engine("scoring")
         with scoring.connect() as conn:
             result = conn.execute(
@@ -148,11 +147,6 @@ def test_scoring_user_can_update_fraud_columns() -> None:
             """)
             )
             assert result.rowcount == 0
-    finally:
-        if "DATABASE_URL_SCORING" in os.environ:
-            del os.environ["DATABASE_URL_SCORING"]
-        if "scoring" in shared.db._engines:
-            del shared.db._engines["scoring"]
 
 
 def test_pgcrypto_gen_random_uuid(db_engine: Engine) -> None:
