@@ -88,7 +88,9 @@ for p in json.load(sys.stdin):
       last_comment_iso=$(gh api "repos/VoidAxiom/fraud-forecast/issues/$pr_num/comments" \
         --jq '[.[].updated_at] | max // ""' 2>/dev/null)
       if [ -n "$last_comment_iso" ]; then
-        last_comment_epoch=$(date -j -f '%Y-%m-%dT%H:%M:%SZ' "$last_comment_iso" '+%s' 2>/dev/null || echo 0)
+        # NB: -ju forces UTC; the bare -j -f flag chain parses as LOCAL on macOS,
+        # which yielded bogus negative-idle ages once the local clock crossed a TZ boundary.
+        last_comment_epoch=$(date -ju -f '%Y-%m-%dT%H:%M:%SZ' "$last_comment_iso" '+%s' 2>/dev/null || echo 0)
         pr_age=$(( (now - last_comment_epoch) / 60 ))
       fi
       status_out=$(bash "$REPO/scripts/review-gate.sh" status "$pr_num" 2>&1)
