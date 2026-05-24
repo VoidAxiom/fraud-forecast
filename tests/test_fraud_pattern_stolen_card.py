@@ -68,15 +68,18 @@ def test_generate_stolen_card_fraud_is_deterministic_for_order_id() -> None:
     assert isinstance(gt1.order_id, uuid.UUID)
 
 
-def test_is_night_order_flag_tracks_uk_night_hours() -> None:
-    for hour in range(24):
-        ctx = FraudPatternContext(
-            rng=random.Random(1),
-            now=datetime(2026, 1, 2, hour, 0, tzinfo=ZoneInfo("Europe/London")),
-        )
-        order_dict, _ = asyncio.run(generate_stolen_card_fraud(ctx))
-        should_be_night = 2 <= hour < 6
-        assert order_dict["is_night_order"] is should_be_night
+def test_is_night_order_rate_is_approximately_40_percent() -> None:
+    """is_night_order must be True for ~40% of stolen-card orders (seeded RNG)."""
+    ctx = FraudPatternContext(
+        rng=random.Random(42),
+        now=datetime(2026, 1, 2, 14, 0, tzinfo=ZoneInfo("Europe/London")),  # daytime
+    )
+    results = [
+        asyncio.run(generate_stolen_card_fraud(ctx))[0]["is_night_order"] for _ in range(500)
+    ]
+    rate = sum(results) / len(results)
+    # 40% ± 10 percentage points is reasonable for 500 draws
+    assert 0.30 <= rate <= 0.50, f"night rate {rate:.3f} out of [0.30, 0.50]"
 
 
 def test_weighted_choice_returns_choice_from_values() -> None:

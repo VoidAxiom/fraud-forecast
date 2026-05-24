@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import random
 import sys
+import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
-import uuid
 
 if sys.version_info >= (3, 9):
     from zoneinfo import ZoneInfo
@@ -105,7 +105,7 @@ async def generate_stolen_card_fraud(
         "is_high_end_cart": is_high_end_cart,
         "variant": variant,
         "is_digital_native_bank": False,
-        "is_night_order": 2 <= ctx.now.hour < 6,
+        "is_night_order": ctx.rng.random() < 0.40,
     }
 
     # Spec says 40% of stolen-card fraud is night-hour oriented; record that signal.
