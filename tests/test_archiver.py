@@ -166,6 +166,9 @@ def test_archiver_10k_under_30s(db_engine: Engine) -> None:
         assert archived_count + hot_count == 10000, (
             f"fixture rows not conserved: archived={archived_count}, hot={hot_count}"
         )
+        assert archived_count >= 1, (
+            f"no fixture rows were archived: archived={archived_count}, hot={hot_count}"
+        )
         assert elapsed < 30, f"archiver took {elapsed:.1f}s for 10K rows (target <30s)"
     finally:
         with db_engine.begin() as conn:
