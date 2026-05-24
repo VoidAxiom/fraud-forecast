@@ -13,6 +13,10 @@ depends_on = None
 def upgrade() -> None:
     op.execute(
         """
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
+CREATE EXTENSION IF NOT EXISTS citext;
+CREATE EXTENSION IF NOT EXISTS btree_gin;
+
 CREATE TABLE users (
     user_id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     email                CITEXT UNIQUE NOT NULL,
