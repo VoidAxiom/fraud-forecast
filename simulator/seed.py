@@ -10,7 +10,7 @@ import os
 import random
 import time
 import uuid
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
 import numpy as np
@@ -160,7 +160,7 @@ def seed_merchants(scale: float) -> None:
     rng.seed(random.random())
     _merchant_store_allocs.clear()
 
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     target_merchants = max(1, int(5000 * scale))
     target_total_stores = max(1, int(15000 * scale))
 
@@ -307,7 +307,7 @@ def seed_stores(scale: float) -> None:
         _timings["stores"] = (0, time.time() - start)
         return
 
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     conn = _get_conn()
     try:
         merchant_ids = [uuid.UUID(merchant_id) for merchant_id, _ in _merchant_store_allocs]
