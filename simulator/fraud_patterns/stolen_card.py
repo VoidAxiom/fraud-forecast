@@ -7,7 +7,7 @@ import sys
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
-from uuid import uuid4
+import uuid
 
 if sys.version_info >= (3, 9):
     from zoneinfo import ZoneInfo
@@ -111,7 +111,7 @@ async def generate_stolen_card_fraud(
     # Spec says 40% of stolen-card fraud is night-hour oriented; record that signal.
     pattern_notes = f"variant={variant}, avs={avs_result}"
     gt = GroundTruth(
-        order_id=uuid4(),
+        order_id=uuid.UUID(int=ctx.rng.getrandbits(128)),
         is_fraud=True,
         fraud_category="stolen_card",
         pattern_notes=pattern_notes,

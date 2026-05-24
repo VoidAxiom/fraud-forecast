@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import uuid
 import math
 import random
 import sys
@@ -53,6 +54,18 @@ def test_generate_stolen_card_fraud_returns_expected_shape_and_truth() -> None:
     assert gt.is_fraud is True
     assert gt.fraud_category == "stolen_card"
     assert isinstance(gt, GroundTruth)
+
+
+def test_generate_stolen_card_fraud_is_deterministic_for_order_id() -> None:
+    now = datetime(2024, 1, 15, 3, 0, tzinfo=ZoneInfo("Europe/London"))
+    ctx1 = FraudPatternContext(rng=random.Random(42), now=now)
+    ctx2 = FraudPatternContext(rng=random.Random(42), now=now)
+
+    _, gt1 = asyncio.run(generate_stolen_card_fraud(ctx1))
+    _, gt2 = asyncio.run(generate_stolen_card_fraud(ctx2))
+
+    assert gt1.order_id == gt2.order_id
+    assert isinstance(gt1.order_id, uuid.UUID)
 
 
 def test_is_night_order_flag_tracks_uk_night_hours() -> None:
