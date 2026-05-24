@@ -1552,9 +1552,10 @@ def seed_devices(scale: float = 1.0) -> None:
 
         # ---- user IDs from DB ----
         with conn.cursor() as cur:
-            cur.execute("SELECT user_id::text FROM users ORDER BY created_at")
+            cur.execute("SELECT user_id::text, created_at FROM users ORDER BY created_at, user_id")
             rows = cur.fetchall()
             user_ids_db = [row[0] for row in rows]
+            user_created_at: dict[str, datetime] = {str(row[0]): row[1] for row in rows}
 
         if not user_ids_db:
             logger.warning("No users found in DB — skipping user_devices seeding")
@@ -1572,6 +1573,7 @@ def seed_devices(scale: float = 1.0) -> None:
         logger.info("Family device IDs: %s", json.dumps(family_device_ids))
 
         # ---- user_devices ----
+        seen_ud_pairs: set[tuple[str, str]] = set()
         ud_buf = io.StringIO()
         ud_writer = csv.writer(ud_buf)
         ud_count = 0
@@ -1585,8 +1587,18 @@ def seed_devices(scale: float = 1.0) -> None:
             for didx in rng.sample(range(n_device_pool), min(n_devs, n_device_pool)):
                 device_id = device_ids[didx]
                 d_age_days = device_first_seen_days[device_id]
-                link_days = rng.randint(0, min(365, d_age_days)) if d_age_days > 0 else 0
-                first_used = (now - timedelta(days=link_days)).strftime("%Y-%m-%d %H:%M:%S+00")
+                device_first_seen_ts = now - timedelta(days=d_age_days)
+                user_ts = user_created_at[user_id]
+                earliest = max(device_first_seen_ts, user_ts)
+                total_window = int((now - earliest).total_seconds())
+                offset_secs = rng.randint(0, total_window) if total_window > 0 else 0
+                first_used = (earliest + timedelta(seconds=offset_secs)).strftime(
+                    "%Y-%m-%d %H:%M:%S+00"
+                )
+                pair = (user_id, device_id)
+                if pair in seen_ud_pairs:
+                    continue
+                seen_ud_pairs.add(pair)
                 ud_writer.writerow(
                     [
                         user_id,
@@ -1606,8 +1618,18 @@ def seed_devices(scale: float = 1.0) -> None:
             family_users = rng.sample(extra_users, min(n_family_users, len(extra_users)))
             for fu_id in family_users:
                 d_age_days = device_first_seen_days[fdi]
-                link_days = rng.randint(0, min(365, d_age_days)) if d_age_days > 0 else 0
-                first_used = (now - timedelta(days=link_days)).strftime("%Y-%m-%d %H:%M:%S+00")
+                device_first_seen_ts = now - timedelta(days=d_age_days)
+                user_ts = user_created_at.get(fu_id, device_first_seen_ts)
+                earliest = max(device_first_seen_ts, user_ts)
+                total_window = int((now - earliest).total_seconds())
+                offset_secs = rng.randint(0, total_window) if total_window > 0 else 0
+                first_used = (earliest + timedelta(seconds=offset_secs)).strftime(
+                    "%Y-%m-%d %H:%M:%S+00"
+                )
+                pair = (fu_id, fdi)
+                if pair in seen_ud_pairs:
+                    continue
+                seen_ud_pairs.add(pair)
                 ud_writer.writerow(
                     [
                         fu_id,
