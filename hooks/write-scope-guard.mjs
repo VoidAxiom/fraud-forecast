@@ -81,7 +81,13 @@ const CLAUDE_MEMORY_DIR = (() => {
   if (!home) return ''
   let realHome
   try { realHome = fs.realpathSync(home) } catch { return '' }
-  const projectKey = MAIN_PROJECT_ROOT.replace(/\//g, '-')
+  // Match Claude Code's project-key encoding: replace any non-alphanumeric
+  // character with '-'. The harness encodes `/Users/.../fraud_forecast` to
+  // `-Users-...-fraud-forecast` — both `/` AND `_` (and any other non-word
+  // char) collapse to `-`. Earlier versions only replaced `/`, which made
+  // the memory exception silently dead for any project root containing `_`
+  // or `.`. Fix: anchored character-class replacement.
+  const projectKey = MAIN_PROJECT_ROOT.replace(/[^a-zA-Z0-9]/g, '-')
   return path.resolve(realHome, '.claude', 'projects', projectKey, 'memory')
 })()
 
