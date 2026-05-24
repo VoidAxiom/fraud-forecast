@@ -59,7 +59,10 @@ _UK_CHAIN_NAMES = [
     "Costa Coffee",
     "Caffè Nero",
 ]
-_UK_CITY_DATA = {city: (weight, latitude, longitude, county) for city, weight, latitude, longitude, county in UK_CITIES}
+_UK_CITY_DATA = {
+    city: (weight, latitude, longitude, county)
+    for city, weight, latitude, longitude, county in UK_CITIES
+}
 _UK_ISP_PREFIXES: list[str] = [
     "80.0",
     "82.0",
@@ -874,9 +877,7 @@ def seed_menu_items(scale: float) -> None:
             price_tier = _store_price_tiers.get(store_id, 2)
             item_count = per_store[idx]
 
-            templates = CUISINE_MENU_TEMPLATES.get(
-                cuisine, CUISINE_MENU_TEMPLATES["Other"]
-            )
+            templates = CUISINE_MENU_TEMPLATES.get(cuisine, CUISINE_MENU_TEMPLATES["Other"])
             if len(templates) < item_count:
                 sampled_templates = rng.choices(templates, k=item_count)
             else:
@@ -884,9 +885,9 @@ def seed_menu_items(scale: float) -> None:
 
             for item_name, category, is_hot_food in sampled_templates:
                 price_pence = _compute_price(category, cuisine, price_tier)
-                created_at = (
-                    _SEED_BASE_NOW - timedelta(days=rng.randint(300, 700))
-                ).replace(microsecond=0)
+                created_at = (_SEED_BASE_NOW - timedelta(days=rng.randint(300, 700))).replace(
+                    microsecond=0
+                )
                 writer.writerow(
                     [
                         str(uuid.UUID(int=rng.getrandbits(128), version=4)),
@@ -933,7 +934,9 @@ def seed_drivers(scale: float) -> None:
             first_name = fake.first_name()[:100]
             last_name = fake.last_name()[:100]
             domain = rng.choice(_DRIVER_EMAIL_DOMAINS)
-            email_base = f"{first_name.lower()}.{last_name.lower()}".replace("'", "").replace(" ", "")
+            email_base = f"{first_name.lower()}.{last_name.lower()}".replace("'", "").replace(
+                " ", ""
+            )
             email = f"{email_base}{driver_idx}{rng.randint(1, 9999)}@{domain}"
             email = email[:254]  # max email length
             phone = f"+44 7{rng.randint(100000000, 999999999)}"
@@ -1095,7 +1098,9 @@ def _user_worker(
             + last_name.lower().replace("'", "").replace(" ", "")
         )
         email_local = f"{_clean_name}{worker_idx}{_wrng.randint(1, 999999)}"
-        email_local = "".join(c for c in email_local if (c.isascii() and c.isalnum()) or c in "._-")[:100]
+        email_local = "".join(
+            c for c in email_local if (c.isascii() and c.isalnum()) or c in "._-"
+        )[:100]
         email = f"{email_local}@{domain}"
 
         phone = ""
@@ -1105,7 +1110,9 @@ def _user_worker(
             phone_verified_at = ""
 
         age_years = int(max(18, min(75, _wrng.gauss(35, 12))))
-        dob = _date(sim_now.year - age_years, _wrng.randint(1, 12), _wrng.randint(1, 28)).isoformat()
+        dob = _date(
+            sim_now.year - age_years, _wrng.randint(1, 12), _wrng.randint(1, 28)
+        ).isoformat()
 
         account_status = _wrng.choices(account_statuses, weights=account_status_weights, k=1)[0]
         risk_tier = _wrng.choices(risk_tiers, weights=risk_tier_weights, k=1)[0]
@@ -1125,14 +1132,18 @@ def _user_worker(
         prefix = _wrng.choice(uk_isp_prefixes)
         signup_ip = f"{prefix}.{_wrng.randint(0, 255)}.{_wrng.randint(1, 254)}"
 
-        signup_country = "GB" if _wrng.random() < 0.97 else _wrng.choice(["US", "DE", "FR", "IE", "AU"])
+        signup_country = (
+            "GB" if _wrng.random() < 0.97 else _wrng.choice(["US", "DE", "FR", "IE", "AU"])
+        )
         city = _wrng.choices(city_names, weights=city_weights, k=1)[0]
         signup_postcode = random_uk_postcode(city, rng=_wrng)
 
         email_verified_at = ""
         if _wrng.random() < 0.80:
             delta_hours = _wrng.uniform(0, 24)
-            email_verified_at = (created_at + _td(hours=delta_hours)).strftime("%Y-%m-%d %H:%M:%S+00")
+            email_verified_at = (created_at + _td(hours=delta_hours)).strftime(
+                "%Y-%m-%d %H:%M:%S+00"
+            )
 
         user_writer.writerow(
             [
@@ -1216,7 +1227,9 @@ def _user_worker(
             billing_addr_id = ""
 
             if pay_type in ("CREDIT_CARD", "DEBIT_CARD"):
-                issuer_idx = _wrng.choices(range(len(card_issuer_names)), weights=card_issuer_weights, k=1)[0]
+                issuer_idx = _wrng.choices(
+                    range(len(card_issuer_names)), weights=card_issuer_weights, k=1
+                )[0]
                 card_bin = _wrng.choice(card_issuer_bins[issuer_idx])
                 card_last_four = "".join(str(_wrng.randint(0, 9)) for _ in range(4))
                 card_funding = card_issuer_funding[issuer_idx]
@@ -1230,7 +1243,9 @@ def _user_worker(
                     card_brand = "AMEX"
                 else:
                     card_brand = _wrng.choices(card_brands, weights=card_brand_weights, k=1)[0]
-                card_issuer_country = "GB" if _wrng.random() < 0.88 else _wrng.choice(["US", "DE", "FR", "IE"])
+                card_issuer_country = (
+                    "GB" if _wrng.random() < 0.88 else _wrng.choice(["US", "DE", "FR", "IE"])
+                )
                 avs_result = "MATCH" if _wrng.random() < 0.95 else "PARTIAL"
                 cvv_result = "MATCH" if _wrng.random() < 0.99 else "NO_MATCH"
                 exp_month_val = _wrng.randint(1, 12)
@@ -1493,9 +1508,7 @@ def seed_devices(scale: float = 1.0) -> None:
             fp_raw = f"{device_id}:{dtype}:{platform}:{idx}"
             device_first_seen_days[device_id] = first_seen_days
             fingerprint = hashlib.sha256(fp_raw.encode()).hexdigest()
-            first_seen = (now - timedelta(days=first_seen_days)).strftime(
-                "%Y-%m-%d %H:%M:%S+00"
-            )
+            first_seen = (now - timedelta(days=first_seen_days)).strftime("%Y-%m-%d %H:%M:%S+00")
 
             is_rooted = rng.random() < 0.01
             is_emulator = rng.random() < 0.005
@@ -1572,12 +1585,8 @@ def seed_devices(scale: float = 1.0) -> None:
             for didx in rng.sample(range(n_device_pool), min(n_devs, n_device_pool)):
                 device_id = device_ids[didx]
                 d_age_days = device_first_seen_days[device_id]
-                link_days = (
-                    rng.randint(0, min(365, d_age_days)) if d_age_days > 0 else 0
-                )
-                first_used = (now - timedelta(days=link_days)).strftime(
-                    "%Y-%m-%d %H:%M:%S+00"
-                )
+                link_days = rng.randint(0, min(365, d_age_days)) if d_age_days > 0 else 0
+                first_used = (now - timedelta(days=link_days)).strftime("%Y-%m-%d %H:%M:%S+00")
                 ud_writer.writerow(
                     [
                         user_id,
@@ -1598,9 +1607,7 @@ def seed_devices(scale: float = 1.0) -> None:
             for fu_id in family_users:
                 d_age_days = device_first_seen_days[fdi]
                 link_days = rng.randint(0, min(365, d_age_days)) if d_age_days > 0 else 0
-                first_used = (now - timedelta(days=link_days)).strftime(
-                    "%Y-%m-%d %H:%M:%S+00"
-                )
+                first_used = (now - timedelta(days=link_days)).strftime("%Y-%m-%d %H:%M:%S+00")
                 ud_writer.writerow(
                     [
                         fu_id,
