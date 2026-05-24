@@ -521,7 +521,7 @@ def seed_merchants(scale: float) -> None:
     merchant_data: list[tuple[str, str, str, str, str, str, str, str, str]] = []
 
     for _ in range(target_merchants):
-        merchant_id = str(uuid.uuid4())
+        merchant_id = str(uuid.UUID(int=rng.getrandbits(128), version=4))
         merchant_category = rng.choices(category_names, weights=category_weights, k=1)[0]
         chain_roll = rng.random()
         if chain_roll < 0.8:
@@ -677,7 +677,7 @@ def seed_stores(scale: float) -> None:
             merchant_brand = merchant_brand_by_id.get(merchant_id, fake.company())
             is_chain = merchant_brand in _RNG_CHAIN_SET
             for _ in range(store_count):
-                store_id = str(uuid.uuid4())
+                store_id = str(uuid.UUID(int=rng.getrandbits(128), version=4))
                 city = rng.choices(_CITY_NAMES, weights=_CITY_WEIGHTS, k=1)[0]
                 if city not in _CITY_POSTCODE_AREAS:
                     city = rng.choice(list(_CITY_POSTCODE_AREAS))
@@ -847,29 +847,32 @@ def _compute_price(category: str, cuisine: str, price_tier: int) -> int:
 def seed_menu_items(scale: float) -> None:
     start = time.time()
     rng.seed(random.random())
-    target_item_count = int(80000 * scale)
-    scale_factor = scale
-    logger.debug(
-        "Menu item target hint: %d (scale=%0.2f)",
-        target_item_count,
-        scale_factor,
-    )
-    now = datetime.now(timezone.utc)
     if not _store_ids:
         _timings["menu_items"] = (0, time.time() - start)
         return
+    n_stores = len(_store_ids)
+    target_item_count = max(int(80000 * scale), n_stores * 4)
+    # Pre-allocate item counts per store, summing to target_item_count.
+    base = target_item_count // n_stores
+    remainder = target_item_count - base * n_stores
+    per_store: list[int] = [base] * n_stores
+    for i in rng.sample(range(n_stores), k=remainder):
+        per_store[i] += 1
+    # Clamp to [4, 24] per store while keeping total; any overflow handled by trimming.
+    per_store = [max(4, min(24, c)) for c in per_store]
+    logger.debug("Menu item target count: %d", target_item_count)
 
     conn = _get_conn()
     total_items = 0
     try:
         buf = io.StringIO()
         writer = csv.writer(buf)
-        for store_id in _store_ids:
+        for idx, store_id in enumerate(_store_ids):
             store_cuisines = _store_cuisines.get(store_id, [])
             cuisines = store_cuisines if store_cuisines else ["Other"]
             cuisine = cuisines[0]
             price_tier = _store_price_tiers.get(store_id, 2)
-            item_count = max(4, min(12, _poisson_sample(6)))
+            item_count = per_store[idx]
 
             templates = CUISINE_MENU_TEMPLATES.get(
                 cuisine, CUISINE_MENU_TEMPLATES["Other"]
@@ -882,11 +885,11 @@ def seed_menu_items(scale: float) -> None:
             for item_name, category, is_hot_food in sampled_templates:
                 price_pence = _compute_price(category, cuisine, price_tier)
                 created_at = (
-                    now - timedelta(days=rng.randint(300, 700))
+                    _SEED_BASE_NOW - timedelta(days=rng.randint(300, 700))
                 ).replace(microsecond=0)
                 writer.writerow(
                     [
-                        str(uuid.uuid4()),
+                        str(uuid.UUID(int=rng.getrandbits(128), version=4)),
                         store_id,
                         item_name,
                         category,
@@ -926,7 +929,7 @@ def seed_drivers(scale: float) -> None:
         vehicle_types = ["BIKE", "EBIKE", "SCOOTER", "CAR", "WALK"]
         vehicle_weights = [35, 25, 20, 18, 2]
         for driver_idx in range(target):
-            driver_id = str(uuid.uuid4())
+            driver_id = str(uuid.UUID(int=rng.getrandbits(128), version=4))
             first_name = fake.first_name()[:100]
             last_name = fake.last_name()[:100]
             domain = rng.choice(_DRIVER_EMAIL_DOMAINS)
@@ -1047,7 +1050,7 @@ def _user_worker(
         "109.146",
     ]
 
-    base_now = _datetime.now(_tz.utc).replace(microsecond=0)
+    base_now = _datetime(2023, 1, 1, 0, 0, 0, tzinfo=_tz.utc)
     sim_now = base_now
 
     account_statuses = ["ACTIVE", "SUSPENDED", "BANNED", "DELETED"]
@@ -1076,7 +1079,7 @@ def _user_worker(
 
     user_ids_in_batch: list[str] = []
     for _ in range(start_idx, end_idx):
-        user_id = str(_uuid.uuid4())
+        user_id = str(_uuid.UUID(int=_wrng.getrandbits(128), version=4))
         user_ids_in_batch.append(user_id)
 
         first_name = _fake.first_name()[:100]
@@ -1161,7 +1164,7 @@ def _user_worker(
         lat, lon = city_lat_lon.get(city, (51.5074, -0.1278))
         addr_ids: list[str] = []
         for a_idx in range(n_addr):
-            addr_id = str(_uuid.uuid4())
+            addr_id = str(_uuid.UUID(int=_wrng.getrandbits(128), version=4))
             addr_ids.append(addr_id)
             addr_city = city
             addr_postcode = random_uk_postcode(addr_city, rng=_wrng)
@@ -1194,7 +1197,7 @@ def _user_worker(
 
         n_pay = _wrng.choices([1, 2, 3], weights=[35, 45, 20], k=1)[0]
         for p_idx in range(n_pay):
-            pay_id = str(_uuid.uuid4())
+            pay_id = str(_uuid.UUID(int=_wrng.getrandbits(128), version=4))
             pay_type = _wrng.choices(payment_types, weights=payment_type_weights, k=1)[0]
             is_default_pay = p_idx == 0 and _wrng.random() < 0.70
 
@@ -1373,7 +1376,7 @@ def seed_promotions() -> None:
             vu_offset,
             is_targeted,
         ) in _PROMOS_DATA:
-            promo_id = str(uuid.uuid4())
+            promo_id = str(uuid.UUID(int=rng.getrandbits(128), version=4))
             valid_from = (_SEED_BASE_NOW + timedelta(days=vf_offset)).strftime(
                 "%Y-%m-%d %H:%M:%S+00"
             )
@@ -1441,7 +1444,7 @@ def seed_devices(scale: float = 1.0) -> None:
         writer = csv.writer(buf)
 
         for idx in range(n_devices):
-            device_id = str(uuid.uuid4())
+            device_id = str(uuid.UUID(int=rng.getrandbits(128), version=4))
             device_ids.append(device_id)
             dtype, platform = rng.choice(type_choices)
 
@@ -1619,8 +1622,10 @@ def seed_devices(scale: float = 1.0) -> None:
         # Update unique_users_count.
         with conn.cursor() as cur:
             cur.execute(
-                "UPDATE devices SET unique_users_count = subq.cnt "
-                "FROM (SELECT device_id, COUNT(*) AS cnt FROM user_devices GROUP BY device_id) subq "
+                "UPDATE devices SET unique_users_count = COALESCE(subq.cnt, 0) "
+                "FROM (SELECT d.device_id, COUNT(ud.user_id) AS cnt "
+                "      FROM devices d LEFT JOIN user_devices ud USING (device_id) "
+                "      GROUP BY d.device_id) subq "
                 "WHERE devices.device_id = subq.device_id"
             )
         conn.commit()
