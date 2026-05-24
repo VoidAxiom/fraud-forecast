@@ -17,8 +17,13 @@ from typing import Any
 import psycopg2  # type: ignore
 from faker import Faker
 from shared.uk_data import (
+    CARD_BRANDS,
     CUISINE_WEIGHTS,
+    DISPOSABLE_DOMAIN_RATE,
+    DISPOSABLE_EMAIL_DOMAINS,
+    EMAIL_DOMAINS,
     POS_SYSTEMS,
+    UK_CARD_ISSUERS,
     UK_CITIES,
     UK_POSTCODE_AREAS,
     random_uk_postcode,
@@ -53,6 +58,23 @@ _UK_CHAIN_NAMES = [
     "Caffè Nero",
 ]
 _UK_CITY_DATA = {city: (weight, latitude, longitude, county) for city, weight, latitude, longitude, county in UK_CITIES}
+_UK_ISP_PREFIXES: list[str] = [
+    "80.0",
+    "82.0",
+    "86.0",
+    "88.0",
+    "90.0",
+    "92.0",
+    "94.0",
+    "5.64",
+    "5.65",
+    "193.0",
+    "194.0",
+    "195.0",
+    "109.144",
+    "109.145",
+    "109.146",
+]
 _RNG_CHAIN_SET = set(_UK_CHAIN_NAMES)
 _CITY_POSTCODE_AREAS = UK_POSTCODE_AREAS
 _CITY_NAMES = [city for city, *_ in UK_CITIES]
@@ -69,6 +91,12 @@ _merchant_store_allocs: list[tuple[str, int]] = []
 _store_ids: list[str] = []
 _store_cuisines: dict[str, list[str]] = {}
 _store_price_tiers: dict[str, int] = {}
+_user_ids: list[str] = []
+_USER_CARD_BRANDS = CARD_BRANDS
+_USER_DISPOSABLE_DOMAIN_RATE = DISPOSABLE_DOMAIN_RATE
+_USER_DISPOSABLE_EMAIL_DOMAINS = DISPOSABLE_EMAIL_DOMAINS
+_USER_EMAIL_DOMAINS = EMAIL_DOMAINS
+_USER_UK_CARD_ISSUERS = UK_CARD_ISSUERS
 
 CUISINE_MENU_TEMPLATES: dict[str, list[tuple[str, str, bool]]] = {
     "Indian": [
@@ -468,6 +496,11 @@ def _coalesce_database_url(database_url: str | None) -> str:
     if database_url is None:
         return _DEFAULT_SIMULATOR_DB_URL
     return database_url
+
+
+def _random_uk_ip() -> str:
+    prefix = rng.choice(_UK_ISP_PREFIXES)
+    return f"{prefix}.{rng.randint(0, 255)}.{rng.randint(1, 254)}"
 
 
 def seed_merchants(scale: float) -> None:
@@ -940,9 +973,377 @@ def seed_drivers(scale: float) -> None:
         conn.close()
 
 
+def _user_worker(
+    worker_idx: int,
+    start_idx: int,
+    end_idx: int,
+    seed_value: int,
+    db_url: str,
+) -> tuple[int, int, int]:
+    """
+    Worker for parallelised user seeding.
+    Returns (users_written, addresses_written, payments_written).
+    """
+    import csv as _csv
+    import io as _io
+    import random as _random
+    import uuid as _uuid
+    from datetime import date as _date
+    from datetime import datetime as _datetime
+    from datetime import timedelta as _td
+    from datetime import timezone as _tz
+
+    import psycopg2 as _psycopg2
+    from faker import Faker as _Faker
+    from shared.uk_data import (
+        CARD_BRANDS,
+        DISPOSABLE_DOMAIN_RATE,
+        DISPOSABLE_EMAIL_DOMAINS,
+        EMAIL_DOMAINS,
+        UK_CARD_ISSUERS,
+        UK_CITIES,
+        random_uk_postcode,
+    )
+
+    _wrng = _random.Random(seed_value + worker_idx * 1000003)
+    _Faker.seed(seed_value + worker_idx)
+    _fake = _Faker("en_GB")
+
+    city_names = [c[0] for c in UK_CITIES]
+    city_weights = [c[1] for c in UK_CITIES]
+    city_lat_lon = {c[0]: (c[2], c[3]) for c in UK_CITIES}
+
+    email_domains = [d for d, _ in EMAIL_DOMAINS]
+    email_weights = [w for _, w in EMAIL_DOMAINS]
+    disposable_domains = DISPOSABLE_EMAIL_DOMAINS
+
+    card_issuer_names = [i[0] for i in UK_CARD_ISSUERS]
+    card_issuer_bins = [i[1] for i in UK_CARD_ISSUERS]
+    card_issuer_funding = [i[2] for i in UK_CARD_ISSUERS]
+    card_issuer_digital = [i[3] for i in UK_CARD_ISSUERS]
+    card_issuer_weights = [i[4] for i in UK_CARD_ISSUERS]
+    card_brands = [b for b, _ in CARD_BRANDS]
+    card_brand_weights = [w for _, w in CARD_BRANDS]
+
+    uk_isp_prefixes = [
+        "80.0",
+        "82.0",
+        "86.0",
+        "88.0",
+        "90.0",
+        "92.0",
+        "94.0",
+        "5.64",
+        "5.65",
+        "193.0",
+        "194.0",
+        "195.0",
+        "109.144",
+        "109.145",
+        "109.146",
+    ]
+
+    base_now = _datetime.now(_tz.utc).replace(microsecond=0)
+    sim_now = base_now
+
+    account_statuses = ["ACTIVE", "SUSPENDED", "BANNED", "DELETED"]
+    account_status_weights = [95, 3, 1, 1]
+    risk_tiers = ["TRUSTED", "STANDARD", "ELEVATED", "HIGH_RISK"]
+    risk_tier_weights = [10, 80, 8, 2]
+    referral_sources = ["ORGANIC", "GOOGLE_ADS", "FB_ADS", "REFERRAL", "TV", "OTHER"]
+    referral_source_weights = [40, 25, 15, 10, 5, 5]
+    address_types = ["RESIDENTIAL", "COMMERCIAL", "STUDENT_HALL", "HOTEL"]
+    address_type_weights = [85, 8, 5, 2]
+    payment_types = ["CREDIT_CARD", "DEBIT_CARD", "PAYPAL", "APPLE_PAY", "GOOGLE_PAY", "GIFT_CARD"]
+    payment_type_weights = [35, 35, 15, 10, 4, 1]
+
+    password_hash = "$2b$10$SIMULATED_HASH_DO_NOT_USE_IN_PROD"
+
+    user_buf = _io.StringIO()
+    addr_buf = _io.StringIO()
+    pay_buf = _io.StringIO()
+    user_writer = _csv.writer(user_buf)
+    addr_writer = _csv.writer(addr_buf)
+    pay_writer = _csv.writer(pay_buf)
+
+    users_written = 0
+    addresses_written = 0
+    payments_written = 0
+
+    user_ids_in_batch: list[str] = []
+    for _ in range(start_idx, end_idx):
+        user_id = str(_uuid.uuid4())
+        user_ids_in_batch.append(user_id)
+
+        first_name = _fake.first_name()[:100]
+        last_name = _fake.last_name()[:100]
+
+        if _wrng.random() < DISPOSABLE_DOMAIN_RATE:
+            domain = _wrng.choice(disposable_domains)
+        else:
+            domain = _wrng.choices(email_domains, weights=email_weights, k=1)[0]
+        email_local = f"{first_name.lower()}.{last_name.lower()}{_wrng.randint(1, 9999)}"
+        email_local = email_local.replace("'", "").replace(" ", "")[:100]
+        email = f"{email_local}@{domain}"
+
+        phone = ""
+        phone_verified_at = ""
+        if _wrng.random() < 0.90:
+            phone = f"+44 7{_wrng.randint(100000000, 999999999)}"
+            if _wrng.random() < 0.85:
+                phone_verified_at = (
+                    sim_now - _td(days=_wrng.randint(0, 400))
+                ).strftime("%Y-%m-%d %H:%M:%S+00")
+
+        age_years = int(max(18, min(75, _wrng.gauss(35, 12))))
+        dob = _date(sim_now.year - age_years, _wrng.randint(1, 12), _wrng.randint(1, 28)).isoformat()
+
+        account_status = _wrng.choices(account_statuses, weights=account_status_weights, k=1)[0]
+        risk_tier = _wrng.choices(risk_tiers, weights=risk_tier_weights, k=1)[0]
+        referral_source = _wrng.choices(referral_sources, weights=referral_source_weights, k=1)[0]
+        referred_by = ""
+        if _wrng.random() < 0.10 and user_ids_in_batch:
+            referred_by = _wrng.choice(user_ids_in_batch[:-1]) if len(user_ids_in_batch) > 1 else ""
+
+        exp_days = int(min(1500, max(1, _wrng.expovariate(1.0 / 400.0))))
+        created_at = (sim_now - _td(days=exp_days)).replace(microsecond=0)
+        created_at_str = created_at.strftime("%Y-%m-%d %H:%M:%S+00")
+
+        prefix = _wrng.choice(uk_isp_prefixes)
+        signup_ip = f"{prefix}.{_wrng.randint(0, 255)}.{_wrng.randint(1, 254)}"
+
+        signup_country = "GB" if _wrng.random() < 0.97 else _wrng.choice(["US", "DE", "FR", "IE", "AU"])
+        city = _wrng.choices(city_names, weights=city_weights, k=1)[0]
+        signup_postcode = random_uk_postcode(city, rng=_wrng)
+
+        email_verified_at = ""
+        if _wrng.random() < 0.80:
+            delta_hours = _wrng.uniform(0, 24)
+            email_verified_at = (created_at + _td(hours=delta_hours)).strftime("%Y-%m-%d %H:%M:%S+00")
+
+        user_writer.writerow(
+            [
+                user_id,
+                email,
+                email_verified_at,
+                phone,
+                phone_verified_at,
+                password_hash,
+                first_name,
+                last_name,
+                dob,
+                account_status,
+                risk_tier,
+                referral_source,
+                referred_by,
+                signup_ip,
+                "",
+                signup_country,
+                signup_postcode,
+                "",
+                created_at_str,
+                created_at_str,
+                "",
+            ]
+        )
+        users_written += 1
+
+        n_addr = _wrng.choices([1, 2, 3], weights=[60, 30, 10], k=1)[0]
+        lat, lon = city_lat_lon.get(city, (51.5074, -0.1278))
+        addr_ids: list[str] = []
+        for a_idx in range(n_addr):
+            addr_id = str(_uuid.uuid4())
+            addr_ids.append(addr_id)
+            addr_city = city
+            addr_postcode = random_uk_postcode(addr_city, rng=_wrng)
+            addr_lat = lat + _wrng.gauss(0, 0.02)
+            addr_lon = lon + _wrng.gauss(0, 0.02)
+            addr_type = _wrng.choices(address_types, weights=address_type_weights, k=1)[0]
+            is_default = a_idx == 0
+            addr_writer.writerow(
+                [
+                    addr_id,
+                    user_id,
+                    f"{'Home' if a_idx == 0 else 'Address ' + str(a_idx + 1)}",
+                    _fake.street_address()[:255],
+                    "",
+                    addr_city,
+                    "",
+                    addr_postcode,
+                    "GB",
+                    f"{addr_lat:.7f}",
+                    f"{addr_lon:.7f}",
+                    is_default,
+                    addr_type,
+                    "",
+                    "0",
+                    created_at_str,
+                    created_at_str,
+                ]
+            )
+            addresses_written += 1
+
+        n_pay = _wrng.choices([1, 2, 3], weights=[35, 45, 20], k=1)[0]
+        for p_idx in range(n_pay):
+            pay_id = str(_uuid.uuid4())
+            pay_type = _wrng.choices(payment_types, weights=payment_type_weights, k=1)[0]
+            is_default_pay = p_idx == 0 and _wrng.random() < 0.70
+
+            card_bin = ""
+            card_last_four = ""
+            card_brand = ""
+            card_funding = ""
+            card_issuer_country = ""
+            card_issuer_bank = ""
+            is_digital = False
+            avs_result = ""
+            cvv_result = ""
+            exp_month = ""
+            exp_year = ""
+            billing_addr_id = ""
+
+            if pay_type in ("CREDIT_CARD", "DEBIT_CARD"):
+                issuer_idx = _wrng.choices(range(len(card_issuer_names)), weights=card_issuer_weights, k=1)[0]
+                card_bin = _wrng.choice(card_issuer_bins[issuer_idx])
+                card_last_four = "".join(str(_wrng.randint(0, 9)) for _ in range(4))
+                card_funding = card_issuer_funding[issuer_idx]
+                is_digital = card_issuer_digital[issuer_idx]
+                card_issuer_bank = card_issuer_names[issuer_idx]
+                if card_bin.startswith(("4",)):
+                    card_brand = "VISA"
+                elif card_bin.startswith(("5",)):
+                    card_brand = "MASTERCARD"
+                elif card_bin.startswith(("3",)):
+                    card_brand = "AMEX"
+                else:
+                    card_brand = _wrng.choices(card_brands, weights=card_brand_weights, k=1)[0]
+                card_issuer_country = "GB" if _wrng.random() < 0.88 else _wrng.choice(["US", "DE", "FR", "IE"])
+                avs_result = "MATCH" if _wrng.random() < 0.95 else "PARTIAL"
+                cvv_result = "MATCH" if _wrng.random() < 0.99 else "NO_MATCH"
+                exp_month_val = _wrng.randint(1, 12)
+                exp_year_val = sim_now.year + _wrng.randint(1, 4)
+                exp_month = str(exp_month_val)
+                exp_year = str(exp_year_val)
+                if addr_ids and _wrng.random() < 0.90:
+                    billing_addr_id = addr_ids[0]
+
+            pay_writer.writerow(
+                [
+                    pay_id,
+                    user_id,
+                    pay_type,
+                    f"tok_{pay_id[:8]}" if pay_type in ("CREDIT_CARD", "DEBIT_CARD") else "",
+                    card_bin,
+                    card_last_four,
+                    card_brand,
+                    card_funding,
+                    card_issuer_country,
+                    card_issuer_bank,
+                    is_digital,
+                    exp_month,
+                    exp_year,
+                    billing_addr_id,
+                    avs_result,
+                    cvv_result,
+                    is_default_pay,
+                    "ACTIVE",
+                    "0",
+                    "1",
+                    created_at_str,
+                    "",
+                ]
+            )
+            payments_written += 1
+
+    conn = _psycopg2.connect(db_url)
+    conn.autocommit = False
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SET synchronous_commit = OFF;")
+            cur.execute("SET work_mem = '256MB';")
+        conn.commit()
+        user_buf.seek(0)
+        with conn.cursor() as cur:
+            cur.copy_expert(
+                "COPY users (user_id, email, email_verified_at, phone, phone_verified_at, "
+                "password_hash, first_name, last_name, date_of_birth, account_status, risk_tier, "
+                "referral_source, referred_by_user_id, signup_ip, signup_device_id, signup_country, "
+                "signup_postcode, signup_user_agent, created_at, updated_at, last_login_at) "
+                "FROM STDIN WITH (FORMAT csv)",
+                user_buf,
+            )
+        conn.commit()
+        addr_buf.seek(0)
+        with conn.cursor() as cur:
+            cur.copy_expert(
+                "COPY user_addresses (address_id, user_id, label, address_line_1, address_line_2, "
+                "city, county, postcode, country, latitude, longitude, is_default, address_type, "
+                "delivery_instructions, times_used, created_at, first_used_at) "
+                "FROM STDIN WITH (FORMAT csv)",
+                addr_buf,
+            )
+        conn.commit()
+        pay_buf.seek(0)
+        with conn.cursor() as cur:
+            cur.copy_expert(
+                "COPY payment_methods (payment_method_id, user_id, payment_type, card_token, "
+                "card_bin, card_last_four, card_brand, card_funding_type, card_issuer_country, "
+                "card_issuer_bank, is_digital_native_bank, card_exp_month, card_exp_year, "
+                "billing_address_id, avs_result, cvv_result, is_default, status, times_used, "
+                "unique_users_count, created_at, last_used_at) "
+                "FROM STDIN WITH (FORMAT csv)",
+                pay_buf,
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+    return (users_written, addresses_written, payments_written)
+
+
 def seed_users_parallel(scale: float, workers: int) -> None:
-    logger.info("TODO: seed_users_parallel")
-    return
+    global _user_ids
+    start = time.time()
+    total_users = max(1, int(1_000_000 * scale))
+    db_url = _coalesce_database_url(
+        os.getenv("DATABASE_URL") or os.getenv("DATABASE_URL_SIMULATOR")
+    )
+    global_seed = int(random.random() * 1_000_000)
+    chunk_size = (total_users + workers - 1) // workers
+    chunks = []
+    for w in range(workers):
+        s = w * chunk_size
+        e = min(s + chunk_size, total_users)
+        if s < e:
+            chunks.append((w, s, e, global_seed, db_url))
+
+    logger.info("Seeding %d users with %d workers...", total_users, len(chunks))
+    _user_ids = []
+
+    t_users = t_addrs = t_pays = 0
+    if workers > 1:
+        with multiprocessing.Pool(processes=len(chunks)) as pool:
+            results = pool.starmap(_user_worker, chunks)
+    else:
+        results = [_user_worker(*c) for c in chunks]
+
+    for u, a, p in results:
+        t_users += u
+        t_addrs += a
+        t_pays += p
+
+    elapsed = time.time() - start
+    _timings["users"] = (t_users, elapsed)
+    _timings["user_addresses"] = (t_addrs, elapsed)
+    _timings["payment_methods"] = (t_pays, elapsed)
+    logger.info(
+        "Users: %d | Addresses: %d | Payment methods: %d in %.1fs (%.0f/s)",
+        t_users,
+        t_addrs,
+        t_pays,
+        elapsed,
+        t_users / max(elapsed, 0.001),
+    )
 
 
 def seed_promotions() -> None:
