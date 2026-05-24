@@ -19,13 +19,13 @@ redis-cli:
 	docker compose exec redis redis-cli
 
 test:
-	docker compose --profile tools run --rm app pytest tests/ -v
+	docker compose --profile tools run --rm --build app pytest tests/ -v
 
 typecheck:
-	docker compose --profile tools run --rm app mypy --strict shared/
+	docker compose --profile tools run --rm --build app mypy --strict shared/
 
 lint:
-	docker compose --profile tools run --rm app sh -c 'ruff check . && ruff format --check .'
+	docker compose --profile tools run --rm --build app sh -c 'ruff check . && ruff format --check .'
 
 logs:
 	docker compose logs -f --tail=100
