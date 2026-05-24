@@ -7,7 +7,7 @@ import signal
 import threading
 import time
 from contextlib import contextmanager
-from typing import Iterator, cast
+from typing import Iterator, Optional, cast
 
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -149,7 +149,7 @@ def run_once(batch_size: int, max_batches: int) -> int:
     return moved_total
 
 
-def _parse_stop_signal(signum: int, frame: object | None) -> None:
+def _parse_stop_signal(signum: int, frame: Optional[object]) -> None:  # noqa: UP045
     """Signal handler that flags daemon shutdown."""
     _ = signum
     _ = frame
