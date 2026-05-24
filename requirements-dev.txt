@@ -1,0 +1,7 @@
+-r requirements.txt
+pytest~=6.0
+pytest-asyncio~=0.15
+mypy~=0.910
+ruff~=0.1
+types-psycopg2
+types-redis
