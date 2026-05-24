@@ -1,0 +1,75 @@
+services:
+  postgres:
+    image: postgres:12-alpine
+    environment:
+      POSTGRES_DB: fraud_platform
+      POSTGRES_USER: app
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-app_dev_password}
+    ports:
+      - "5432:5432"
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+      - ./infra/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U app -d fraud_platform"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    shm_size: 1gb
+    command: >
+      postgres
+      -c shared_buffers=512MB
+      -c effective_cache_size=2GB
+      -c maintenance_work_mem=256MB
+      -c wal_buffers=16MB
+      -c synchronous_commit=off
+      -c max_wal_size=4GB
+      -c checkpoint_completion_target=0.9
+      -c random_page_cost=1.1
+    networks:
+      - fraud_net
+
+  redis:
+    image: redis:6-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+      - ./infra/redis/redis.conf:/usr/local/etc/redis/redis.conf:ro
+    command: redis-server /usr/local/etc/redis/redis.conf
+    networks:
+      - fraud_net
+
+  archiver:
+    build: ./
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://app:${POSTGRES_PASSWORD:-app_dev_password}@postgres:5432/fraud_platform
+    command: python -m archival.archiver
+    restart: unless-stopped
+    profiles:
+      - tools
+    networks:
+      - fraud_net
+
+  app:
+    build: ./
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://app:${POSTGRES_PASSWORD:-app_dev_password}@postgres:5432/fraud_platform
+    command: ["python", "-c", "print('app image OK')"]
+    networks:
+      - fraud_net
+    profiles:
+      - tools
+
+volumes:
+  pg_data:
+  redis_data:
+
+networks:
+  fraud_net:
