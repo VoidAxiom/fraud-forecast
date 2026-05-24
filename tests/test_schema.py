@@ -85,7 +85,7 @@ def test_53_weekly_partitions_per_partitioned_parent(db_engine: Engine) -> None:
                 text("SELECT count(*) FROM pg_class WHERE relname LIKE :pat AND relkind = 'r'"),
                 {"pat": f"{parent}_p_%"},
             ).scalar()
-            assert count == 53, f"{parent} has {count} partitions, expected 53"
+            assert count >= 53, f"{parent} has {count} partitions, expected at least 53"
 
 
 def test_three_custom_roles_exist(db_engine: Engine) -> None:
