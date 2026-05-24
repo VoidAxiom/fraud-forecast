@@ -132,13 +132,32 @@ blocks reflecting:
   CLEAN-COMMENT-MANUAL) + unresolved thread count.
 - A heuristic "actions pending" list synthesized from the above.
 
-**Cadence.** When entering autonomous mode, invoke the `loop` skill at
-20-min interval with the sidecar as the prompt:
+**Cadence + socket-error retry.** The cron fires in CLUSTERED TRIPLETS
+every 20 min — three ticks at 1-min spacing per cycle:
 ```
-/loop 20m bash scripts/autonomous-sidecar.sh   # then act on output
+cron: 7,8,9,27,28,29,47,48,49 * * * *
 ```
-Every 20 min, Claude re-enters its turn with the sidecar output. The
-loop ends when the user explicitly cancels OR all phases are complete.
+This gives automatic retry on transient API socket errors (a tick that
+dies mid-turn is re-fired ~60s later by the next member of its triplet).
+
+**End-of-turn success marker.** To prevent the second + third ticks of
+a triplet from redoing work the first already did, Claude writes
+`.codex-runs/sidecar-last-success.txt` with the current epoch as the
+LAST tool call of every successful tick. The sidecar checks the marker
+at top: if it's <90s fresh, the sidecar prints `BACKUP-TICK SKIP` and
+exits, and Claude ends its turn immediately.
+
+The flow:
+- Healthy run: tick 1 (e.g. :07) does work + writes marker. Ticks 2/3
+  (:08/:09) see fresh marker, skip. Next cycle at :27.
+- Socket-error run: tick 1 dies mid-turn before writing marker. Tick 2
+  (:08) sees stale-or-missing marker, runs the work as a retry. If
+  tick 2 succeeds, it writes the marker; tick 3 skips. If tick 2 also
+  fails, tick 3 retries again. Total recovery window: 2 min vs the
+  20-min cycle.
+
+The loop ends when the user explicitly cancels OR all phases are
+complete.
 
 **Per-tick discipline (the contract that makes autonomy reliable).**
 

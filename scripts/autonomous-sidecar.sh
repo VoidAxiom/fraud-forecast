@@ -16,6 +16,22 @@ STALL_MIN="${SIDECAR_STALL_MIN:-15}"
 cd "$REPO" 2>/dev/null || { echo "✗ sidecar: cannot cd $REPO" >&2; exit 1; }
 now=$(date +%s)
 
+# ── backup-tick skip ──
+# Cron fires 3 ticks at 1-min spacing per cycle so a socket-error-killed
+# Claude turn gets retried within 60-120s. If the prior tick completed
+# end-to-end (Claude wrote the marker at end-of-turn), this tick is a
+# backup we don't need — exit fast with a SKIP signal so Claude's turn
+# ends immediately.
+MARKER="$REPO/.codex-runs/sidecar-last-success.txt"
+if [ -f "$MARKER" ]; then
+  marker_epoch=$(cat "$MARKER" 2>/dev/null || echo 0)
+  age=$(( now - marker_epoch ))
+  if [ "$age" -lt 90 ]; then
+    echo "BACKUP-TICK SKIP — prior tick succeeded ${age}s ago (<90s); end turn, no work needed"
+    exit 0
+  fi
+fi
+
 # ── tick header + mantra (8 lines) ──
 echo "=== AUTONOMOUS sidecar tick @ $(date +%H:%M:%S) ==="
 echo "mantra: ACT, DON'T NARRATE. Idle = failure to act."
@@ -185,3 +201,6 @@ echo "tick summary: ${actions_now} ACT-NOW, ${verify_owed} VERIFY, ${in_flight} 
 if [ "$actions_now" = "0" ] && [ "$verify_owed" = "0" ]; then
   echo "→ end turn cleanly; next tick in ~20min"
 fi
+echo
+echo "→ Claude: write the success marker as your LAST action so backup ticks skip:"
+echo "    echo $(date +%s) > $MARKER"
