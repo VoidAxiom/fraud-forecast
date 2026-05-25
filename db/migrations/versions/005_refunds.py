@@ -31,6 +31,15 @@ CREATE TABLE refunds (
     op.execute("REVOKE ALL ON refunds FROM simulator_user;")
     op.execute("GRANT INSERT ON refunds TO simulator_user;")
     op.execute("GRANT SELECT ON refunds TO analyst_user;")
+    # Remove duplicate chargeback rows per order, keeping the most recent
+    op.execute("""
+DELETE FROM chargebacks
+WHERE chargeback_id NOT IN (
+    SELECT DISTINCT ON (order_id) chargeback_id
+    FROM chargebacks
+    ORDER BY order_id, received_at DESC
+)
+""")
     op.execute("ALTER TABLE chargebacks ADD CONSTRAINT chargebacks_order_id_unique UNIQUE (order_id);")
 
 
