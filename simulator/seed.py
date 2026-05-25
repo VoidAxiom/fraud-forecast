@@ -1008,9 +1008,9 @@ def _user_worker(
     Worker for parallelised user seeding.
     Returns (users_written, addresses_written, payments_written).
     """
+    import bisect as _bisect
     import csv as _csv
     import io as _io
-    import bisect as _bisect
     import random as _random
     import uuid as _uuid
     from datetime import date as _date
