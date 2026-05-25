@@ -545,8 +545,8 @@ async def main() -> None:
     rng = random.Random()
     pool = await asyncpg.create_pool(
         DATABASE_URL,
-        min_size=2,
-        max_size=100,
+        min_size=5,
+        max_size=20,
     )
     try:
         while True:
