@@ -5,7 +5,7 @@ import datetime
 import logging
 import os
 from dataclasses import dataclass
-from typing import Any, Iterable, cast
+from typing import Any, Dict, Iterable, List, Optional, Set, Tuple, Union, cast
 from uuid import UUID
 
 import asyncpg  # type: ignore[import]
@@ -97,7 +97,7 @@ def _utcnow_ts() -> int:
 
 @dataclass
 class Metrics:
-    errors: list[int]
+    errors: List[int]
 
 
 @dataclass(frozen=True)
@@ -106,10 +106,10 @@ class _OrderContext:
     user_id: UUID
     store_id: UUID
     merchant_id: UUID
-    device_id: UUID | None
+    device_id: Optional[UUID]
     ip_address: str
-    payment_method_id: UUID | None
-    delivery_address_id: UUID | None
+    payment_method_id: Optional[UUID]
+    delivery_address_id: Optional[UUID]
     total_pence: int
     placed_at_ts: int
     user_email_domain: str
@@ -123,7 +123,7 @@ def _coerce_uuid(value: object, field: str) -> UUID:
     raise TypeError(f"expected UUID for {field}, got {type(value)!r}")
 
 
-def _coerce_uuid_or_none(value: object, field: str) -> UUID | None:
+def _coerce_uuid_or_none(value: object, field: str) -> Optional[UUID]:
     if value is None:
         return None
     return _coerce_uuid(value, field)
@@ -164,10 +164,10 @@ def _safe_int(value: object) -> int:
     return 0
 
 
-def _stringify_members(values: object) -> list[str]:
+def _stringify_members(values: object) -> List[str]:
     if not isinstance(values, list):
         return []
-    parsed: list[str] = []
+    parsed: List[str] = []
     for value in values:
         if value is not None:
             parsed.append(str(value))
@@ -191,7 +191,9 @@ def _coerce_int(value: object) -> int:
     return _safe_int(value)
 
 
-def _last_order_age_minutes(last_scores: list[tuple[str, object]], now_ts: int) -> int | None:
+def _last_order_age_minutes(
+    last_scores: List[Tuple[str, object]], now_ts: int
+) -> Optional[int]:
     if not last_scores:
         return None
     _, raw_score = last_scores[0]
@@ -250,7 +252,7 @@ async def _refresh_user_stream_aggregates(
         withscores=True,
     )
     last_order_age_minutes = _last_order_age_minutes(
-        cast(list[tuple[str, object]], previous_orders),
+        cast(List[Tuple[str, object]], previous_orders),
         now_ts,
     )
 
@@ -274,7 +276,7 @@ async def _refresh_user_stream_aggregates(
     unique_payment_methods_24h = _safe_int(results[5] if len(results) > 5 else None)
 
     persist_pipe = redis_conn.pipeline()
-    stream_mapping: dict[str | bytes, bytes | float | int | str] = {
+    stream_mapping: Dict[Union[str, bytes], Union[bytes, float, int, str]] = {
         "orders_1h": orders_1h,
         "orders_24h": orders_24h,
         "spend_1h_pence": spend_1h,
@@ -847,7 +849,7 @@ def _strip_suffix(value: str, suffix: str) -> str:
     return value[: -len(suffix)] if value.endswith(suffix) else value
 
 
-def _extract_entity_from_zset_key(key: str, suffix: str) -> tuple[str, str] | None:
+def _extract_entity_from_zset_key(key: str, suffix: str) -> Optional[Tuple[str, str]]:
     key_prefix = "fs:"
     suffix_token = suffix
     if not key.startswith(key_prefix) or not key.endswith(suffix_token):
@@ -864,7 +866,7 @@ async def trim_order_zsets_once(redis_conn: AsyncRedis[str], metrics: Metrics) -
     del metrics
     now_ts = _utcnow_ts()
     cutoff = str(now_ts - TWENTY_FOUR_HOURS_SECONDS)
-    refresh_required_by_type: dict[str, set[str]] = {
+    refresh_required_by_type: Dict[str, Set[str]] = {
         "user": set(),
         "device": set(),
         "payment": set(),
