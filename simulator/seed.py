@@ -1136,7 +1136,7 @@ def _user_worker(
         created_at = (sim_now - _td(days=exp_days)).replace(microsecond=0)
         referral_pool.append((created_at, user_id))
 
-        if _wrng.random() < 0.10 and len(referral_pool) > 1:
+        if _wrng.random() < 0.20 and len(referral_pool) > 1:
             idx = _wrng.randrange(len(referral_pool) - 1)
             if referral_pool[idx][0] < created_at:
                 referred_by = referral_pool[idx][1]
