@@ -203,20 +203,6 @@ async def generate_chargebacks(pool: Any) -> None:
             ) and (rng.random() < chargeback_probability)
 
             if not should_chargeback_now:
-                if delivered_age_days >= days_to_chargeback and fraud_category != "refund_abuse":
-                    final_outcome = "LEGIT"
-                    await conn.execute(
-                        "UPDATE orders SET fraud_outcome = $1 WHERE order_id = $2 AND placed_at = $3",
-                        final_outcome,
-                        order_id,
-                        order_placed_at,
-                    )
-                    await conn.execute(
-                        "UPDATE orders_archive SET fraud_outcome = $1 WHERE order_id = $2 AND placed_at = $3",
-                        final_outcome,
-                        order_id,
-                        order_placed_at,
-                    )
                 continue
 
             reason_category = "FRAUD" if is_fraud else "OTHER"
