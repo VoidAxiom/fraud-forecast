@@ -113,15 +113,35 @@ def test_delivery_address_stable() -> None:
 
 def test_value_scales_with_items() -> None:
     init_reseller_accounts(rng=random.Random(42))
-    rng: random.Random = random.Random(777)
     ctx_time = datetime(2026, 1, 4, 9, 0, tzinfo=LONDON_TZ_TEST)
-    totals: list[int] = []
+    low_totals: list[int] = []
+    high_totals: list[int] = []
 
-    for _ in range(500):
+    class _FixedItemCountRng(random.Random):
+        def __init__(self, forced_item_count: int) -> None:
+            super().__init__()
+            self._forced_item_count = forced_item_count
+
+        def randint(self, a: int, b: int) -> int:
+            if a == 10 and b == 25:
+                return self._forced_item_count
+            return super().randint(a, b)
+
+    def _sample_total_for_item_count(item_count: int, seed: int) -> int:
+        base_rng = random.Random(seed)
+        rng = _FixedItemCountRng(item_count)
+        rng.setstate(base_rng.getstate())
         order_dict, _ = asyncio.run(
             generate_reseller_fraud(FraudPatternContext(now=ctx_time, rng=rng))
         )
-        totals.append(order_dict["order_total_pence"])
+        assert order_dict["item_count"] == item_count
+        return order_dict["order_total_pence"]
 
-    mean_total = sum(totals) / len(totals)
-    assert 10000 <= mean_total <= 20000
+    for seed in range(100):
+        low_totals.append(_sample_total_for_item_count(item_count=10, seed=seed))
+        high_totals.append(_sample_total_for_item_count(item_count=25, seed=seed))
+
+    assert all(high > low for low, high in zip(low_totals, high_totals))
+    mean_low = sum(low_totals) / len(low_totals)
+    mean_high = sum(high_totals) / len(high_totals)
+    assert mean_high > mean_low

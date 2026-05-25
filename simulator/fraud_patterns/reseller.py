@@ -46,9 +46,11 @@ def init_reseller_accounts(rng: random.Random, n: int = 50) -> None:
         RESELLER_ACCOUNTS.append(_create_account(rng))
 
 
-def _sample_order_total_pence(rng: random.Random, mean_pence: int = 15000, sigma: float = 0.3) -> int:
+def _sample_per_item_price_pence(
+    rng: random.Random, mean_pence: int = 1000, sigma: float = 0.35
+) -> int:
     mu = math.log(mean_pence) - (sigma ** 2) / 2
-    return max(5000, int(rng.lognormvariate(mu, sigma)))
+    return max(200, int(rng.lognormvariate(mu, sigma)))
 
 
 @register("reseller", 0.05)
@@ -62,7 +64,7 @@ async def generate_reseller_fraud(
 
     account = ctx.rng.choice(RESELLER_ACCOUNTS)
     item_count = ctx.rng.randint(10, 25)
-    order_total_pence = _sample_order_total_pence(ctx.rng)
+    order_total_pence = sum(_sample_per_item_price_pence(ctx.rng) for _ in range(item_count))
 
     preferred_stores = account.preferred_store_ids
     if preferred_stores and ctx.rng.random() < 0.70:
