@@ -17,6 +17,7 @@ class ResellerAccount:
     account_id: UUID
     reseller_address: dict[str, Any]
     delivery_address_uuid: UUID
+    device_uuid: UUID
     preferred_store_ids: list[UUID]
 
 
@@ -34,6 +35,7 @@ def _create_account(rng: random.Random) -> ResellerAccount:
             "city": "London",
         },
         delivery_address_uuid=UUID(int=rng.getrandbits(128)),
+        device_uuid=UUID(int=rng.getrandbits(128)),
         preferred_store_ids=[UUID(int=rng.getrandbits(128)) for _ in range(rng.randint(1, 3))],
     )
 
@@ -82,7 +84,7 @@ async def generate_reseller_fraud(
         "delivery_address_id": account.delivery_address_uuid,
         "delivery_address_snapshot": account.reseller_address,
         "payment_method": "RESELLER_OWN_CARD",
-        "device_id": "RESELLER_OWN_DEVICE",
+        "device_id": account.device_uuid,
         "user_id": account.account_id,
         "store_id": store_id,
     }
