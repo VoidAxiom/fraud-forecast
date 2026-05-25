@@ -65,6 +65,7 @@ def test_user_picker_weighted_distribution() -> None:
     picker._very_active_users_cache = very_active_users
     picker._heavy_users_cache = heavy_users
     picker._buffer = buffer_users
+    picker._buffer_set = set(buffer_users)
 
     with patch.object(
         picker,
@@ -114,6 +115,7 @@ def test_user_picker_refresh_threshold() -> None:
         refresh_every=10,
     )
     picker._buffer = buffer_users
+    picker._buffer_set = set(buffer_users)
 
     with patch("simulator.user_picker.asyncio.ensure_future"):
         for _ in range(11):
@@ -129,8 +131,28 @@ def test_user_picker_fallback_when_redis_sets_empty() -> None:
     picker._very_active_users_cache = []
     picker._heavy_users_cache = []
     picker._buffer = buffer_users
+    picker._buffer_set = set(buffer_users)
 
     allowed = set(buffer_users)
     for _ in range(1000):
         picked = picker.pick(rng)
         assert picked in allowed
+
+
+def test_user_picker_redis_tier_validates_buffer() -> None:
+    """Redis tier picks that are not in the active buffer fall through to next tier."""
+    rng = random.Random(0)
+    buffer_users = [uuid.UUID(int=i) for i in range(100)]
+    stale_very_active = [uuid.UUID(int=i + 1000) for i in range(10)]
+
+    picker = WeightedUserPicker(pool=AsyncMock(), redis=_make_empty_redis())
+    picker._buffer = buffer_users
+    picker._buffer_set = set(buffer_users)
+    picker._very_active_users_cache = stale_very_active
+    picker._heavy_users_cache = []
+    allowed = set(buffer_users)
+
+    with patch.object(rng, "random", return_value=0.0):
+        for _ in range(500):
+            picked = picker.pick(rng)
+            assert picked in allowed, f"Picked {picked!r} not in buffer"

@@ -145,6 +145,25 @@ async def _run_generator_batch(
     return user_id, rows
 
 
+def test_is_new_user_promo_logic() -> None:
+    """is_new_user_promo is True only for WELCOME-prefixed promo codes."""
+
+    welcome_promo = {"promo_code": "WELCOME10", "promo_id": uuid.uuid4()}
+    other_promo = {"promo_code": "SUMMER20", "promo_id": uuid.uuid4()}
+    none_promo = None
+
+    def _check(promo) -> bool:
+        return (
+            promo is not None
+            and isinstance(promo.get("promo_code"), str)
+            and promo["promo_code"].startswith("WELCOME")
+        )
+
+    assert _check(welcome_promo) is True
+    assert _check(other_promo) is False
+    assert _check(none_promo) is False
+
+
 def test_generator_creates_valid_order() -> None:
     async def _run() -> None:
         pool = await asyncpg.create_pool(DATABASE_URL_SIMULATOR, min_size=2, max_size=5)

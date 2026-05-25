@@ -21,7 +21,7 @@ from __future__ import annotations
 import asyncio
 import random
 import uuid
-from typing import Any, List
+from typing import Any, List, Optional, Set
 
 import asyncpg
 import redis.asyncio as aioredis
@@ -47,6 +47,7 @@ class WeightedUserPicker:
         self._refresh_every = refresh_every
         self._pick_count = 0
         self._buffer: List[uuid.UUID] = []
+        self._buffer_set: Set[uuid.UUID] = set()
         self._heavy_users_cache: List[uuid.UUID] = []
         self._very_active_users_cache: List[uuid.UUID] = []
 
@@ -66,6 +67,7 @@ class WeightedUserPicker:
         """Refresh the in-memory recency-sorted active user buffer."""
         records = await self._pool.fetch(self._SELECT_ACTIVE_USERS)
         self._buffer = [self._extract_user_id(record) for record in records]
+        self._buffer_set = set(self._buffer)
         await self.refresh_redis_caches()
 
     def pick(self, rng: random.Random) -> uuid.UUID:
@@ -80,7 +82,10 @@ class WeightedUserPicker:
 
         very_active_users = self._very_active_users_cache
         if very_active_users and rng.random() < 0.05:
-            return self._pick_very_active_user(rng, very_active_users)
+            pick = self._pick_very_active_user(rng, very_active_users)
+            if pick is not None:
+                return pick
+            return self._pick_recency_user(rng)
 
         # Split 60/30/10 across recency/heavy/uniform for all remaining draws.
         branch_roll = rng.random()
@@ -90,7 +95,10 @@ class WeightedUserPicker:
         heavy_users = self._heavy_users_cache
         if branch_roll < 0.90:
             if heavy_users:
-                return self._pick_heavy_user(rng, heavy_users)
+                pick = self._pick_heavy_user(rng, heavy_users)
+                if pick is not None:
+                    return pick
+                return self._pick_uniform_user(rng)
             return self._pick_uniform_user(rng)
 
         return self._pick_uniform_user(rng)
@@ -109,15 +117,25 @@ class WeightedUserPicker:
         self,
         rng: random.Random,
         users: List[uuid.UUID],
-    ) -> uuid.UUID:
-        return rng.choice(users)
+    ) -> Optional[uuid.UUID]:
+        if not users:
+            return None
+        user_id = rng.choice(users)
+        if user_id in self._buffer_set:
+            return user_id
+        return None
 
     def _pick_heavy_user(
         self,
         rng: random.Random,
         users: List[uuid.UUID],
-    ) -> uuid.UUID:
-        return rng.choice(users)
+    ) -> Optional[uuid.UUID]:
+        if not users:
+            return None
+        user_id = rng.choice(users)
+        if user_id in self._buffer_set:
+            return user_id
+        return None
 
     def _pick_recency_user(self, rng: random.Random) -> uuid.UUID:
         recency_window = max(1, int(len(self._buffer) * 0.60))

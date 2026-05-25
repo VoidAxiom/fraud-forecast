@@ -775,7 +775,11 @@ def _build_snapshot(
         "promo_id": promo["promo_id"] if promo else None,
         "promo_code": promo["promo_code"] if promo else None,
         "is_first_order_for_user": user_total_orders_lifetime == 0,
-        "is_new_user_promo": promo is not None,
+        "is_new_user_promo": (
+            promo is not None
+            and isinstance(promo.get("promo_code"), str)
+            and promo["promo_code"].startswith("WELCOME")
+        ),
         "payment_method_id": payment_method["payment_method_id"],
         "payment_type": payment_method["payment_type"],
         "card_bin": payment_method.get("card_bin"),
@@ -1092,6 +1096,8 @@ async def create_one_order(
 
         store = pick_store_for_user(rng, user_data, stores_by_city, store_hours_by_store_id)
         order_type = _select_order_type(rng, store)
+        if order_type == "DINE_IN" and not bool(store.get("accepts_in_store")):
+            raise RuntimeError("DINE_IN selected but store does not accept in-store orders")
         order_channel = pick_channel_for_user(rng, user_data["devices"])
 
         device, ip_address = pick_device_and_ip(
