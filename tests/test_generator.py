@@ -7,7 +7,6 @@ import re
 import uuid
 
 import asyncpg
-import pytest
 import redis.asyncio as aioredis
 
 from simulator.generator import (
@@ -28,25 +27,6 @@ DATABASE_URL_SIMULATOR = os.getenv(
 REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379/0")
 
 ORDER_NUMBER_RE = re.compile(r"^JE-\d{4}-[A-Z2-7]{6}$")
-
-_pool: asyncpg.Pool | None = None
-_redis: aioredis.Redis | None = None
-
-
-@pytest.fixture(scope="session")
-def asyncpg_pool() -> asyncpg.Pool:
-    global _pool
-    if _pool is None:
-        _pool = asyncio.run(asyncpg.create_pool(DATABASE_URL_SIMULATOR, min_size=2, max_size=10))
-    return _pool
-
-
-@pytest.fixture(scope="session")
-def redis_client() -> aioredis.Redis:
-    global _redis
-    if _redis is None:
-        _redis = aioredis.from_url(REDIS_URL)
-    return _redis
 
 
 class _FixedUserPicker:
@@ -170,158 +150,191 @@ async def _run_generator_batch(
     return user_id, rows
 
 
-def test_generator_creates_valid_order(asyncpg_pool: asyncpg.Pool, redis_client: aioredis.Redis) -> None:
+def test_generator_creates_valid_order() -> None:
     async def _run() -> None:
-        _, order_rows = await _run_generator_batch(
-            asyncpg_pool,
-            redis_client,
-            sample_size=1,
-            seed=42,
-        )
-
-        assert len(order_rows) == 1
-        order_ids: list[uuid.UUID] = [row["order_id"] for row in order_rows]
-
-        async with asyncpg_pool.acquire() as conn:
-            order_item_count = await conn.fetchval(
-                "SELECT COUNT(*) FROM order_items WHERE order_id = ANY($1::uuid[])",
-                order_ids,
-            )
-            order_event_count = await conn.fetchval(
-                """
-                SELECT COUNT(*)
-                FROM order_events
-                WHERE order_id = ANY($1::uuid[]) AND event_type = 'ORDER_PLACED'
-                """,
-                order_ids,
-            )
-            gt_count = await conn.fetchval(
-                """
-                SELECT COUNT(*)
-                FROM simulator_ground_truth
-                WHERE order_id = ANY($1::uuid[]) AND is_fraud = FALSE
-                """,
-                order_ids,
-            )
-
-        assert order_item_count >= 1
-        assert order_event_count == 1
-        assert gt_count == 1
-
-    asyncio.run(_run())
-
-
-def test_generator_order_number_unique(asyncpg_pool: asyncpg.Pool, redis_client: aioredis.Redis) -> None:
-    async def _run() -> None:
-        _, order_rows = await _run_generator_batch(
-            asyncpg_pool,
-            redis_client,
-            sample_size=100,
-            seed=101,
-        )
-
-        order_numbers = [row["order_number"] for row in order_rows]
-        assert len(order_numbers) == 100
-        assert len(set(order_numbers)) == 100
-        assert all(ORDER_NUMBER_RE.match(order_number) is not None for order_number in order_numbers)
-
-    asyncio.run(_run())
-
-
-def test_generator_order_type_distribution(asyncpg_pool: asyncpg.Pool, redis_client: aioredis.Redis) -> None:
-    async def _run() -> None:
-        _, order_rows = await _run_generator_batch(
-            asyncpg_pool,
-            redis_client,
-            sample_size=100,
-            seed=202,
-        )
-
-        order_types = [row["order_type"] for row in order_rows]
-        delivery_count = order_types.count("DELIVERY")
-        pickup_count = order_types.count("PICKUP")
-        dine_in_count = order_types.count("DINE_IN")
-
-        assert 65 <= delivery_count <= 85
-        assert 10 <= pickup_count <= 30
-        assert 0 <= dine_in_count <= 15
-        assert delivery_count + pickup_count + dine_in_count == 100
-
-    asyncio.run(_run())
-
-
-def test_generator_payment_new_card_distribution(
-    asyncpg_pool: asyncpg.Pool,
-    redis_client: aioredis.Redis,
-) -> None:
-    async def _run() -> None:
-        async with asyncpg_pool.acquire() as conn:
-            user_id = await _pick_user(conn, require_no_prior_orders=False)
-            payment_methods_before = await conn.fetchval(
-                "SELECT COUNT(*) FROM payment_methods WHERE user_id = $1",
-                user_id,
-            )
-
-        _, order_rows = await _run_generator_batch(
-            asyncpg_pool,
-            redis_client,
-            sample_size=100,
-            seed=303,
-            fixed_user_id=user_id,
-        )
-
-        async with asyncpg_pool.acquire() as conn:
-            payment_methods_after = await conn.fetchval(
-                "SELECT COUNT(*) FROM payment_methods WHERE user_id = $1",
-                user_id,
-            )
-
-        new_payment_methods = int(payment_methods_after - payment_methods_before)
-        assert 0 <= new_payment_methods <= 15
-        assert len(order_rows) == 100
-
-    asyncio.run(_run())
-
-
-def test_generator_promo_application(asyncpg_pool: asyncpg.Pool, redis_client: aioredis.Redis) -> None:
-    async def _run() -> None:
-        _, order_rows = await _run_generator_batch(
-            asyncpg_pool,
-            redis_client,
-            sample_size=100,
-            seed=404,
-            require_no_prior_orders=True,
-        )
-
-        welcome_count = sum(1 for row in order_rows if row["promo_code"] == "WELCOME10")
-        assert 0 < welcome_count <= 90
-
-    asyncio.run(_run())
-
-
-def test_generator_notify_fires(asyncpg_pool: asyncpg.Pool, redis_client: aioredis.Redis) -> None:
-    async def _run() -> None:
-        notifier = await asyncpg.connect(DATABASE_URL_SIMULATOR)
-        stores_by_city = await load_stores_by_city(asyncpg_pool)
-        promos = await load_active_promos(asyncpg_pool)
-
-        async with asyncpg_pool.acquire() as conn:
-            user_id = await _pick_user(conn, require_no_prior_orders=False)
-        picker = _FixedUserPicker(user_id)
-
-        event = asyncio.Event()
-        received: list[str] = []
-
-        def on_notify(_conn: asyncpg.Connection, _pid: int, _channel: str, payload: str) -> None:
-            received.append(payload)
-            event.set()
-
-        await notifier.add_listener("order_placed", on_notify)
-
-        rng = random.Random(505)
+        pool = await asyncpg.create_pool(DATABASE_URL_SIMULATOR, min_size=2, max_size=5)
+        redis = aioredis.from_url(REDIS_URL)
         try:
+            _, order_rows = await _run_generator_batch(
+                pool,
+                redis,
+                sample_size=1,
+                seed=42,
+            )
+
+            assert len(order_rows) == 1
+            order_ids: list[uuid.UUID] = [row["order_id"] for row in order_rows]
+
+            async with pool.acquire() as conn:
+                order_item_count = await conn.fetchval(
+                    "SELECT COUNT(*) FROM order_items WHERE order_id = ANY($1::uuid[])",
+                    order_ids,
+                )
+                order_event_count = await conn.fetchval(
+                    """
+                    SELECT COUNT(*)
+                    FROM order_events
+                    WHERE order_id = ANY($1::uuid[]) AND event_type = 'ORDER_PLACED'
+                    """,
+                    order_ids,
+                )
+                gt_count = await conn.fetchval(
+                    """
+                    SELECT COUNT(*)
+                    FROM simulator_ground_truth
+                    WHERE order_id = ANY($1::uuid[]) AND is_fraud = FALSE
+                    """,
+                    order_ids,
+                )
+
+            assert order_item_count >= 1
+            assert order_event_count == 1
+            assert gt_count == 1
+        finally:
+            await redis.close()
+            await pool.close()
+
+    asyncio.run(_run())
+
+
+def test_generator_order_number_unique() -> None:
+    async def _run() -> None:
+        pool = await asyncpg.create_pool(DATABASE_URL_SIMULATOR, min_size=2, max_size=5)
+        redis = aioredis.from_url(REDIS_URL)
+        try:
+            _, order_rows = await _run_generator_batch(
+                pool,
+                redis,
+                sample_size=100,
+                seed=101,
+            )
+
+            order_numbers = [row["order_number"] for row in order_rows]
+            assert len(order_numbers) == 100
+            assert len(set(order_numbers)) == 100
+            assert all(
+                ORDER_NUMBER_RE.match(order_number) is not None
+                for order_number in order_numbers
+            )
+        finally:
+            await redis.close()
+            await pool.close()
+
+    asyncio.run(_run())
+
+
+def test_generator_order_type_distribution() -> None:
+    async def _run() -> None:
+        pool = await asyncpg.create_pool(DATABASE_URL_SIMULATOR, min_size=2, max_size=5)
+        redis = aioredis.from_url(REDIS_URL)
+        try:
+            _, order_rows = await _run_generator_batch(
+                pool,
+                redis,
+                sample_size=100,
+                seed=202,
+            )
+
+            order_types = [row["order_type"] for row in order_rows]
+            delivery_count = order_types.count("DELIVERY")
+            pickup_count = order_types.count("PICKUP")
+            dine_in_count = order_types.count("DINE_IN")
+
+            assert 65 <= delivery_count <= 85
+            assert 10 <= pickup_count <= 30
+            assert 0 <= dine_in_count <= 15
+            assert delivery_count + pickup_count + dine_in_count == 100
+        finally:
+            await redis.close()
+            await pool.close()
+
+    asyncio.run(_run())
+
+
+def test_generator_payment_new_card_distribution() -> None:
+    async def _run() -> None:
+        pool = await asyncpg.create_pool(DATABASE_URL_SIMULATOR, min_size=2, max_size=5)
+        redis = aioredis.from_url(REDIS_URL)
+        try:
+            async with pool.acquire() as conn:
+                user_id = await _pick_user(conn, require_no_prior_orders=False)
+                payment_methods_before = await conn.fetchval(
+                    "SELECT COUNT(*) FROM payment_methods WHERE user_id = $1",
+                    user_id,
+                )
+
+            _, order_rows = await _run_generator_batch(
+                pool,
+                redis,
+                sample_size=100,
+                seed=303,
+                fixed_user_id=user_id,
+            )
+
+            async with pool.acquire() as conn:
+                payment_methods_after = await conn.fetchval(
+                    "SELECT COUNT(*) FROM payment_methods WHERE user_id = $1",
+                    user_id,
+                )
+
+            new_payment_methods = int(payment_methods_after - payment_methods_before)
+            assert 0 <= new_payment_methods <= 15
+            assert len(order_rows) == 100
+        finally:
+            await redis.close()
+            await pool.close()
+
+    asyncio.run(_run())
+
+
+def test_generator_promo_application() -> None:
+    async def _run() -> None:
+        pool = await asyncpg.create_pool(DATABASE_URL_SIMULATOR, min_size=2, max_size=5)
+        redis = aioredis.from_url(REDIS_URL)
+        try:
+            _, order_rows = await _run_generator_batch(
+                pool,
+                redis,
+                sample_size=100,
+                seed=404,
+                require_no_prior_orders=True,
+            )
+
+            welcome_count = sum(1 for row in order_rows if row["promo_code"] == "WELCOME10")
+            assert 0 < welcome_count <= 90
+        finally:
+            await redis.close()
+            await pool.close()
+
+    asyncio.run(_run())
+
+
+def test_generator_notify_fires() -> None:
+    async def _run() -> None:
+        pool = await asyncpg.create_pool(DATABASE_URL_SIMULATOR, min_size=2, max_size=5)
+        redis = aioredis.from_url(REDIS_URL)
+        notifier: asyncpg.Connection | None = None
+        try:
+            notifier = await asyncpg.connect(DATABASE_URL_SIMULATOR)
+            stores_by_city = await load_stores_by_city(pool)
+            promos = await load_active_promos(pool)
+
+            async with pool.acquire() as conn:
+                user_id = await _pick_user(conn, require_no_prior_orders=False)
+            picker = _FixedUserPicker(user_id)
+
+            event = asyncio.Event()
+            received: list[str] = []
+
+            def on_notify(_conn: asyncpg.Connection, _pid: int, _channel: str, payload: str) -> None:
+                received.append(payload)
+                event.set()
+
+            await notifier.add_listener("order_placed", on_notify)
+
+            rng = random.Random(505)
             await create_one_order(
-                pool=asyncpg_pool,
+                pool=pool,
                 user_picker=picker,
                 stores_by_city=stores_by_city,
                 promos=promos,
@@ -330,8 +343,11 @@ def test_generator_notify_fires(asyncpg_pool: asyncpg.Pool, redis_client: aiored
             )
             await asyncio.wait_for(event.wait(), timeout=2.0)
         finally:
-            await notifier.remove_listener("order_placed", on_notify)
-            await notifier.close()
+            if notifier is not None:
+                await notifier.remove_listener("order_placed", on_notify)
+                await notifier.close()
+            await redis.close()
+            await pool.close()
 
         assert received
 

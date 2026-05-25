@@ -11,7 +11,7 @@ import sys
 import time
 import uuid
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal, ROUND_HALF_UP
 if sys.version_info >= (3, 9):
     from zoneinfo import ZoneInfo
@@ -586,6 +586,21 @@ def _distance_km_for_delivery(
     )
 
 
+def _address_to_json(addr: dict[str, Any]) -> dict[str, Any]:
+    """Convert asyncpg-returned address dict to JSON-serializable form."""
+    result: dict[str, Any] = {}
+    for key, val in addr.items():
+        if isinstance(val, uuid.UUID):
+            result[key] = str(val)
+        elif isinstance(val, Decimal):
+            result[key] = float(val)
+        elif isinstance(val, (datetime, date)):
+            result[key] = val.isoformat()
+        else:
+            result[key] = val
+    return result
+
+
 def _build_snapshot(
     user: dict[str, Any],
     store: dict[str, Any],
@@ -661,7 +676,9 @@ def _build_snapshot(
         "store_latitude": float(store["latitude"]),
         "store_longitude": float(store["longitude"]),
         "delivery_address_id": delivery_address["address_id"] if delivery_address else None,
-        "delivery_address_snapshot": json.dumps(delivery_address) if delivery_address else None,
+        "delivery_address_snapshot": json.dumps(_address_to_json(delivery_address))
+        if delivery_address
+        else None,
         "delivery_latitude": (
             float(delivery_address["latitude"])
             if (
@@ -965,11 +982,10 @@ async def insert_order(
 
         await conn.execute(
             """
-            INSERT INTO simulator_ground_truth (order_id, is_fraud, fraud_category, placed_at)
-            VALUES ($1, false, NULL, $2)
+            INSERT INTO simulator_ground_truth (order_id, is_fraud, fraud_category)
+            VALUES ($1, false, NULL)
             """,
             order_id,
-            placed_at,
         )
 
     return order_id, placed_at
