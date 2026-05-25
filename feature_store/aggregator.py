@@ -312,23 +312,20 @@ async def write_device_stream_aggregates(
     write_pipe.zadd(users_zset_key, {str(order.user_id): now_ts})
     if order.payment_method_id is not None:
         write_pipe.zadd(payments_zset_key, {str(order.payment_method_id): now_ts})
-    write_pipe.zcount(orders_zset_key, now_ts - ONE_HOUR_SECONDS, now_ts)
-    orders_1h_index = 3 if order.payment_method_id is None else 4
-    write_pipe.zcount(orders_zset_key, now_ts - TWENTY_FOUR_HOURS_SECONDS, now_ts)
-    orders_24h_index = 4 if order.payment_method_id is None else 5
-    write_pipe.zcount(users_zset_key, now_ts - TWENTY_FOUR_HOURS_SECONDS, now_ts)
-    users_24h_index = 5 if order.payment_method_id is None else 6
-    write_pipe.zcount(payments_zset_key, now_ts - TWENTY_FOUR_HOURS_SECONDS, now_ts)
-    payment_methods_24h_index = 6 if order.payment_method_id is None else 7
+    await write_pipe.execute()
 
-    results = await write_pipe.execute()
-    orders_1h = _coerce_int(results[orders_1h_index] if len(results) > orders_1h_index else None)
-    orders_24h = _coerce_int(results[orders_24h_index] if len(results) > orders_24h_index else None)
-    unique_users_24h = _coerce_int(
-        results[users_24h_index] if len(results) > users_24h_index else None
-    )
+    read_pipe = redis_conn.pipeline()
+    read_pipe.zcount(orders_zset_key, now_ts - ONE_HOUR_SECONDS, now_ts)
+    read_pipe.zcount(orders_zset_key, now_ts - TWENTY_FOUR_HOURS_SECONDS, now_ts)
+    read_pipe.zcount(users_zset_key, now_ts - TWENTY_FOUR_HOURS_SECONDS, now_ts)
+    read_pipe.zcount(payments_zset_key, now_ts - TWENTY_FOUR_HOURS_SECONDS, now_ts)
+
+    results = await read_pipe.execute()
+    orders_1h = _coerce_int(results[0] if len(results) > 0 else None)
+    orders_24h = _coerce_int(results[1] if len(results) > 1 else None)
+    unique_users_24h = _coerce_int(results[2] if len(results) > 2 else None)
     unique_payment_methods_24h = _coerce_int(
-        results[payment_methods_24h_index] if len(results) > payment_methods_24h_index else None,
+        results[3] if len(results) > 3 else None,
     )
 
     persist_pipe = redis_conn.pipeline()
@@ -493,24 +490,19 @@ async def write_ip_stream_aggregates(
     write_pipe.zadd(users_zset_key, {str(order.user_id): now_ts})
     if order.device_id is not None:
         write_pipe.zadd(devices_zset_key, {str(order.device_id): now_ts})
-    write_pipe.zcount(orders_zset_key, now_ts - ONE_HOUR_SECONDS, now_ts)
-    orders_1h_index = 3 if order.device_id is None else 4
-    write_pipe.zcount(orders_zset_key, now_ts - TWENTY_FOUR_HOURS_SECONDS, now_ts)
-    orders_24h_index = 4 if order.device_id is None else 5
-    write_pipe.zcount(users_zset_key, now_ts - TWENTY_FOUR_HOURS_SECONDS, now_ts)
-    users_24h_index = 5 if order.device_id is None else 6
-    write_pipe.zcount(devices_zset_key, now_ts - TWENTY_FOUR_HOURS_SECONDS, now_ts)
-    devices_24h_index = 6 if order.device_id is None else 7
+    await write_pipe.execute()
 
-    results = await write_pipe.execute()
-    orders_1h = _coerce_int(results[orders_1h_index] if len(results) > orders_1h_index else None)
-    orders_24h = _coerce_int(results[orders_24h_index] if len(results) > orders_24h_index else None)
-    unique_users_24h = _coerce_int(
-        results[users_24h_index] if len(results) > users_24h_index else None
-    )
-    unique_devices_24h = _coerce_int(
-        results[devices_24h_index] if len(results) > devices_24h_index else None
-    )
+    read_pipe = redis_conn.pipeline()
+    read_pipe.zcount(orders_zset_key, now_ts - ONE_HOUR_SECONDS, now_ts)
+    read_pipe.zcount(orders_zset_key, now_ts - TWENTY_FOUR_HOURS_SECONDS, now_ts)
+    read_pipe.zcount(users_zset_key, now_ts - TWENTY_FOUR_HOURS_SECONDS, now_ts)
+    read_pipe.zcount(devices_zset_key, now_ts - TWENTY_FOUR_HOURS_SECONDS, now_ts)
+
+    results = await read_pipe.execute()
+    orders_1h = _coerce_int(results[0] if len(results) > 0 else None)
+    orders_24h = _coerce_int(results[1] if len(results) > 1 else None)
+    unique_users_24h = _coerce_int(results[2] if len(results) > 2 else None)
+    unique_devices_24h = _coerce_int(results[3] if len(results) > 3 else None)
 
     persist_pipe = redis_conn.pipeline()
     persist_pipe.hset(
@@ -589,24 +581,19 @@ async def write_store_stream_aggregates(
     write_pipe.zadd(users_zset_key, {str(order.user_id): now_ts})
     if order.payment_method_id is not None:
         write_pipe.zadd(cards_1h_zset_key, {str(order.payment_method_id): now_ts})
-    write_pipe.zcount(orders_zset_key, now_ts - ONE_HOUR_SECONDS, now_ts)
-    orders_1h_index = 3 if order.payment_method_id is None else 4
-    write_pipe.zcount(orders_zset_key, now_ts - TWENTY_FOUR_HOURS_SECONDS, now_ts)
-    orders_24h_index = 4 if order.payment_method_id is None else 5
-    write_pipe.zcount(users_zset_key, now_ts - TWENTY_FOUR_HOURS_SECONDS, now_ts)
-    users_24h_index = 5 if order.payment_method_id is None else 6
-    write_pipe.zcount(cards_1h_zset_key, now_ts - ONE_HOUR_SECONDS, now_ts)
-    cards_1h_index = 6 if order.payment_method_id is None else 7
+    await write_pipe.execute()
 
-    results = await write_pipe.execute()
-    orders_1h = _coerce_int(results[orders_1h_index] if len(results) > orders_1h_index else None)
-    orders_24h = _coerce_int(results[orders_24h_index] if len(results) > orders_24h_index else None)
-    unique_users_24h = _coerce_int(
-        results[users_24h_index] if len(results) > users_24h_index else None
-    )
-    unique_cards_1h = _coerce_int(
-        results[cards_1h_index] if len(results) > cards_1h_index else None
-    )
+    read_pipe = redis_conn.pipeline()
+    read_pipe.zcount(orders_zset_key, now_ts - ONE_HOUR_SECONDS, now_ts)
+    read_pipe.zcount(orders_zset_key, now_ts - TWENTY_FOUR_HOURS_SECONDS, now_ts)
+    read_pipe.zcount(users_zset_key, now_ts - TWENTY_FOUR_HOURS_SECONDS, now_ts)
+    read_pipe.zcount(cards_1h_zset_key, now_ts - ONE_HOUR_SECONDS, now_ts)
+
+    results = await read_pipe.execute()
+    orders_1h = _coerce_int(results[0] if len(results) > 0 else None)
+    orders_24h = _coerce_int(results[1] if len(results) > 1 else None)
+    unique_users_24h = _coerce_int(results[2] if len(results) > 2 else None)
+    unique_cards_1h = _coerce_int(results[3] if len(results) > 3 else None)
 
     persist_pipe = redis_conn.pipeline()
     persist_pipe.hset(
