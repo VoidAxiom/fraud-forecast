@@ -82,22 +82,7 @@ class WeightedUserPicker:
         if very_active_users and rng.random() < 0.05:
             return self._pick_very_active_user(rng, very_active_users)
 
-        # Split across recency/heavy/uniform.
-        if very_active_users:
-            normalized_very_threshold = 0.60 / 0.95
-            normalized_heavy_threshold = (0.60 + 0.30) / 0.95
-            branch_roll = rng.random()
-            if branch_roll < normalized_very_threshold:
-                return self._pick_recency_user(rng)
-
-            if branch_roll < normalized_heavy_threshold:
-                heavy_users = self._heavy_users_cache
-                if heavy_users:
-                    return self._pick_heavy_user(rng, heavy_users)
-                return self._pick_uniform_user(rng)
-
-            return self._pick_uniform_user(rng)
-
+        # Split 60/30/10 across recency/heavy/uniform for all remaining draws.
         branch_roll = rng.random()
         if branch_roll < 0.60:
             return self._pick_recency_user(rng)

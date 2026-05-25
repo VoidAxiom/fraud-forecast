@@ -117,6 +117,22 @@ async def load_stores_by_city(pool: asyncpg.Pool) -> dict[str, list[dict[str, An
     return stores_by_city
 
 
+async def load_store_hours(pool: asyncpg.Pool) -> dict[uuid.UUID, list[dict[str, Any]]]:
+    rows = await pool.fetch(
+        """
+        SELECT store_id, day_of_week, open_time, close_time
+        FROM store_hours
+        ORDER BY store_id, day_of_week, open_time
+        """,
+    )
+
+    store_hours_by_store_id: dict[uuid.UUID, list[dict[str, Any]]] = {}
+    for row in rows:
+        store_id = row["store_id"]
+        store_hours_by_store_id.setdefault(store_id, []).append(dict(row))
+    return store_hours_by_store_id
+
+
 async def load_active_promos(pool: asyncpg.Pool) -> list[dict[str, Any]]:
     rows = await pool.fetch(
         """
@@ -221,6 +237,7 @@ def pick_store_for_user(
     rng: random.Random,
     user_data: dict[str, Any],
     stores_by_city: dict[str, list[dict[str, Any]]],
+    store_hours_by_store_id: dict[uuid.UUID, list[dict[str, Any]]],
 ) -> dict[str, Any]:
     default_lat, default_lon, user_city = _default_user_location(user_data)
 
@@ -248,6 +265,22 @@ def pick_store_for_user(
                 candidate_map[store["store_id"]] = store
 
     stores = list(candidate_map.values())
+    now = datetime.now(tz=LONDON_TZ)
+    weekday = now.isoweekday() % 7
+    current_time = now.time()
+    open_stores = []
+    for store in stores:
+        store_id = store["store_id"]
+        for row in store_hours_by_store_id.get(store_id, []):
+            if (
+                row["day_of_week"] == weekday
+                and row["open_time"] <= current_time <= row["close_time"]
+            ):
+                open_stores.append(store)
+                break
+
+    if open_stores:
+        stores = open_stores
     if not stores:
         raise RuntimeError("no active stores available")
 
@@ -362,7 +395,14 @@ def apply_promo(
     rng: random.Random,
     is_first_order: bool,
     eligible_promos: list[dict[str, Any]],
+    subtotal_pence: int,
 ) -> dict[str, Any] | None:
+    eligible_promos = [
+        promo
+        for promo in eligible_promos
+        if (promo.get("min_order_pence") or 0) <= subtotal_pence
+    ]
+
     if not eligible_promos:
         return None
 
@@ -386,17 +426,18 @@ def _promo_discount(promo: dict[str, Any] | None, subtotal_pence: int) -> int:
 
     discount_amount = promo.get("discount_amount_pence")
     if discount_amount is not None:
-        return int(discount_amount)
+        return min(int(discount_amount), subtotal_pence)
 
     discount_percent = promo.get("discount_percent")
     if discount_percent is None:
         return 0
 
     discount_percent_decimal = Decimal(str(discount_percent))
-    return int((discount_percent_decimal * Decimal(subtotal_pence) / Decimal("100")).quantize(
+    discount = int((discount_percent_decimal * Decimal(subtotal_pence) / Decimal("100")).quantize(
         Decimal("1"),
         rounding=ROUND_HALF_UP,
     ))
+    return min(discount, subtotal_pence)
 
 
 async def _read_user_order_metrics(
@@ -647,6 +688,15 @@ def _build_snapshot(
             is_hot_food=item.is_hot_food,
         )
         for item in cart.items
+    ] + [
+        VATLineItem(
+            line_total_pence=delivery_fee_pence,
+            is_hot_food=True,
+        ),
+        VATLineItem(
+            line_total_pence=service_fee_pence,
+            is_hot_food=True,
+        ),
     ]
     vat_pence = calculate_vat(vat_items)
 
@@ -1022,6 +1072,7 @@ async def create_one_order(
     pool: asyncpg.Pool,
     user_picker: WeightedUserPicker,
     stores_by_city: dict[str, list[dict[str, Any]]],
+    store_hours_by_store_id: dict[uuid.UUID, list[dict[str, Any]]],
     promos: list[dict[str, Any]],
     rng: random.Random,
     scoring_enabled: bool,
@@ -1031,7 +1082,7 @@ async def create_one_order(
         user_data = await load_user_data(conn, user_id)
         user = user_data["user"]
 
-        store = pick_store_for_user(rng, user_data, stores_by_city)
+        store = pick_store_for_user(rng, user_data, stores_by_city, store_hours_by_store_id)
         order_type = _select_order_type(rng, store)
         order_channel = pick_channel_for_user(rng, user_data["devices"])
 
@@ -1081,7 +1132,7 @@ async def create_one_order(
         )
         is_first_order_for_user = user_total_orders_lifetime == 0
 
-        promo = apply_promo(rng, is_first_order_for_user, promos)
+        promo = apply_promo(rng, is_first_order_for_user, promos, cart.subtotal_pence)
         applied_discount = _promo_discount(promo, cart.subtotal_pence)
 
         distance_km = _distance_km_for_delivery(store, delivery_address)
@@ -1148,6 +1199,7 @@ async def main() -> None:
 
     try:
         stores_by_city = await load_stores_by_city(pool)
+        store_hours_by_store_id = await load_store_hours(pool)
         promos = await load_active_promos(pool)
 
         user_picker = WeightedUserPicker(pool, redis_conn)
@@ -1172,7 +1224,7 @@ async def main() -> None:
 
             start = time.perf_counter()
 
-            async with semaphore:
+            try:
                 async with rng_lock:
                     order_rng = random.Random(rng.randint(0, 2 ** 63 - 1))
 
@@ -1181,6 +1233,7 @@ async def main() -> None:
                         pool=pool,
                         user_picker=user_picker,
                         stores_by_city=stores_by_city,
+                        store_hours_by_store_id=store_hours_by_store_id,
                         promos=promos,
                         rng=order_rng,
                         scoring_enabled=config.scoring_enabled,
@@ -1216,8 +1269,11 @@ async def main() -> None:
                         window_orders = 0
                         window_errors = 0
                         window_create_ms = 0.0
+            finally:
+                semaphore.release()
 
         while True:
+            await semaphore.acquire()
             asyncio.create_task(generate_one())
             attempt_counter += 1
 
