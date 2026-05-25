@@ -116,6 +116,21 @@ def build_realistic_cart(
         existing_item.qty += qty
 
     if not main_item_ids:
+        total_qty = sum(item.qty for item in merged_items.values())
+        if total_qty > 8:
+            overflow = total_qty - 8
+            for item_id in reversed(ordered_item_ids):
+                if overflow <= 0:
+                    break
+                current_item = merged_items[item_id]
+                if current_item.qty > 1:
+                    reduction = min(current_item.qty - 1, overflow)
+                    current_item.qty -= reduction
+                    overflow -= reduction
+                elif len(merged_items) > 1:
+                    del merged_items[item_id]
+                    ordered_item_ids.remove(item_id)
+                    overflow -= 1
         return Cart(
             store_id=store_id,
             items=[merged_items[item_id] for item_id in ordered_item_ids],
