@@ -212,6 +212,30 @@ async def write_user_stream_aggregates(
     user_id = str(order.user_id)
     order_id = str(order.order_id)
     store_id = str(order.store_id)
+    orders_zset_key = f"fs:user:{user_id}:orders_zset"
+    stores_zset_key = f"fs:user:{user_id}:stores_zset"
+    payments_zset_key = f"fs:user:{user_id}:payments_zset"
+    spend_zset_key = f"fs:user:{user_id}:spend_zset"
+    write_pipe = redis_conn.pipeline()
+    write_pipe.zadd(orders_zset_key, {order_id: now_ts})
+    if order.store_id is not None:
+        write_pipe.zadd(stores_zset_key, {store_id: now_ts})
+    if order.payment_method_id is not None:
+        write_pipe.zadd(payments_zset_key, {str(order.payment_method_id): now_ts})
+    write_pipe.zadd(spend_zset_key, {f"{order_id}:{order.total_pence}": now_ts})
+    await write_pipe.execute()
+    await _refresh_user_stream_aggregates(
+        redis_conn=redis_conn,
+        user_id=user_id,
+        now_ts=now_ts,
+    )
+
+
+async def _refresh_user_stream_aggregates(
+    redis_conn: AsyncRedis[str],
+    user_id: str,
+    now_ts: int,
+) -> None:
     stream_key = f"fs:user:{user_id}:stream"
     orders_zset_key = f"fs:user:{user_id}:orders_zset"
     stores_zset_key = f"fs:user:{user_id}:stores_zset"
@@ -227,15 +251,6 @@ async def write_user_stream_aggregates(
         cast(list[tuple[str, object]], previous_orders),
         now_ts,
     )
-
-    write_pipe = redis_conn.pipeline()
-    write_pipe.zadd(orders_zset_key, {order_id: now_ts})
-    if order.store_id is not None:
-        write_pipe.zadd(stores_zset_key, {store_id: now_ts})
-    if order.payment_method_id is not None:
-        write_pipe.zadd(payments_zset_key, {str(order.payment_method_id): now_ts})
-    write_pipe.zadd(spend_zset_key, {f"{order_id}:{order.total_pence}": now_ts})
-    await write_pipe.execute()
 
     read_pipe = redis_conn.pipeline()
     read_pipe.zrangebyscore(spend_zset_key, now_ts - ONE_HOUR_SECONDS, now_ts)
@@ -273,6 +288,7 @@ async def write_user_stream_aggregates(
         stream_key,
         mapping=stream_mapping,
     )
+    persist_pipe.expire(stream_key, TWENTY_FOUR_HOURS_SECONDS)
     await persist_pipe.execute()
 
 
@@ -326,6 +342,52 @@ async def write_device_stream_aggregates(
             "updated_at": now_ts,
         },
     )
+    persist_pipe.expire(stream_key, TWENTY_FOUR_HOURS_SECONDS)
+    await persist_pipe.execute()
+
+
+async def _refresh_device_stream_aggregates(
+    redis_conn: AsyncRedis[str],
+    device_id: str,
+    now_ts: int,
+) -> None:
+    stream_key = f"fs:device:{device_id}:stream"
+    orders_zset_key = f"fs:device:{device_id}:orders_zset"
+    users_zset_key = f"fs:device:{device_id}:users_zset"
+    payments_zset_key = f"fs:device:{device_id}:payments_zset"
+
+    read_pipe = redis_conn.pipeline()
+    read_pipe.zcount(orders_zset_key, now_ts - ONE_HOUR_SECONDS, now_ts)
+    orders_1h_index = 0
+    read_pipe.zcount(orders_zset_key, now_ts - TWENTY_FOUR_HOURS_SECONDS, now_ts)
+    orders_24h_index = 1
+    read_pipe.zcount(users_zset_key, now_ts - TWENTY_FOUR_HOURS_SECONDS, now_ts)
+    users_24h_index = 2
+    read_pipe.zcount(payments_zset_key, now_ts - TWENTY_FOUR_HOURS_SECONDS, now_ts)
+    payment_methods_24h_index = 3
+
+    results = await read_pipe.execute()
+    orders_1h = _coerce_int(results[orders_1h_index] if len(results) > orders_1h_index else None)
+    orders_24h = _coerce_int(results[orders_24h_index] if len(results) > orders_24h_index else None)
+    unique_users_24h = _coerce_int(
+        results[users_24h_index] if len(results) > users_24h_index else None
+    )
+    unique_payment_methods_24h = _coerce_int(
+        results[payment_methods_24h_index] if len(results) > payment_methods_24h_index else None,
+    )
+
+    persist_pipe = redis_conn.pipeline()
+    persist_pipe.hset(
+        stream_key,
+        mapping={
+            "orders_1h": orders_1h,
+            "orders_24h": orders_24h,
+            "unique_users_24h": unique_users_24h,
+            "unique_payment_methods_24h": unique_payment_methods_24h,
+            "updated_at": now_ts,
+        },
+    )
+    persist_pipe.expire(stream_key, TWENTY_FOUR_HOURS_SECONDS)
     await persist_pipe.execute()
 
 
@@ -371,6 +433,46 @@ async def write_payment_stream_aggregates(
             "updated_at": now_ts,
         },
     )
+    persist_pipe.expire(stream_key, TWENTY_FOUR_HOURS_SECONDS)
+    await persist_pipe.execute()
+
+
+async def _refresh_payment_stream_aggregates(
+    redis_conn: AsyncRedis[str],
+    payment_id: str,
+    now_ts: int,
+) -> None:
+    stream_key = f"fs:payment:{payment_id}:stream"
+    orders_zset_key = f"fs:payment:{payment_id}:orders_zset"
+    users_zset_key = f"fs:payment:{payment_id}:users_zset"
+
+    read_pipe = redis_conn.pipeline()
+    read_pipe.zcount(orders_zset_key, now_ts - ONE_HOUR_SECONDS, now_ts)
+    orders_1h_index = 0
+    read_pipe.zcount(orders_zset_key, now_ts - TWENTY_FOUR_HOURS_SECONDS, now_ts)
+    orders_24h_index = 1
+    read_pipe.zcount(users_zset_key, now_ts - TWENTY_FOUR_HOURS_SECONDS, now_ts)
+    users_24h_index = 2
+
+    results = await read_pipe.execute()
+    orders_1h = _coerce_int(results[orders_1h_index] if len(results) > orders_1h_index else None)
+    orders_24h = _coerce_int(results[orders_24h_index] if len(results) > orders_24h_index else None)
+    unique_users_24h = _coerce_int(
+        results[users_24h_index] if len(results) > users_24h_index else None
+    )
+
+    persist_pipe = redis_conn.pipeline()
+    persist_pipe.hset(
+        stream_key,
+        mapping={
+            "orders_1h": orders_1h,
+            "orders_24h": orders_24h,
+            "unique_users_24h": unique_users_24h,
+            "decline_count_24h": 0,
+            "updated_at": now_ts,
+        },
+    )
+    persist_pipe.expire(stream_key, TWENTY_FOUR_HOURS_SECONDS)
     await persist_pipe.execute()
 
 
@@ -421,6 +523,52 @@ async def write_ip_stream_aggregates(
             "updated_at": now_ts,
         },
     )
+    persist_pipe.expire(stream_key, TWENTY_FOUR_HOURS_SECONDS)
+    await persist_pipe.execute()
+
+
+async def _refresh_ip_stream_aggregates(
+    redis_conn: AsyncRedis[str],
+    ip_key: str,
+    now_ts: int,
+) -> None:
+    stream_key = f"fs:ip:{ip_key}:stream"
+    orders_zset_key = f"fs:ip:{ip_key}:orders_zset"
+    users_zset_key = f"fs:ip:{ip_key}:users_zset"
+    devices_zset_key = f"fs:ip:{ip_key}:devices_zset"
+
+    read_pipe = redis_conn.pipeline()
+    read_pipe.zcount(orders_zset_key, now_ts - ONE_HOUR_SECONDS, now_ts)
+    orders_1h_index = 0
+    read_pipe.zcount(orders_zset_key, now_ts - TWENTY_FOUR_HOURS_SECONDS, now_ts)
+    orders_24h_index = 1
+    read_pipe.zcount(users_zset_key, now_ts - TWENTY_FOUR_HOURS_SECONDS, now_ts)
+    users_24h_index = 2
+    read_pipe.zcount(devices_zset_key, now_ts - TWENTY_FOUR_HOURS_SECONDS, now_ts)
+    devices_24h_index = 3
+
+    results = await read_pipe.execute()
+    orders_1h = _coerce_int(results[orders_1h_index] if len(results) > orders_1h_index else None)
+    orders_24h = _coerce_int(results[orders_24h_index] if len(results) > orders_24h_index else None)
+    unique_users_24h = _coerce_int(
+        results[users_24h_index] if len(results) > users_24h_index else None
+    )
+    unique_devices_24h = _coerce_int(
+        results[devices_24h_index] if len(results) > devices_24h_index else None
+    )
+
+    persist_pipe = redis_conn.pipeline()
+    persist_pipe.hset(
+        stream_key,
+        mapping={
+            "orders_1h": orders_1h,
+            "orders_24h": orders_24h,
+            "unique_users_24h": unique_users_24h,
+            "unique_devices_24h": unique_devices_24h,
+            "updated_at": now_ts,
+        },
+    )
+    persist_pipe.expire(stream_key, TWENTY_FOUR_HOURS_SECONDS)
     await persist_pipe.execute()
 
 
@@ -471,6 +619,52 @@ async def write_store_stream_aggregates(
             "updated_at": now_ts,
         },
     )
+    persist_pipe.expire(stream_key, TWENTY_FOUR_HOURS_SECONDS)
+    await persist_pipe.execute()
+
+
+async def _refresh_store_stream_aggregates(
+    redis_conn: AsyncRedis[str],
+    store_id: str,
+    now_ts: int,
+) -> None:
+    stream_key = f"fs:store:{store_id}:stream"
+    orders_zset_key = f"fs:store:{store_id}:orders_zset"
+    users_zset_key = f"fs:store:{store_id}:users_zset"
+    cards_1h_zset_key = f"fs:store:{store_id}:cards_1h_zset"
+
+    read_pipe = redis_conn.pipeline()
+    read_pipe.zcount(orders_zset_key, now_ts - ONE_HOUR_SECONDS, now_ts)
+    orders_1h_index = 0
+    read_pipe.zcount(orders_zset_key, now_ts - TWENTY_FOUR_HOURS_SECONDS, now_ts)
+    orders_24h_index = 1
+    read_pipe.zcount(users_zset_key, now_ts - TWENTY_FOUR_HOURS_SECONDS, now_ts)
+    users_24h_index = 2
+    read_pipe.zcount(cards_1h_zset_key, now_ts - ONE_HOUR_SECONDS, now_ts)
+    cards_1h_index = 3
+
+    results = await read_pipe.execute()
+    orders_1h = _coerce_int(results[orders_1h_index] if len(results) > orders_1h_index else None)
+    orders_24h = _coerce_int(results[orders_24h_index] if len(results) > orders_24h_index else None)
+    unique_users_24h = _coerce_int(
+        results[users_24h_index] if len(results) > users_24h_index else None
+    )
+    unique_cards_1h = _coerce_int(
+        results[cards_1h_index] if len(results) > cards_1h_index else None
+    )
+
+    persist_pipe = redis_conn.pipeline()
+    persist_pipe.hset(
+        stream_key,
+        mapping={
+            "orders_1h": orders_1h,
+            "orders_24h": orders_24h,
+            "unique_users_24h": unique_users_24h,
+            "unique_cards_1h": unique_cards_1h,
+            "updated_at": now_ts,
+        },
+    )
+    persist_pipe.expire(stream_key, TWENTY_FOUR_HOURS_SECONDS)
     await persist_pipe.execute()
 
 
@@ -511,6 +705,41 @@ async def write_address_stream_aggregates(
             "updated_at": now_ts,
         },
     )
+    persist_pipe.expire(stream_key, TWENTY_FOUR_HOURS_SECONDS)
+    await persist_pipe.execute()
+
+
+async def _refresh_address_stream_aggregates(
+    redis_conn: AsyncRedis[str],
+    address_id: str,
+    now_ts: int,
+) -> None:
+    stream_key = f"fs:address:{address_id}:stream"
+    orders_zset_key = f"fs:address:{address_id}:orders_zset"
+    users_zset_key = f"fs:address:{address_id}:users_zset"
+
+    read_pipe = redis_conn.pipeline()
+    read_pipe.zcount(orders_zset_key, now_ts - TWENTY_FOUR_HOURS_SECONDS, now_ts)
+    orders_24h_index = 0
+    read_pipe.zcount(users_zset_key, now_ts - TWENTY_FOUR_HOURS_SECONDS, now_ts)
+    users_24h_index = 1
+
+    results = await read_pipe.execute()
+    orders_24h = _coerce_int(results[orders_24h_index] if len(results) > orders_24h_index else None)
+    unique_users_24h = _coerce_int(
+        results[users_24h_index] if len(results) > users_24h_index else None
+    )
+
+    persist_pipe = redis_conn.pipeline()
+    persist_pipe.hset(
+        stream_key,
+        mapping={
+            "orders_24h": orders_24h,
+            "unique_users_24h": unique_users_24h,
+            "updated_at": now_ts,
+        },
+    )
+    persist_pipe.expire(stream_key, TWENTY_FOUR_HOURS_SECONDS)
     await persist_pipe.execute()
 
 
@@ -603,9 +832,39 @@ async def run_backup_poll_loop(
         await asyncio.sleep(BACKUP_POLL_SECONDS)
 
 
+def _strip_prefix(value: str, prefix: str) -> str:
+    return value[len(prefix) :] if value.startswith(prefix) else value
+
+
+def _strip_suffix(value: str, suffix: str) -> str:
+    return value[: -len(suffix)] if value.endswith(suffix) else value
+
+
+def _extract_entity_from_zset_key(key: str, suffix: str) -> tuple[str, str] | None:
+    key_prefix = "fs:"
+    suffix_token = f":{suffix}"
+    if not key.startswith(key_prefix) or not key.endswith(suffix_token):
+        return None
+    entity_fragment = _strip_prefix(key, key_prefix)
+    entity_fragment = _strip_suffix(entity_fragment, suffix_token)
+    entity_type, _, entity_id = entity_fragment.partition(":")
+    if not entity_id:
+        return None
+    return entity_type, entity_id
+
+
 async def trim_order_zsets_once(redis_conn: AsyncRedis[str], metrics: Metrics) -> None:
     del metrics
-    cutoff = str(_utcnow_ts() - TWENTY_FOUR_HOURS_SECONDS)
+    now_ts = _utcnow_ts()
+    cutoff = str(now_ts - TWENTY_FOUR_HOURS_SECONDS)
+    refresh_required_by_type: dict[str, set[str]] = {
+        "user": set(),
+        "device": set(),
+        "payment": set(),
+        "ip": set(),
+        "store": set(),
+        "address": set(),
+    }
 
     for suffix in CLEANUP_ZSET_SUFFIXES:
         cursor = 0
@@ -615,9 +874,56 @@ async def trim_order_zsets_once(redis_conn: AsyncRedis[str], metrics: Metrics) -
                 pipe = redis_conn.pipeline()
                 for key in keys:
                     pipe.zremrangebyscore(key, "-inf", cutoff)
-                await pipe.execute()
+                trimmed_counts = await pipe.execute()
+
+                for key, trimmed_count in zip(keys, trimmed_counts):
+                    if _safe_int(trimmed_count) <= 0:
+                        continue
+                    entity = _extract_entity_from_zset_key(key=key, suffix=suffix)
+                    if entity is None:
+                        continue
+                    entity_type, entity_id = entity
+                    if entity_type in refresh_required_by_type:
+                        refresh_required_by_type[entity_type].add(entity_id)
             if cursor == 0:
                 break
+
+    for user_id in refresh_required_by_type["user"]:
+        await _refresh_user_stream_aggregates(
+            redis_conn=redis_conn,
+            user_id=user_id,
+            now_ts=now_ts,
+        )
+    for device_id in refresh_required_by_type["device"]:
+        await _refresh_device_stream_aggregates(
+            redis_conn=redis_conn,
+            device_id=device_id,
+            now_ts=now_ts,
+        )
+    for payment_id in refresh_required_by_type["payment"]:
+        await _refresh_payment_stream_aggregates(
+            redis_conn=redis_conn,
+            payment_id=payment_id,
+            now_ts=now_ts,
+        )
+    for ip_key in refresh_required_by_type["ip"]:
+        await _refresh_ip_stream_aggregates(
+            redis_conn=redis_conn,
+            ip_key=ip_key,
+            now_ts=now_ts,
+        )
+    for store_id in refresh_required_by_type["store"]:
+        await _refresh_store_stream_aggregates(
+            redis_conn=redis_conn,
+            store_id=store_id,
+            now_ts=now_ts,
+        )
+    for address_id in refresh_required_by_type["address"]:
+        await _refresh_address_stream_aggregates(
+            redis_conn=redis_conn,
+            address_id=address_id,
+            now_ts=now_ts,
+        )
 
 
 async def run_cleanup_loop(redis_conn: AsyncRedis[str], metrics: Metrics) -> None:

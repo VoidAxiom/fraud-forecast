@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import datetime
-from typing import Any, Dict, TypedDict, cast
+from typing import Any, Callable, Dict, Awaitable, TypedDict, cast
 from uuid import UUID, uuid4
 from unittest.mock import AsyncMock, patch
 
@@ -39,6 +39,7 @@ class _FakePipeline:
         self.calls: list[tuple[str, str, object]] = []
         self.zadd_calls: list[tuple[str, dict[str, object]]] = []
         self.hset_calls: list[tuple[str, dict[str, object]]] = []
+        self.expire_calls: list[tuple[str, int]] = []
         self.zrangebyscore_calls: list[tuple[str, int]] = []
         self.zcount_calls: list[tuple[str, int]] = []
         self.zremrangebyscore_calls: list[tuple[str, object, object]] = []
@@ -68,6 +69,11 @@ class _FakePipeline:
     def hset(self, key: str, mapping: dict[str, object]) -> _FakePipeline:
         self.calls.append(("hset", key, mapping))
         self.hset_calls.append((key, mapping))
+        return self
+
+    def expire(self, key: str, seconds: int) -> _FakePipeline:
+        self.calls.append(("expire", key, seconds))
+        self.expire_calls.append((key, seconds))
         return self
 
     async def execute(self) -> list[object]:
@@ -172,6 +178,14 @@ def _build_order_kwargs() -> _OrderKwargs:
     }
 
 
+def _build_full_order_kwargs() -> _OrderKwargs:
+    values = _build_order_kwargs()
+    values["device_id"] = uuid4()
+    values["payment_method_id"] = uuid4()
+    values["delivery_address_id"] = uuid4()
+    return values
+
+
 @pytest.mark.asyncio
 @patch("feature_store.aggregator.write_device_stream_aggregates", new=AsyncMock())
 @patch("feature_store.aggregator.write_payment_stream_aggregates", new=AsyncMock())
@@ -253,6 +267,10 @@ async def test_write_user_stream_aggregates_parses_spend_members() -> None:
     assert user_mapping["spend_1h_pence"] == 150
     assert user_mapping["spend_24h_pence"] == 340
     assert "last_order_age_minutes" not in user_mapping
+    user_stream_key = f"fs:user:{row_values['user_id']}:stream"
+    assert fake_redis.pipeline_calls[2].expire_calls == [
+        (user_stream_key, aggregator.TWENTY_FOUR_HOURS_SECONDS),
+    ]
 
 
 @pytest.mark.asyncio
@@ -289,6 +307,10 @@ async def test_write_user_stream_aggregates_uses_previous_order_age() -> None:
     user_mapping = user_hset_calls[0][1]
     assert user_mapping["last_order_age_minutes"] == 10
     assert fake_redis.zrevrange_calls[0][0] == f"fs:user:{row_values['user_id']}:orders_zset"
+    user_stream_key = f"fs:user:{row_values['user_id']}:stream"
+    assert fake_redis.pipeline_calls[2].expire_calls == [
+        (user_stream_key, aggregator.TWENTY_FOUR_HOURS_SECONDS),
+    ]
 
 
 @pytest.mark.asyncio
@@ -377,6 +399,160 @@ async def test_mark_order_processed_buckets_keys_and_ttl() -> None:
 
     assert fake_redis.sadd_calls == [(expected_bucket, order_id)]
     assert fake_redis.expire_calls == [(expected_bucket, aggregator.PROCESSED_ORDERS_TTL_SECONDS)]
+
+
+@pytest.mark.parametrize(
+    "writer,stream_key_fn,write_pipeline_results,read_results",
+    [
+        (
+            aggregator.write_user_stream_aggregates,
+            lambda kwargs: f"fs:user:{kwargs['user_id']}:stream",
+            [None, None, None, None],
+            [
+                ["a:120", "b:30", "bad"],
+                ["x:300", "y:40", "z:abc"],
+                2,
+                3,
+                2,
+                0,
+            ],
+        ),
+        (
+            aggregator.write_device_stream_aggregates,
+            lambda kwargs: f"fs:device:{kwargs['device_id']}:stream",
+            [None, None, None, None, None, None, None],
+            [2, 3, 4, 4],
+        ),
+        (
+            aggregator.write_payment_stream_aggregates,
+            lambda kwargs: f"fs:payment:{kwargs['payment_method_id']}:stream",
+            [None, None, None, None, None],
+            [2, 3, 4],
+        ),
+        (
+            aggregator.write_ip_stream_aggregates,
+            lambda kwargs: f"fs:ip:{kwargs['ip_address']}:stream",
+            [None, None, None, None, None, None, None],
+            [2, 3, 4, 4],
+        ),
+        (
+            aggregator.write_store_stream_aggregates,
+            lambda kwargs: f"fs:store:{kwargs['store_id']}:stream",
+            [None, None, None, None, None, None, None],
+            [2, 3, 4, 4],
+        ),
+        (
+            aggregator.write_address_stream_aggregates,
+            lambda kwargs: f"fs:address:{kwargs['delivery_address_id']}:stream",
+            [None, None, None, None],
+            [2, 3],
+        ),
+    ],
+)
+@pytest.mark.asyncio
+async def test_write_stream_aggregates_set_stream_ttl(
+    writer: Callable[..., Awaitable[None]],
+    stream_key_fn: Callable[[_OrderKwargs], str],
+    write_pipeline_results: list[object],
+    read_results: list[object],
+) -> None:
+    row_values = _build_full_order_kwargs()
+    row = _build_order_row(**row_values)
+    order = aggregator._coerce_order_context(row)
+
+    fake_redis = _FakeRedis(
+        pipeline_results=[
+            write_pipeline_results,
+            read_results,
+            [1],
+        ],
+    )
+
+    await writer(redis_conn=cast(AsyncRedis[str], fake_redis), order=order, now_ts=1_700_000_000)
+
+    stream_key = stream_key_fn(row_values)
+    assert fake_redis.pipeline_calls[2].expire_calls == [
+        (stream_key, aggregator.TWENTY_FOUR_HOURS_SECONDS),
+    ]
+
+
+@patch("feature_store.aggregator._utcnow_ts", return_value=1_700_000_000)
+@patch("feature_store.aggregator._refresh_user_stream_aggregates", new=AsyncMock())
+@patch("feature_store.aggregator._refresh_device_stream_aggregates", new=AsyncMock())
+@patch("feature_store.aggregator._refresh_payment_stream_aggregates", new=AsyncMock())
+@patch("feature_store.aggregator._refresh_ip_stream_aggregates", new=AsyncMock())
+@patch("feature_store.aggregator._refresh_store_stream_aggregates", new=AsyncMock())
+@patch("feature_store.aggregator._refresh_address_stream_aggregates", new=AsyncMock())
+@pytest.mark.asyncio
+async def test_trim_order_zsets_once_refreshes_trimmed_stream_entities(
+    _refresh_address_stream_aggregates: AsyncMock,
+    _refresh_store_stream_aggregates: AsyncMock,
+    _refresh_ip_stream_aggregates: AsyncMock,
+    _refresh_payment_stream_aggregates: AsyncMock,
+    _refresh_device_stream_aggregates: AsyncMock,
+    _refresh_user_stream_aggregates: AsyncMock,
+    _utcnow_ts: AsyncMock,
+) -> None:
+    del _utcnow_ts
+
+    fake_redis = _FakeRedis(
+        pipeline_results=[
+            [1],
+            [1],
+            [1],
+            [1],
+            [1],
+            [1],
+            [1],
+            [1],
+        ],
+        scan_results=[
+            (1, ["fs:user:111:orders_zset"]),
+            (0, ["fs:user:111:spend_zset"]),
+            (0, ["fs:store:444:stores_zset"]),
+            (0, ["fs:payment:333:payments_zset"]),
+            (1, ["fs:device:222:users_zset"]),
+            (0, ["fs:address:999:users_zset"]),
+            (0, ["fs:ip:2001:db8::1:devices_zset"]),
+            (0, ["fs:store:444:cards_1h_zset"]),
+        ],
+    )
+
+    await aggregator.trim_order_zsets_once(
+        redis_conn=cast(AsyncRedis[str], fake_redis),
+        metrics=aggregator.Metrics(errors=[0]),
+    )
+
+    assert _refresh_user_stream_aggregates.await_count == 1
+    assert _refresh_user_stream_aggregates.await_args is not None
+    assert _refresh_user_stream_aggregates.await_args.kwargs["user_id"] == "111"
+
+    assert _refresh_device_stream_aggregates.await_count == 1
+    assert _refresh_device_stream_aggregates.await_args is not None
+    assert _refresh_device_stream_aggregates.await_args.kwargs["device_id"] == "222"
+
+    assert _refresh_payment_stream_aggregates.await_count == 1
+    assert _refresh_payment_stream_aggregates.await_args is not None
+    assert _refresh_payment_stream_aggregates.await_args.kwargs["payment_id"] == "333"
+
+    assert _refresh_ip_stream_aggregates.await_count == 1
+    assert _refresh_ip_stream_aggregates.await_args is not None
+    assert _refresh_ip_stream_aggregates.await_args.kwargs["ip_key"] == "2001:db8::1"
+
+    assert _refresh_store_stream_aggregates.await_count == 1
+    assert _refresh_store_stream_aggregates.await_args is not None
+    assert _refresh_store_stream_aggregates.await_args.kwargs["store_id"] == "444"
+
+    assert _refresh_address_stream_aggregates.await_count == 1
+    assert _refresh_address_stream_aggregates.await_args is not None
+    assert _refresh_address_stream_aggregates.await_args.kwargs["address_id"] == "999"
+
+    assert _refresh_user_stream_aggregates.await_args.kwargs["now_ts"] == 1_700_000_000
+    assert _refresh_device_stream_aggregates.await_args.kwargs["now_ts"] == 1_700_000_000
+    assert _refresh_payment_stream_aggregates.await_args.kwargs["now_ts"] == 1_700_000_000
+    assert _refresh_ip_stream_aggregates.await_args.kwargs["now_ts"] == 1_700_000_000
+    assert _refresh_store_stream_aggregates.await_args.kwargs["now_ts"] == 1_700_000_000
+    assert _refresh_address_stream_aggregates.await_args.kwargs["now_ts"] == 1_700_000_000
 
 
 @pytest.mark.asyncio
