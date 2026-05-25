@@ -631,27 +631,33 @@ def _run_scheduler(
     scheduler.start()
 
 
-def main() -> None:
-    """CLI entry point for one-shot or scheduled batch compute."""
-    _configure_logging()
-
+def _build_parser() -> argparse.ArgumentParser:
+    """Build CLI argument parser for batch compute."""
     parser = argparse.ArgumentParser()
     parser.add_argument(
+        "--daemon",
         "--serve",
         action="store_true",
-        help="Run continuously on schedule.",
+        help="Run the APScheduler daemon (daily 02:00 Europe/London).",
     )
     parser.add_argument(
         "--once",
         action="store_true",
         help="Run a single batch and exit.",
     )
+    return parser
+
+
+def main() -> None:
+    """CLI entry point for one-shot or scheduled batch compute."""
+    _configure_logging()
+    parser = _build_parser()
     args = parser.parse_args()
 
     if args.once:
         run_batch()
         return
-    if not args.serve:
+    if not args.daemon:
         run_batch()
         return
 

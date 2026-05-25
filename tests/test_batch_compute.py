@@ -320,6 +320,13 @@ def test_main_once_runs_batch_once(monkeypatch: pytest.MonkeyPatch) -> None:
     assert called == ["run_batch"]
 
 
+def test_parser_accepts_daemon_alias() -> None:
+    parser = batch_compute._build_parser()
+    args = parser.parse_args(["--daemon"])
+
+    assert args.daemon is True
+
+
 def test_main_serve_starts_scheduler(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
