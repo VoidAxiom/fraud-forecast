@@ -5,10 +5,10 @@ import datetime
 import logging
 import os
 from dataclasses import dataclass
-from typing import Any, Iterable
+from typing import Any, Iterable, cast
 from uuid import UUID
 
-import asyncpg  # type: ignore[import]
+import asyncpg
 import redis.asyncio as aioredis
 from backports.zoneinfo import ZoneInfo
 from pythonjsonlogger import jsonlogger
@@ -27,7 +27,17 @@ TWENTY_FOUR_HOURS_SECONDS = 24 * 60 * 60
 BACKUP_POLL_SECONDS = 30
 CLEANUP_POLL_SECONDS = 60
 ORDER_TTL_SECONDS = 600
-PROCESSED_ORDERS_KEY = "fs:processed_orders"
+PROCESSED_ORDERS_KEY_PREFIX = "fs:processed_orders"
+CLEANUP_ZSET_SUFFIXES = (
+    ":orders_zset",
+    ":spend_zset",
+    ":stores_zset",
+    ":payments_zset",
+    ":users_zset",
+    ":devices_zset",
+    ":cards_1h_zset",
+)
+PROCESSED_ORDERS_TTL_SECONDS = ORDER_TTL_SECONDS + 300
 
 _FETCH_ORDER_SQL = """
 SELECT
@@ -69,7 +79,7 @@ def _configure_logging() -> None:
         return
 
     handler = logging.StreamHandler()
-    formatter = jsonlogger.JsonFormatter(  # type: ignore[no-untyped-call]
+    formatter = jsonlogger.JsonFormatter(
         "%(asctime)s %(levelname)s %(name)s %(message)s",
         rename_fields={"asctime": "ts", "levelname": "level"},
     )
@@ -179,6 +189,21 @@ def _coerce_int(value: object) -> int:
     return _safe_int(value)
 
 
+def _last_order_age_minutes(last_scores: list[tuple[str, object]], now_ts: int) -> int | None:
+    if not last_scores:
+        return None
+    _, raw_score = last_scores[0]
+    if isinstance(raw_score, (int, float, bytes, bytearray, str)):
+        last_order_ts = int(raw_score)
+    else:
+        return None
+    return max(0, now_ts - last_order_ts) // 60
+
+
+def processed_bucket_key(now_ts: int) -> str:
+    return f"{PROCESSED_ORDERS_KEY_PREFIX}:{(now_ts // ORDER_TTL_SECONDS) * ORDER_TTL_SECONDS}"
+
+
 async def write_user_stream_aggregates(
     redis_conn: AsyncRedis[str],
     order: _OrderContext,
@@ -192,6 +217,17 @@ async def write_user_stream_aggregates(
     stores_zset_key = f"fs:user:{user_id}:stores_zset"
     payments_zset_key = f"fs:user:{user_id}:payments_zset"
     spend_zset_key = f"fs:user:{user_id}:spend_zset"
+    previous_orders = await redis_conn.zrevrange(
+        orders_zset_key,
+        0,
+        0,
+        desc=True,
+        withscores=True,
+    )
+    last_order_age_minutes = _last_order_age_minutes(
+        cast(list[tuple[str, object]], previous_orders),
+        now_ts,
+    )
 
     write_pipe = redis_conn.pipeline()
     write_pipe.zadd(orders_zset_key, {order_id: now_ts})
@@ -242,20 +278,22 @@ async def write_user_stream_aggregates(
         results[payments_24h_index] if len(results) > payments_24h_index else None,
     )
 
-    age_minutes = max(0, (now_ts - order.placed_at_ts) // 60)
     persist_pipe = redis_conn.pipeline()
+    stream_mapping: dict[str, int] = {
+        "orders_1h": orders_1h,
+        "orders_24h": orders_24h,
+        "spend_1h_pence": spend_1h,
+        "spend_24h_pence": spend_24h,
+        "unique_stores_24h": unique_stores_24h,
+        "unique_payment_methods_24h": unique_payment_methods_24h,
+        "updated_at": now_ts,
+    }
+    if last_order_age_minutes is not None:
+        stream_mapping["last_order_age_minutes"] = last_order_age_minutes
+
     persist_pipe.hset(
         stream_key,
-        mapping={
-            "orders_1h": orders_1h,
-            "orders_24h": orders_24h,
-            "spend_1h_pence": spend_1h,
-            "spend_24h_pence": spend_24h,
-            "unique_stores_24h": unique_stores_24h,
-            "unique_payment_methods_24h": unique_payment_methods_24h,
-            "last_order_age_minutes": age_minutes,
-            "updated_at": now_ts,
-        },
+        mapping=stream_mapping,
     )
     await persist_pipe.execute()
 
@@ -499,8 +537,18 @@ async def write_address_stream_aggregates(
 
 
 async def _mark_order_processed(redis_conn: AsyncRedis[str], order_id: str) -> None:
-    await redis_conn.sadd(PROCESSED_ORDERS_KEY, order_id)
-    await redis_conn.expire(PROCESSED_ORDERS_KEY, ORDER_TTL_SECONDS)
+    processed_bucket = processed_bucket_key(_utcnow_ts())
+    await redis_conn.sadd(processed_bucket, order_id)
+    await redis_conn.expire(processed_bucket, PROCESSED_ORDERS_TTL_SECONDS)
+
+
+async def _was_order_processed(redis_conn: AsyncRedis[str], order_id: str, now_ts: int) -> bool:
+    current_bucket = processed_bucket_key(now_ts)
+    processed = bool(await redis_conn.sismember(current_bucket, order_id))
+    if processed:
+        return True
+    previous_bucket = processed_bucket_key(now_ts - ORDER_TTL_SECONDS)
+    return bool(await redis_conn.sismember(previous_bucket, order_id))
 
 
 async def update_features_for_order(
@@ -541,8 +589,11 @@ async def run_backup_poll_once(
     for row in rows:
         order_id = _coerce_uuid(row["order_id"], "order_id")
         order_id_str = str(order_id)
+        now_ts = _utcnow_ts()
         try:
-            processed = await redis_conn.sismember(PROCESSED_ORDERS_KEY, order_id_str)
+            processed = await _was_order_processed(
+                redis_conn=redis_conn, order_id=order_id_str, now_ts=now_ts
+            )
             if processed:
                 LOGGER.info(
                     "order_already_processed",
@@ -577,16 +628,18 @@ async def run_backup_poll_loop(
 async def trim_order_zsets_once(redis_conn: AsyncRedis[str], metrics: Metrics) -> None:
     del metrics
     cutoff = str(_utcnow_ts() - TWENTY_FOUR_HOURS_SECONDS)
-    cursor = 0
-    while True:
-        cursor, keys = await redis_conn.scan(cursor=cursor, match="fs:*:orders_zset", count=5000)
-        if keys:
-            pipe = redis_conn.pipeline()
-            for key in keys:
-                pipe.zremrangebyscore(key, "-inf", cutoff)
-            await pipe.execute()
-        if cursor == 0:
-            break
+
+    for suffix in CLEANUP_ZSET_SUFFIXES:
+        cursor = 0
+        while True:
+            cursor, keys = await redis_conn.scan(cursor=cursor, match=f"fs:*{suffix}", count=5000)
+            if keys:
+                pipe = redis_conn.pipeline()
+                for key in keys:
+                    pipe.zremrangebyscore(key, "-inf", cutoff)
+                await pipe.execute()
+            if cursor == 0:
+                break
 
 
 async def run_cleanup_loop(redis_conn: AsyncRedis[str], metrics: Metrics) -> None:
