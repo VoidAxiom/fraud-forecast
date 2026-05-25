@@ -6,8 +6,8 @@ import os
 import sys
 import time
 from datetime import datetime, timedelta
-from decimal import Decimal
-from typing import Any, Mapping, cast
+from decimal import ROUND_HALF_EVEN, Decimal
+from typing import Any, Mapping, Optional, Union, cast
 
 import redis
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -61,6 +61,12 @@ def _to_int(row: Mapping[str, Any], key: str, default: int = 0) -> int:
     if isinstance(value, Decimal):
         return int(value)
     return int(value)
+
+
+def _round_half_even(value: Decimal | int | float | None) -> int:
+    if value is None:
+        return 0
+    return int(Decimal(value).quantize(Decimal("1"), rounding=ROUND_HALF_EVEN))
 
 
 def _to_str(row: Mapping[str, object], key: str) -> str | None:
@@ -121,7 +127,7 @@ def compute_user_batch_features(engine: Engine, r: redis.Redis[str]) -> None:
           u.created_at,
           COUNT(o.order_id) AS lifetime_order_count,
           COALESCE(SUM(o.total_pence), 0) AS lifetime_spend_pence,
-          COALESCE(ROUND(AVG(o.total_pence)), 0)::BIGINT AS avg_order_value_pence,
+          COALESCE(AVG(o.total_pence), 0) AS avg_order_value_pence,
           COALESCE(COUNT(cb.order_id), 0) AS lifetime_chargeback_count,
           COALESCE(COUNT(r.refund_id), 0) AS lifetime_refund_count,
           COUNT(DISTINCT o.device_id) AS unique_devices_used,
@@ -154,7 +160,12 @@ def compute_user_batch_features(engine: Engine, r: redis.Redis[str]) -> None:
                     order_count = _to_int(row, "lifetime_order_count")
                     chargeback_count = _to_int(row, "lifetime_chargeback_count")
                     spend = _to_int(row, "lifetime_spend_pence")
-                    avg_order_value = _to_int(row, "avg_order_value_pence")
+                    avg_order_value = _round_half_even(
+                        cast(
+                            Optional[Union[Decimal, int, float]],
+                            row["avg_order_value_pence"],
+                        )
+                    )
                     account_age_days = _days_ago(now, _to_datetime(row, "created_at"))
                     days_since_last_order = _days_ago(
                         now,
@@ -445,7 +456,11 @@ def compute_store_batch_features(engine: Engine, r: redis.Redis[str]) -> None:
 
                     total_orders = _to_int(row, "total_orders")
                     total_spend = _to_int(row, "lifetime_spend_pence")
-                    avg_order_value = total_spend // total_orders if total_orders > 0 else 0
+                    avg_order_value = (
+                        _round_half_even(Decimal(total_spend) / Decimal(total_orders))
+                        if total_orders > 0
+                        else 0
+                    )
                     chargeback_count = _to_int(row, "chargeback_count")
                     chargeback_rate = _rate(chargeback_count, total_orders)
 

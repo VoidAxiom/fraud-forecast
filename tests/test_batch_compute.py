@@ -219,6 +219,10 @@ def test_to_int_handles_decimal_inputs() -> None:
     assert batch_compute._to_int(row, "pence_total") == 9007199254740993
 
 
+def test_round_half_even() -> None:
+    assert batch_compute._round_half_even(Decimal("100.5")) == 100
+
+
 def test_compute_device_batch_features_zero_orders_still_writes_zero_rate() -> None:
     now = datetime.datetime(2026, 5, 25, 12, 0, tzinfo=ZoneInfo("Europe/London"))
     device_id = "00000000-0000-0000-0000-000000000002"
