@@ -143,6 +143,7 @@ async def generate_triangulation_fraud(
     order_dict: dict[str, Any] = {
         "order_id": order_id,
         "order_total_pence": order_total_pence,
+        "user_id": account.account_id,
         "device_id": device_id,
         "delivery_address_id": delivery_address_id,
         "card_bin": card["card_bin"],

@@ -58,6 +58,8 @@ def test_triangulation_returns_ground_truth() -> None:
     assert isinstance(gt, GroundTruth)
     assert gt.is_fraud is True
     assert gt.fraud_category == "triangulation"
+    assert "user_id" in order_dict
+    assert isinstance(order_dict["user_id"], UUID)
     assert isinstance(gt.order_id, UUID)
     assert gt.ring_id is None
 
@@ -94,12 +96,15 @@ def test_triangulation_device_consistency() -> None:
     )
 
     device_ids: set[UUID] = set()
+    user_ids: set[UUID] = set()
     for _ in range(10):
         order_dict, _ = asyncio.run(generate_triangulation_fraud(ctx))
         device_ids.add(order_dict["device_id"])
+        user_ids.add(order_dict["user_id"])
 
     assert len(device_ids) == 1, f"expected 1 unique device_id, got {len(device_ids)}: {device_ids}"
     assert expected_device in device_ids
+    assert len(user_ids) == 1, "pinned account must produce consistent user_id"
 
 
 def test_triangulation_address_diversity() -> None:
