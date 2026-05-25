@@ -5,7 +5,7 @@ from __future__ import annotations
 import random
 import sys
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
@@ -27,7 +27,7 @@ if TYPE_CHECKING:
 @dataclass
 class FraudPatternContext:
     now: datetime
-    rng: random.Random = field(default_factory=random.Random)
+    rng: random.Random
 
 
 def _weighted_choice(rng: random.Random, choices: list[tuple[str, float]]) -> str:
@@ -48,24 +48,8 @@ def _weighted_choice(rng: random.Random, choices: list[tuple[str, float]]) -> st
 
 @register("stolen_card", 0.30)
 async def generate_stolen_card_fraud(
-    ctx: FraudPatternContext | None = None,
-    *,
-    rng: random.Random | None = None,
-    now: datetime | None = None,
+    ctx: FraudPatternContext,
 ) -> tuple[dict[str, Any], GroundTruth]:
-    if ctx is not None and rng is not None:
-        raise ValueError("pass either ctx (full context) or rng (seed shorthand), not both")
-    if ctx is None:
-        if now is None:
-            raise TypeError(
-                "FraudPatternContext.now is required: pass ctx=FraudPatternContext(now=...) or now=<datetime>"
-            )
-        if rng is not None:
-            ctx = FraudPatternContext(now=now, rng=rng)
-        else:
-            # Default seed=0 for reproducibility when caller omits rng.
-            ctx = FraudPatternContext(now=now, rng=random.Random(0))
-
     variant_roll = ctx.rng.random()
     if variant_roll < 0.60:
         variant = "A"

@@ -9,9 +9,8 @@ from __future__ import annotations
 
 import importlib
 import pkgutil
-import random
 from dataclasses import dataclass
-from typing import Any, Awaitable, Callable, Tuple
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, Tuple
 from uuid import UUID
 
 
@@ -45,13 +44,16 @@ def register(name: str, weight: float) -> Callable[[PatternFn], PatternFn]:
 
 # Auto-discover: import every sibling module at package-import time so @register fires
 # Sort names for deterministic registration order across environments.
+if TYPE_CHECKING:
+    from simulator.fraud_patterns.stolen_card import FraudPatternContext
+
 for _info in sorted(pkgutil.iter_modules(__path__), key=lambda i: i.name):
     if not _info.name.startswith("_"):
         importlib.import_module(f"{__name__}.{_info.name}")
 
 
 async def generate_fraud_order(
-    *args: Any, rng: random.Random | None = None, **kwargs: Any
+    ctx: FraudPatternContext,
 ) -> Any:
     """Pick a pattern by weighted random + invoke it. Spec § "Modified simulator/generator.py".
 
@@ -67,10 +69,5 @@ async def generate_fraud_order(
 
     items = list(_REGISTRY.items())
     weights = [w for _, (_fn, w) in items]
-    if rng is None:
-        _, (chosen_fn, _w) = random.choices(items, weights=weights, k=1)[0]
-    else:
-        _, (chosen_fn, _w) = rng.choices(items, weights=weights, k=1)[0]
-    if rng is not None:
-        kwargs["rng"] = rng
-    return await chosen_fn(*args, **kwargs)
+    _, (chosen_fn, _w) = ctx.rng.choices(items, weights=weights, k=1)[0]
+    return await chosen_fn(ctx)
