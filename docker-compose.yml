@@ -1,12 +1,12 @@
 services:
   postgres:
     image: postgres:12-alpine
+    ports:
+      - "5432:5432"
     environment:
       POSTGRES_DB: fraud_platform
       POSTGRES_USER: app
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-app_dev_password}
-    ports:
-      - "5432:5432"
     volumes:
       - pg_data:/var/lib/postgresql/data
       - ./infra/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
@@ -66,6 +66,19 @@ services:
       - fraud_net
     profiles:
       - tools
+
+  simulator:
+    build: ./
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      - DATABASE_URL=postgresql://simulator_user:simulator_dev_password@postgres:5432/fraud_platform
+      - DATABASE_URL_SIMULATOR=postgresql://simulator_user:simulator_dev_password@postgres:5432/fraud_platform
+    command: ["python", "-c", "print('simulator image OK — pass a command via docker compose run')"]
+    profiles: ["tools"]
+    networks:
+      - fraud_net
 
 volumes:
   pg_data:

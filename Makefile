@@ -1,4 +1,4 @@
-.PHONY: up down reset migrate psql redis-cli test typecheck lint logs ps
+.PHONY: up down reset migrate psql redis-cli test typecheck lint logs ps seed seed-small
 
 up:
 	docker compose up -d postgres redis && bash scripts/wait_for_postgres.sh
@@ -35,3 +35,9 @@ logs:
 
 ps:
 	docker compose ps
+
+seed:
+	bash scripts/seed.sh 1.0 8 42
+
+seed-small:
+	bash scripts/seed.sh 0.1 4 42
