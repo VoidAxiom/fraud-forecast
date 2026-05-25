@@ -36,6 +36,7 @@ def test_generate_stolen_card_fraud_returns_expected_shape_and_truth() -> None:
     )
     order_dict, gt = asyncio.run(generate_stolen_card_fraud(ctx))
     required_keys = {
+        "order_id",
         "order_total_pence",
         "card_country",
         "card_funding_type",
@@ -50,10 +51,12 @@ def test_generate_stolen_card_fraud_returns_expected_shape_and_truth() -> None:
         "placed_at",
     }
     assert required_keys.issubset(order_dict)
+    assert isinstance(order_dict["order_id"], uuid.UUID)
     assert isinstance(order_dict["order_total_pence"], int)
     assert isinstance(order_dict["placed_at"], datetime)
     assert isinstance(order_dict["is_new_device"], bool)
     assert order_dict["is_digital_native_bank"] is False
+    assert order_dict["order_id"] == gt.order_id
     assert gt.is_fraud is True
     assert gt.fraud_category == "stolen_card"
     assert isinstance(gt, GroundTruth)
@@ -64,10 +67,12 @@ def test_generate_stolen_card_fraud_is_deterministic_for_order_id() -> None:
     ctx1 = FraudPatternContext(rng=random.Random(42), now=now)
     ctx2 = FraudPatternContext(rng=random.Random(42), now=now)
 
-    _, gt1 = asyncio.run(generate_stolen_card_fraud(ctx1))
-    _, gt2 = asyncio.run(generate_stolen_card_fraud(ctx2))
+    order1, gt1 = asyncio.run(generate_stolen_card_fraud(ctx1))
+    order2, gt2 = asyncio.run(generate_stolen_card_fraud(ctx2))
 
     assert gt1.order_id == gt2.order_id
+    assert order1["order_id"] == order2["order_id"]
+    assert order1["order_id"] == gt1.order_id
     assert isinstance(gt1.order_id, uuid.UUID)
 
 
@@ -107,6 +112,7 @@ def test_generate_fraud_order_is_deterministic_with_seeded_rng() -> None:
     """Same RNG seed must produce same order_id and order content end-to-end."""
     order1, gt1 = asyncio.run(generate_fraud_order(rng=random.Random(7777)))
     order2, gt2 = asyncio.run(generate_fraud_order(rng=random.Random(7777)))
+    assert order1["order_id"] == order2["order_id"]
     assert gt1.order_id == gt2.order_id
     assert order1["order_total_pence"] == order2["order_total_pence"]
     assert order1["variant"] == order2["variant"]

@@ -18,6 +18,7 @@ from simulator.fraud_patterns import GroundTruth, register
 
 NIGHT_HOURS = (2, 3, 4, 5)  # 2am-6am (2:00-5:59)
 NON_NIGHT_HOURS = tuple(h for h in range(24) if h not in NIGHT_HOURS)
+_EPOCH_NOW: datetime = datetime(2024, 1, 1, 12, 0, 0, tzinfo=ZoneInfo("Europe/London"))
 
 if TYPE_CHECKING:
     from simulator.models import Order as _Order  # type: ignore[import]  # noqa: F401
@@ -26,7 +27,7 @@ if TYPE_CHECKING:
 @dataclass
 class FraudPatternContext:
     rng: random.Random = field(default_factory=random.Random)
-    now: datetime = field(default_factory=lambda: datetime.now(tz=ZoneInfo("Europe/London")))
+    now: datetime = field(default=_EPOCH_NOW)
 
 
 def _weighted_choice(rng: random.Random, choices: list[tuple[str, float]]) -> str:
@@ -109,7 +110,10 @@ async def generate_stolen_card_fraud(
         microsecond=0,
     )
 
+    _order_id = uuid.UUID(int=ctx.rng.getrandbits(128))
+
     order_dict: dict[str, Any] = {
+        "order_id": _order_id,
         "order_total_pence": order_total_pence,
         "card_country": card_country,
         "card_funding_type": card_funding_type,
@@ -128,7 +132,7 @@ async def generate_stolen_card_fraud(
     # Spec says 40% of stolen-card fraud is night-hour oriented; record that signal.
     pattern_notes = f"variant={variant}, avs={avs_result}"
     gt = GroundTruth(
-        order_id=uuid.UUID(int=ctx.rng.getrandbits(128)),
+        order_id=_order_id,
         is_fraud=True,
         fraud_category="stolen_card",
         pattern_notes=pattern_notes,
