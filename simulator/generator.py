@@ -267,19 +267,23 @@ def pick_store_for_user(
     stores = list(candidate_map.values())
     now = datetime.now(tz=LONDON_TZ)
     weekday = now.isoweekday() % 7
+    prev_weekday = (weekday - 1) % 7
     current_time = now.time()
     open_stores = []
     for store in stores:
         store_id = store["store_id"]
         for row in store_hours_by_store_id.get(store_id, []):
-            if row["day_of_week"] == weekday:
-                open_t = row["open_time"]
-                close_t = row["close_time"]
-                if close_t < open_t:
-                    if current_time >= open_t or current_time <= close_t:
-                        open_stores.append(store)
-                        break
-                elif open_t <= current_time <= close_t:
+            open_t = row["open_time"]
+            close_t = row["close_time"]
+            dow = row["day_of_week"]
+            if close_t < open_t:
+                if dow == weekday and current_time >= open_t:
+                    open_stores.append(store)
+                    break
+                if dow == prev_weekday and current_time <= close_t:
+                    open_stores.append(store)
+                    break
+            elif dow == weekday and open_t <= current_time <= close_t:
                     open_stores.append(store)
                     break
 
