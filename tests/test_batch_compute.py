@@ -310,6 +310,152 @@ def test_run_batch_dispatches_all_entity_computes(monkeypatch: pytest.MonkeyPatc
     ]
 
 
+def test_run_batch_raises_after_partial_entity_failures(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+    engine = object()
+    redis_client = _FakeRedis()
+    records: list[logging.LogRecord] = []
+
+    class _Capture(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            records.append(record)
+
+    def _failing_entity(entity_name: str, exc_message: str) -> None:
+        def _fail(_engine: object, _r: _FakeRedis) -> None:
+            calls.append(entity_name)
+            raise RuntimeError(exc_message)
+
+        return _fail
+
+    monkeypatch.setattr(batch_compute, "get_engine", lambda role="app": engine)
+    monkeypatch.setattr(
+        batch_compute.redis.Redis,
+        "from_url",
+        lambda url, decode_responses=True: redis_client,
+    )
+    monkeypatch.setattr(
+        batch_compute,
+        "compute_user_batch_features",
+        _failing_entity("user", "user failed"),
+    )
+    monkeypatch.setattr(
+        batch_compute,
+        "compute_device_batch_features",
+        lambda _engine, _r: calls.append("device"),
+    )
+    monkeypatch.setattr(
+        batch_compute,
+        "compute_payment_batch_features",
+        lambda _engine, _r: calls.append("payment"),
+    )
+    monkeypatch.setattr(
+        batch_compute,
+        "compute_ip_batch_features",
+        lambda _engine, _r: calls.append("ip"),
+    )
+    monkeypatch.setattr(
+        batch_compute,
+        "compute_store_batch_features",
+        _failing_entity("store", "store failed"),
+    )
+    monkeypatch.setattr(
+        batch_compute,
+        "compute_merchant_batch_features",
+        lambda _engine, _r: calls.append("merchant"),
+    )
+    monkeypatch.setattr(
+        batch_compute,
+        "compute_email_domain_batch_features",
+        lambda _engine, _r: calls.append("email_domain"),
+    )
+
+    handler = _Capture()
+    batch_compute.LOG.addHandler(handler)
+    try:
+        with pytest.raises(RuntimeError, match="batch_compute had 2 entity failures"):
+            batch_compute.run_batch()
+    finally:
+        batch_compute.LOG.removeHandler(handler)
+
+    assert calls == [
+        "user",
+        "device",
+        "payment",
+        "ip",
+        "store",
+        "merchant",
+        "email_domain",
+    ]
+    assert any(
+        record.msg == "batch_compute_entity_failed" and record.__dict__.get("entity") == "user"
+        for record in records
+    )
+    assert any(
+        record.msg == "batch_compute_entity_failed" and record.__dict__.get("entity") == "store"
+        for record in records
+    )
+    assert any(
+        record.msg == "batch_compute_partial"
+        and record.__dict__.get("failed_entities") == ["user", "store"]
+        for record in records
+    )
+
+
+def test_compute_user_batch_features_queries_rounded_average_order_value() -> None:
+    rows = [
+        {
+            "user_id": "00000000-0000-0000-0000-000000000001",
+            "created_at": datetime.datetime(
+                2026,
+                5,
+                20,
+                12,
+                tzinfo=ZoneInfo("Europe/London"),
+            ),
+            "lifetime_order_count": 2,
+            "lifetime_spend_pence": 101,
+            "avg_order_value_pence": 50,
+            "lifetime_chargeback_count": 0,
+            "lifetime_refund_count": 0,
+            "unique_devices_used": 1,
+            "unique_payment_methods_used": 1,
+            "unique_delivery_addresses": 1,
+            "distinct_cities_ordered_from": 1,
+            "last_placed_at": datetime.datetime(
+                2026,
+                5,
+                25,
+                12,
+                tzinfo=ZoneInfo("Europe/London"),
+            ),
+        }
+    ]
+
+    statements: list[object] = []
+
+    class _CaptureConnection(_FakeConnection):
+        def execute(
+            self, statement: object, params: dict[str, object] | None = None
+        ) -> _FakeResult:
+            _ = params
+            statements.append(statement)
+            return super().execute(statement, params)
+
+    class _CaptureEngine(_FakeEngine):
+        def connect(self) -> _CaptureConnection:
+            return _CaptureConnection(self._rows)
+
+    engine = _CaptureEngine(rows)
+    redis_client = _FakeRedis()
+    batch_compute.compute_user_batch_features(engine, redis_client)
+
+    assert statements
+    statement_text = str(statements[0]).lower()
+    assert "round(avg(o.total_pence))" in statement_text
+
+
 def test_main_once_runs_batch_once(monkeypatch: pytest.MonkeyPatch) -> None:
     called: list[str] = []
     monkeypatch.setattr(sys, "argv", ["batch_compute", "--once"])
@@ -410,7 +556,8 @@ def test_compute_store_entity_logs_errors() -> None:
     handler = _Capture()
     batch_compute.LOG.addHandler(handler)
     try:
-        batch_compute.compute_store_batch_features(engine, fake_redis)
+        with pytest.raises(RuntimeError, match="intentional connection failure"):
+            batch_compute.compute_store_batch_features(engine, fake_redis)
     finally:
         batch_compute.LOG.removeHandler(handler)
 

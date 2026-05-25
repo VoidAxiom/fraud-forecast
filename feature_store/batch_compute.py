@@ -121,7 +121,7 @@ def compute_user_batch_features(engine: Engine, r: redis.Redis[str]) -> None:
           u.created_at,
           COUNT(o.order_id) AS lifetime_order_count,
           COALESCE(SUM(o.total_pence), 0) AS lifetime_spend_pence,
-          COALESCE(AVG(o.total_pence), 0) AS avg_order_value_pence,
+          COALESCE(ROUND(AVG(o.total_pence)), 0)::BIGINT AS avg_order_value_pence,
           COALESCE(COUNT(cb.order_id), 0) AS lifetime_chargeback_count,
           COALESCE(COUNT(r.refund_id), 0) AS lifetime_refund_count,
           COUNT(DISTINCT o.device_id) AS unique_devices_used,
@@ -196,6 +196,7 @@ def compute_user_batch_features(engine: Engine, r: redis.Redis[str]) -> None:
                 pipe.execute()
     except Exception as exc:  # pragma: no cover - exception-path is validated by unit tests
         LOG.exception("batch_compute_entity_error", extra={"entity": "user", "error": str(exc)})
+        raise
 
 
 def compute_device_batch_features(engine: Engine, r: redis.Redis[str]) -> None:
@@ -267,6 +268,7 @@ def compute_device_batch_features(engine: Engine, r: redis.Redis[str]) -> None:
                 pipe.execute()
     except Exception as exc:  # pragma: no cover - exception-path is validated by unit tests
         LOG.exception("batch_compute_entity_error", extra={"entity": "device", "error": str(exc)})
+        raise
 
 
 def compute_payment_batch_features(engine: Engine, r: redis.Redis[str]) -> None:
@@ -330,6 +332,7 @@ def compute_payment_batch_features(engine: Engine, r: redis.Redis[str]) -> None:
                 pipe.execute()
     except Exception as exc:  # pragma: no cover - exception-path is validated by unit tests
         LOG.exception("batch_compute_entity_error", extra={"entity": "payment", "error": str(exc)})
+        raise
 
 
 def compute_ip_batch_features(engine: Engine, r: redis.Redis[str]) -> None:
@@ -392,6 +395,7 @@ def compute_ip_batch_features(engine: Engine, r: redis.Redis[str]) -> None:
                 pipe.execute()
     except Exception as exc:  # pragma: no cover - exception-path is validated by unit tests
         LOG.exception("batch_compute_entity_error", extra={"entity": "ip", "error": str(exc)})
+        raise
 
 
 def compute_store_batch_features(engine: Engine, r: redis.Redis[str]) -> None:
@@ -458,6 +462,7 @@ def compute_store_batch_features(engine: Engine, r: redis.Redis[str]) -> None:
                 pipe.execute()
     except Exception as exc:  # pragma: no cover - exception-path is validated by unit tests
         LOG.exception("batch_compute_entity_error", extra={"entity": "store", "error": str(exc)})
+        raise
 
 
 def compute_merchant_batch_features(engine: Engine, r: redis.Redis[str]) -> None:
@@ -523,6 +528,7 @@ def compute_merchant_batch_features(engine: Engine, r: redis.Redis[str]) -> None
                 pipe.execute()
     except Exception as exc:  # pragma: no cover - exception-path is validated by unit tests
         LOG.exception("batch_compute_entity_error", extra={"entity": "merchant", "error": str(exc)})
+        raise
 
 
 def compute_email_domain_batch_features(engine: Engine, r: redis.Redis[str]) -> None:
@@ -579,6 +585,7 @@ def compute_email_domain_batch_features(engine: Engine, r: redis.Redis[str]) -> 
         LOG.exception(
             "batch_compute_entity_error", extra={"entity": "email_domain", "error": str(exc)}
         )
+        raise
 
 
 def run_batch() -> None:
@@ -595,27 +602,50 @@ def run_batch() -> None:
         os.getenv("REDIS_URL", REDIS_URL_DEFAULT),
         decode_responses=True,
     )
+    failures: list[tuple[str, Exception]] = []
 
     try:
-        for compute in (
-            compute_user_batch_features,
-            compute_device_batch_features,
-            compute_payment_batch_features,
-            compute_ip_batch_features,
-            compute_store_batch_features,
-            compute_merchant_batch_features,
-            compute_email_domain_batch_features,
+        for entity_name, compute in (
+            ("user", compute_user_batch_features),
+            ("device", compute_device_batch_features),
+            ("payment", compute_payment_batch_features),
+            ("ip", compute_ip_batch_features),
+            ("store", compute_store_batch_features),
+            ("merchant", compute_merchant_batch_features),
+            ("email_domain", compute_email_domain_batch_features),
         ):
-            compute(engine=engine, r=redis_client)
+            try:
+                compute(engine=engine, r=redis_client)
+            except Exception as exc:  # pragma: no cover - validated by unit tests
+                LOG.exception(
+                    "batch_compute_entity_failed",
+                    extra={"entity": entity_name, "error": str(exc)},
+                )
+                failures.append((entity_name, exc))
     finally:
         redis_client.close()
 
-    elapsed_ms = time.perf_counter() - start
+    duration_s = time.perf_counter() - start
+    if failures:
+        LOG.error(
+            "batch_compute_partial",
+            extra={
+                "event": "batch_compute_partial",
+                "duration_s": round(duration_s, 3),
+                "failed_entities": [entity_name for entity_name, _ in failures],
+            },
+        )
+        raise RuntimeError(
+            "batch_compute had "
+            f"{len(failures)} entity failures: "
+            f"{[entity_name for entity_name, _ in failures]}"
+        )
+
     LOG.info(
         "batch_compute_done",
         extra={
             "event": "batch_compute_done",
-            "duration_s": round(elapsed_ms, 3),
+            "duration_s": round(duration_s, 3),
         },
     )
 
