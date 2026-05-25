@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import os
 import random
 import re
@@ -21,6 +22,7 @@ from simulator.generator import (
     load_config_from_env,
     _select_order_type,
     load_stores_by_city,
+    insert_order,
     pick_store_for_user,
     main,
 )
@@ -429,6 +431,12 @@ def test_generator_creates_valid_order() -> None:
             await pool.close()
 
     asyncio.run(_run())
+
+
+def test_insert_order_builds_item_rows_with_cartitem_name() -> None:
+    source = inspect.getsource(insert_order)
+    assert "item.item_name" not in source
+    assert "item.name" in source
 
 
 def test_generator_order_number_unique() -> None:
