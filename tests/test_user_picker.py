@@ -184,10 +184,9 @@ def test_user_picker_redis_tier_validates_buffer() -> None:
                     with patch.object(rng, "random", side_effect=values.__next__):
                         for _ in range(10_000):
                             picked = picker.pick(rng)
-                            assert picked in allowed
+                            assert picked in allowed, f"Picked {picked!r} not in buffer"
 
     assert stale_tier_calls.call_count == 10_000
     assert recency_calls.call_count == 6000
     assert heavy_calls.call_count == 3000
     assert uniform_calls.call_count == 1000
-                            assert picked in allowed, f"Picked {picked!r} not in buffer"

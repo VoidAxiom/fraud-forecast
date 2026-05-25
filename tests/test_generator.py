@@ -4,6 +4,7 @@ import asyncio
 import os
 import random
 import re
+from datetime import datetime, time, timezone
 import uuid
 from unittest.mock import patch
 
@@ -16,9 +17,11 @@ from simulator.generator import (
     create_one_order,
     apply_promo,
     load_active_promos,
+    load_store_hours,
     load_config_from_env,
     _select_order_type,
     load_stores_by_city,
+    pick_store_for_user,
     main,
 )
 
@@ -107,6 +110,7 @@ async def _run_generator_batch(
     require_no_prior_orders: bool = False,
 ) -> tuple[uuid.UUID, list[asyncpg.Record]]:
     stores_by_city = await load_stores_by_city(pool)
+    store_hours_by_store_id = await load_store_hours(pool)
     promos = await load_active_promos(pool)
 
     async with pool.acquire() as conn:
@@ -127,7 +131,7 @@ async def _run_generator_batch(
             user_picker=picker,
             stores_by_city=stores_by_city,
             promos=promos,
-            store_hours_by_store_id={},
+            store_hours_by_store_id=store_hours_by_store_id,
             rng=rng,
             scoring_enabled=False,
         )
@@ -191,6 +195,44 @@ def test_select_order_type_requires_pickup_for_fallback() -> None:
     with patch.object(rng, "random", return_value=0.99):
         with pytest.raises(RuntimeError, match="no eligible order type for store"):
             _select_order_type(rng, store)
+
+
+def test_pick_store_for_user_raises_when_no_store_open_now() -> None:
+    rng = random.Random(42)
+    store_id = uuid.uuid4()
+    user_data = {
+        "default_address": {
+            "city": "London",
+            "latitude": 51.5,
+            "longitude": -0.1,
+        },
+    }
+    stores_by_city = {
+        "London": [
+            {
+                "store_id": store_id,
+                "store_name": "Closed Bistro",
+                "city": "London",
+                "latitude": 51.503,
+                "longitude": -0.12,
+            },
+        ],
+    }
+    mock_weekday = datetime(2026, 1, 1).isoweekday() % 7
+    store_hours_by_store_id = {
+        store_id: [
+            {
+                "day_of_week": mock_weekday,
+                "open_time": time(8, 0),
+                "close_time": time(10, 0),
+            },
+        ],
+    }
+
+    mock_now = datetime(2026, 1, 1, 12, 30, tzinfo=timezone.utc)
+    with patch("simulator.generator.datetime.now", return_value=mock_now):
+        with pytest.raises(RuntimeError, match="no stores in current open-hours window"):
+            pick_store_for_user(rng, user_data, stores_by_city, store_hours_by_store_id)
 
 
 def test_select_order_type_falls_back_to_pickup_when_only_pickup_enabled() -> None:
@@ -509,6 +551,7 @@ def test_generator_notify_fires() -> None:
         try:
             notifier = await asyncpg.connect(DATABASE_URL_SIMULATOR)
             stores_by_city = await load_stores_by_city(pool)
+            store_hours_by_store_id = await load_store_hours(pool)
             promos = await load_active_promos(pool)
 
             async with pool.acquire() as conn:
@@ -530,7 +573,7 @@ def test_generator_notify_fires() -> None:
                 user_picker=picker,
                 stores_by_city=stores_by_city,
                 promos=promos,
-                store_hours_by_store_id={},
+                store_hours_by_store_id=store_hours_by_store_id,
                 rng=rng,
                 scoring_enabled=False,
             )

@@ -314,13 +314,15 @@ def pick_store_for_user(
                     open_stores.append(store)
                     break
             elif dow == weekday and open_t <= current_time <= close_t:
-                    open_stores.append(store)
-                    break
+                open_stores.append(store)
+                break
 
     if open_stores:
         stores = open_stores
-    if not stores:
+    elif not stores:
         raise RuntimeError("no active stores available")
+    else:
+        raise RuntimeError("no stores in current open-hours window")
 
     weights: list[float] = []
     for store in stores:
