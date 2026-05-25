@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 import math
 import random
 import sys
@@ -15,7 +16,10 @@ else:
     from backports.zoneinfo import ZoneInfo
 
 from simulator.fraud_patterns import GroundTruth, _REGISTRY
-from simulator.fraud_patterns.account_takeover import generate_account_takeover_fraud
+from simulator.fraud_patterns.account_takeover import (
+    _OTHER_ISO2_POOL,
+    generate_account_takeover_fraud,
+)
 from simulator.fraud_patterns.stolen_card import FraudPatternContext
 
 LONDON_TZ_TEST = ZoneInfo("Europe/London")
@@ -61,8 +65,10 @@ def test_ato_ip_country_distribution() -> None:
     counts = {country: 0 for country in expected_proportions}
     ctx = _ctx(123)
     for _ in range(1000):
-        order_dict, _gt = asyncio.run(generate_account_takeover_fraud(ctx))
-        ip_country = order_dict["ip_country"]
+        _order_dict, gt = asyncio.run(generate_account_takeover_fraud(ctx))
+        m = re.search(r"ip_country=([^,]+)", gt.pattern_notes)
+        assert m is not None
+        ip_country = m.group(1).strip()
         assert ip_country in counts
         counts[ip_country] += 1
 
@@ -70,6 +76,14 @@ def test_ato_ip_country_distribution() -> None:
     for country, expected in expected_proportions.items():
         fraction = counts[country] / total
         assert math.isclose(fraction, expected, rel_tol=0, abs_tol=0.03)
+
+
+def test_ato_ip_country_iso2_resolution() -> None:
+    ctx = _ctx(555)
+    for _ in range(500):
+        order_dict, _gt = asyncio.run(generate_account_takeover_fraud(ctx))
+        ip = order_dict["ip_country"]
+        assert re.match(r"^[A-Z]{2}$", ip), f"ip_country {ip!r} is not a valid ISO-2 code"
 
 
 def test_ato_new_device_always() -> None:
@@ -129,3 +143,22 @@ def test_ato_order_value_bimodal() -> None:
     assert normal_mode_mean < 5000
     assert high_value_mean > 5000
     assert high_value_mean > normal_mode_mean * 2.0
+
+
+def test_ato_other_resolves_to_long_tail() -> None:
+    # Run many samples; collect cases where pattern_notes says ip_country=other
+    # and verify the resolved ISO-2 is always from _OTHER_ISO2_POOL
+    ctx = _ctx(777)
+    found_other = False
+    for _ in range(2000):
+        order_dict, gt = asyncio.run(generate_account_takeover_fraud(ctx))
+        m = re.search(r"ip_country=([^,]+)", gt.pattern_notes)
+        assert m is not None
+        category = m.group(1).strip()
+        if category == "other":
+            iso2 = order_dict["ip_country"]
+            assert iso2 in _OTHER_ISO2_POOL, (
+                f"'other' resolved to {iso2!r} which is not in _OTHER_ISO2_POOL"
+            )
+            found_other = True
+    assert found_other, "no 'other' category seen in 2000 samples (expected ~10%)"

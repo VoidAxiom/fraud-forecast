@@ -18,6 +18,49 @@ from simulator.fraud_patterns.stolen_card import FraudPatternContext
 
 LONDON_TZ = ZoneInfo("Europe/London")
 
+_IP_COUNTRY_CATEGORIES = [
+    ("NG", 0.15),
+    ("RU", 0.12),
+    ("CN", 0.10),
+    ("US", 0.10),
+    ("VN", 0.08),
+    ("PK", 0.08),
+    ("UA", 0.07),
+    ("GB_different_city", 0.20),
+    ("other", 0.10),
+]
+
+_IP_COUNTRY_RESOLUTION: dict[str, str | None] = {
+    "NG": "NG",
+    "RU": "RU",
+    "CN": "CN",
+    "US": "US",
+    "VN": "VN",
+    "PK": "PK",
+    "UA": "UA",
+    "GB_different_city": "GB",
+    "other": None,  # resolved at runtime from _OTHER_ISO2_POOL
+}
+
+_OTHER_ISO2_POOL: list[str] = [
+    "BR",
+    "IN",
+    "EG",
+    "TR",
+    "TH",
+    "ID",
+    "PH",
+    "BD",
+    "MX",
+    "CO",
+    "AR",
+    "PE",
+    "VE",
+    "KE",
+    "GH",
+    "ZA",
+]
+
 
 def _weighted_choice(rng: random.Random, choices: list[tuple[str, float]]) -> str:
     total_weight = sum(weight for _value, weight in choices)
@@ -44,20 +87,9 @@ async def generate_account_takeover_fraud(
     device_id = uuid.UUID(int=ctx.rng.getrandbits(128))
     device_platform = ctx.rng.choice(["iOS", "Android", "Web"])
 
-    ip_country = _weighted_choice(
-        ctx.rng,
-        [
-            ("NG", 0.15),
-            ("RU", 0.12),
-            ("CN", 0.10),
-            ("US", 0.10),
-            ("VN", 0.08),
-            ("PK", 0.08),
-            ("UA", 0.07),
-            ("GB_different_city", 0.20),
-            ("other", 0.10),
-        ],
-    )
+    ip_country_category = _weighted_choice(ctx.rng, _IP_COUNTRY_CATEGORIES)
+    _iso2_raw = _IP_COUNTRY_RESOLUTION[ip_country_category]
+    ip_country_iso2: str = _iso2_raw if _iso2_raw is not None else ctx.rng.choice(_OTHER_ISO2_POOL)
 
     if ctx.rng.random() < 0.30:
         payment_method_id: str | uuid.UUID = uuid.UUID(int=ctx.rng.getrandbits(128))
@@ -100,7 +132,7 @@ async def generate_account_takeover_fraud(
         "victim_user_id": victim_user_id,
         "device_id": device_id,
         "device_platform": device_platform,
-        "ip_country": ip_country,
+        "ip_country": ip_country_iso2,
         "payment_method_id": payment_method_id,
         "is_new_payment_method": is_new_payment_method,
         "delivery_address_id": delivery_address_id,
@@ -111,7 +143,7 @@ async def generate_account_takeover_fraud(
     }
 
     # Phase 2-C resolves victim_user_id via DB filter; this packet stamps the filter criteria into pattern_notes
-    pattern_notes = f"victim_user_id={victim_user_id}, new_device, ip_country={ip_country}"
+    pattern_notes = f"victim_user_id={victim_user_id}, new_device, ip_country={ip_country_category}"
     if may_collide:
         pattern_notes += ", may_collide_with_real_order=true"
     pattern_notes += ', _target_user_filter={"risk_tier": "TRUSTED", "min_orders_lifetime": 10}'
