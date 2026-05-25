@@ -592,3 +592,10 @@ async def test_trim_order_zsets_once_scans_all_relevant_zsets() -> None:
         "fs:user:111:devices_zset",
         "fs:user:111:cards_1h_zset",
     ]
+
+
+def test_extract_entity_from_zset_key_matches_cleanup_suffix() -> None:
+    assert aggregator._extract_entity_from_zset_key(
+        key="fs:user:abc-123:orders_zset",
+        suffix=":orders_zset",
+    ) == ("user", "abc-123")

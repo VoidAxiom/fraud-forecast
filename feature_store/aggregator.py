@@ -842,7 +842,7 @@ def _strip_suffix(value: str, suffix: str) -> str:
 
 def _extract_entity_from_zset_key(key: str, suffix: str) -> tuple[str, str] | None:
     key_prefix = "fs:"
-    suffix_token = f":{suffix}"
+    suffix_token = suffix
     if not key.startswith(key_prefix) or not key.endswith(suffix_token):
         return None
     entity_fragment = _strip_prefix(key, key_prefix)
