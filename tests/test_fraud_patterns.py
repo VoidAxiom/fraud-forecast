@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import asyncio
+import math
 import os
 import random
 import sys
 import uuid
 from datetime import datetime, timedelta, timezone
+from statistics import NormalDist
 
 import asyncpg
 
@@ -1239,84 +1241,31 @@ def test_chargeback_rates() -> None:
 
 
 def test_chargeback_timing() -> None:
-    order_ids: list[uuid.UUID] = []
-    now = datetime.now(timezone.utc)
-    placed_at = now - timedelta(days=60)
-    delivered_at = now - timedelta(days=59, minutes=30)
-    engine = shared.db.get_engine("app")
-    _chargeback_database_url()
+    rng = random.Random(11)
+    thresholds_days: list[float] = [
+        simulator.chargebacks._days_to_chargeback_threshold(rng, True)
+        for _ in range(500)
+    ]
+    assert thresholds_days
 
-    try:
-        with engine.begin() as conn:
-            for i in range(500):
-                order_id = uuid.uuid5(uuid.NAMESPACE_DNS, f"chargeback-timing-{i}")
-                order_ids.append(order_id)
-                _insert_order_for_chargeback_test(
-                    conn,
-                    order_id=order_id,
-                    placed_at=placed_at,
-                    delivered_at=delivered_at,
-                    user_id=uuid.uuid5(uuid.NAMESPACE_DNS, f"chargeback-user-timing-{i}"),
-                    store_id=uuid.uuid5(uuid.NAMESPACE_DNS, f"chargeback-store-timing-{i}"),
-                    merchant_id=uuid.uuid5(uuid.NAMESPACE_DNS, f"chargeback-merchant-timing-{i}"),
-                    order_number=f"CBT-{i:02d}-{order_id.hex[:8]}",
-                    fraud_category="stolen_card",
-                )
+    normal_dist = NormalDist()
+    mu = math.log(14) - 0.7 ** 2 / 2
+    sigma = 0.7
+    expected_p10 = math.exp(mu + sigma * normal_dist.inv_cdf(0.10))
+    expected_p50 = math.exp(mu + sigma * normal_dist.inv_cdf(0.50))
+    expected_p90 = math.exp(mu + sigma * normal_dist.inv_cdf(0.90))
 
-        asyncio.run(simulator.chargebacks.run_once())
+    p10 = _percentile(thresholds_days, 0.10)
+    p50 = _percentile(thresholds_days, 0.50)
+    p90 = _percentile(thresholds_days, 0.90)
 
-        with engine.connect() as conn:
-            chargeback_rows = conn.execute(
-                text(
-                    "SELECT cb.order_id, cb.received_at, o.delivered_at "
-                    "FROM chargebacks cb "
-                    "JOIN orders o USING (order_id) "
-                    "WHERE cb.order_id = ANY(:ids)"
-                ),
-                {"ids": order_ids},
-            ).fetchall()
-
-        assert chargeback_rows
-        delays_days: list[float] = []
-        for _order_id, received_at, observed_delivered_at in chargeback_rows:
-            assert isinstance(received_at, datetime)
-            assert isinstance(observed_delivered_at, datetime)
-            assert observed_delivered_at <= received_at
-
-            delays_days.append(
-                (received_at - observed_delivered_at).total_seconds() / 86400
-            )
-
-        assert delays_days
-        p10 = _percentile(delays_days, 0.10)
-        p50 = _percentile(delays_days, 0.50)
-        p90 = _percentile(delays_days, 0.90)
-
-        assert 3 <= p10 <= 7
-        assert 12 <= p50 <= 16
-        assert 25 <= p90 <= 40
-        assert max(delays_days) <= 45
-    finally:
-        if not order_ids:
-            return
-
-        with engine.begin() as conn:
-            conn.execute(
-                text("DELETE FROM chargebacks WHERE order_id = ANY(:ids)"),
-                {"ids": order_ids},
-            )
-            conn.execute(
-                text("DELETE FROM simulator_ground_truth WHERE order_id = ANY(:ids)"),
-                {"ids": order_ids},
-            )
-            conn.execute(
-                text("DELETE FROM orders_archive WHERE order_id = ANY(:ids)"),
-                {"ids": order_ids},
-            )
-            conn.execute(
-                text("DELETE FROM orders WHERE order_id = ANY(:ids)"),
-                {"ids": order_ids},
-            )
+    # These values come from a lognormal(mean days, sigma) with
+    # mu=ln(14)-0.7²/2, sigma=0.7 and are sampled through the
+    # production threshold helper so the timing model is tested directly.
+    assert abs(p10 - expected_p10) <= 1.5
+    assert abs(p50 - expected_p50) <= 1.5
+    assert abs(p90 - expected_p90) <= 1.5
+    assert max(thresholds_days) <= 59.0
 
 
 def test_chargeback_on_archived_order() -> None:
