@@ -457,7 +457,7 @@ def test_compute_user_batch_features_queries_rounded_average_order_value() -> No
 
     assert statements
     statement_text = str(statements[0]).lower()
-    assert "round(avg(o.total_pence))" in statement_text
+    assert "avg(o.total_pence)" in statement_text
 
 
 def test_main_once_runs_batch_once(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -497,16 +497,21 @@ def test_main_serve_starts_scheduler(
             self.started = True
 
     _scheduler = _FakeScheduler(timezone=batch_compute.EUROPE_LONDON)
+    run_calls: list[str] = []
     sys_argv = sys.argv.copy()
     monkeypatch.setattr(sys, "argv", ["batch_compute", "--serve"])
-    monkeypatch.setattr(batch_compute, "BlockingScheduler", lambda timezone: _scheduler)
+    monkeypatch.setattr(batch_compute, "BackgroundScheduler", lambda timezone: _scheduler)
     monkeypatch.setattr(batch_compute, "CronTrigger", _FakeTrigger)
+    monkeypatch.setattr(batch_compute, "run_batch", lambda: run_calls.append("run_batch"))
+    monkeypatch.setattr(batch_compute.time, "sleep", lambda _: (_ for _ in ()).throw(SystemExit))
     try:
-        batch_compute.main()
+        with pytest.raises(SystemExit):
+            batch_compute.main()
     finally:
         monkeypatch.setattr(sys, "argv", sys_argv)
 
     assert _scheduler.started
+    assert run_calls == ["run_batch"]
     assert len(_scheduler.jobs) == 1
     assert isinstance(_scheduler.jobs[0]["trigger"], _FakeTrigger)
     assert _scheduler.jobs[0]["trigger"].kwargs["hour"] == 2

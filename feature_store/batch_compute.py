@@ -548,16 +548,19 @@ def compute_merchant_batch_features(engine: Engine, r: redis.Redis[str]) -> None
 
 def compute_email_domain_batch_features(engine: Engine, r: redis.Redis[str]) -> None:
     """Compute all email-domain batch features."""
-    # Lifetime aggregation is intentional per spec/PHASE_4.md feature catalog.
-    # No rolling window is specified for email_domain batch features.
+    # Rolling 90-day windows for email_domain batch features:
+    # 1) total_orders: rolling count of orders over 90 days
+    # 2) chargeback_rate: rolling chargeback ratio over the same 90-day window
     query = text(
         """
         WITH all_orders AS (
           SELECT order_id, user_email_domain
           FROM orders
+          WHERE placed_at >= NOW() - INTERVAL '90 days'
           UNION ALL
           SELECT order_id, user_email_domain
           FROM orders_archive
+          WHERE placed_at >= NOW() - INTERVAL '90 days'
         )
         SELECT
           o.user_email_domain AS email_domain,
@@ -706,7 +709,10 @@ def main() -> None:
         run_batch()
         return
 
-    _run_scheduler(BlockingScheduler)
+    _run_scheduler(BackgroundScheduler)
+    run_batch()
+    while True:
+        time.sleep(3600)
 
 
 if __name__ == "__main__":
