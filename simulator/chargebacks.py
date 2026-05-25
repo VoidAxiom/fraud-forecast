@@ -29,6 +29,7 @@ WHERE o.delivered_at IS NOT NULL
   AND o.delivered_at >= NOW() - INTERVAL '90 days'
   AND o.chargeback_received_at IS NULL
   AND o.fraud_outcome IS NULL
+LIMIT 5000
 UNION ALL
 SELECT
   o.order_id,
@@ -42,7 +43,7 @@ JOIN simulator_ground_truth gt USING (order_id)
 WHERE o.delivered_at >= NOW() - INTERVAL '90 days'
   AND o.chargeback_received_at IS NULL
   AND o.fraud_outcome IS NULL
-LIMIT 10000
+LIMIT 5000
 """
 
 _CHARGEBACK_INSERT_SQL = """
@@ -78,7 +79,10 @@ SELECT
 FROM orders o
 JOIN simulator_ground_truth gt USING (order_id)
 WHERE o.delivered_at IS NOT NULL
+  AND o.delivered_at >= NOW() - INTERVAL '5 days'
   AND gt.fraud_category = 'refund_abuse'
+  AND NOT EXISTS (SELECT 1 FROM refunds r WHERE r.order_id = o.order_id)
+LIMIT 5000
 UNION ALL
 SELECT
   o.order_id,
@@ -88,8 +92,10 @@ SELECT
 FROM orders_archive o
 JOIN simulator_ground_truth gt USING (order_id)
 WHERE o.delivered_at IS NOT NULL
+  AND o.delivered_at >= NOW() - INTERVAL '5 days'
   AND gt.fraud_category = 'refund_abuse'
-LIMIT 10000
+  AND NOT EXISTS (SELECT 1 FROM refunds r WHERE r.order_id = o.order_id)
+LIMIT 5000
 """
 
 _REFUND_INSERT_SQL = """
@@ -189,6 +195,20 @@ async def generate_chargebacks(pool: Any) -> None:
             ) and (rng.random() < chargeback_probability)
 
             if not should_chargeback_now:
+                if delivered_age_days >= days_to_chargeback:
+                    final_outcome = "LEGIT"
+                    await conn.execute(
+                        "UPDATE orders SET fraud_outcome = $1 WHERE order_id = $2 AND placed_at = $3",
+                        final_outcome,
+                        order_id,
+                        order_placed_at,
+                    )
+                    await conn.execute(
+                        "UPDATE orders_archive SET fraud_outcome = $1 WHERE order_id = $2 AND placed_at = $3",
+                        final_outcome,
+                        order_id,
+                        order_placed_at,
+                    )
                 continue
 
             reason_category = "FRAUD" if is_fraud else "OTHER"
