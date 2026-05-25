@@ -110,8 +110,8 @@ def _chargeback_probability(is_fraud: bool, fraud_category: str | None) -> float
 
 def _days_to_chargeback_threshold(rng: random.Random, is_fraud: bool) -> float:
     if is_fraud:
-        return rng.lognormvariate(math.log(14), 0.7)
-    return rng.lognormvariate(math.log(30), 0.8)
+        return min(rng.lognormvariate(math.log(14), 0.7), 59.0)
+    return min(rng.lognormvariate(math.log(30), 0.8), 59.0)
 
 
 def _refund_due_at_hours(order_id: uuid.UUID) -> float:
