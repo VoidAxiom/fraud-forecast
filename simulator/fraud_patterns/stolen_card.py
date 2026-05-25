@@ -60,11 +60,11 @@ async def generate_stolen_card_fraud(
             raise TypeError(
                 "FraudPatternContext.now is required: pass ctx=FraudPatternContext(now=...) or now=<datetime>"
             )
-        ctx = (
-            FraudPatternContext(now=now, rng=rng)
-            if rng is not None
-            else FraudPatternContext(now=now)
-        )
+        if rng is not None:
+            ctx = FraudPatternContext(now=now, rng=rng)
+        else:
+            # Default seed=0 for reproducibility when caller omits rng.
+            ctx = FraudPatternContext(now=now, rng=random.Random(0))
 
     variant_roll = ctx.rng.random()
     if variant_roll < 0.60:

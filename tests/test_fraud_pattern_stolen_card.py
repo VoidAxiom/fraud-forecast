@@ -147,6 +147,15 @@ def test_generate_fraud_order_dispatches_to_stolen_card_pattern() -> None:
     assert gt.fraud_category == "stolen_card"
 
 
+def test_now_shorthand_without_rng_is_stable() -> None:
+    now = datetime(2024, 5, 24, 12, 0, tzinfo=LONDON_TZ)
+    order1, gt1 = asyncio.run(generate_stolen_card_fraud(now=now))
+    order2, gt2 = asyncio.run(generate_stolen_card_fraud(now=now))
+
+    assert order1["order_id"] == order2["order_id"]
+    assert gt1.order_id == gt2.order_id
+
+
 def test_generate_fraud_order_is_deterministic_with_seeded_rng() -> None:
     """Same RNG seed must produce same order_id and order content end-to-end."""
     now = datetime(2024, 5, 24, 12, 0, tzinfo=LONDON_TZ)
