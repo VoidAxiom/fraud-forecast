@@ -98,3 +98,11 @@ async def generate_collusive_merchant_fraud(
     )
 
     return order_dict, gt
+
+
+# Auto-initialize with placeholder UUIDs at module-import time so the pattern
+# can be dispatched without a separate startup call. Real seeded store_ids are
+# wired in by the full generator startup (future packet). Seed=0 is stable
+# across runs until the full startup wiring lands.
+if not COLLUSIVE_STORES:
+    init_collusive_stores(rng=random.Random(0))

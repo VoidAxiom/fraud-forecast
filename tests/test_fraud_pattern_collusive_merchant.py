@@ -31,6 +31,10 @@ def _ctx(seed: int = 42, hour: int = 12) -> FraudPatternContext:
     )
 
 
+def test_auto_initialized_at_import() -> None:
+    assert len(COLLUSIVE_STORES) == 10
+
+
 def test_collusive_init() -> None:
     init_rng = random.Random(42)
     init_collusive_stores(rng=init_rng)
