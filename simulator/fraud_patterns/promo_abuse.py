@@ -129,6 +129,8 @@ async def generate_promo_abuse_fraud(
     ctx: FraudPatternContext,
 ) -> tuple[dict[str, Any], GroundTruth]:
     if not PROMO_ABUSE_RINGS:
+        # P3-B no-implicit-defaults convention: callers (simulator startup and tests)
+        # must call init_rings(rng) explicitly; there is no safe implicit fallback.
         raise RuntimeError(
             "PROMO_ABUSE_RINGS is empty — call init_rings(rng) at simulator startup"
         )
