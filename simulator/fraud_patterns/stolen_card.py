@@ -52,6 +52,8 @@ async def generate_stolen_card_fraud(
     *,
     rng: random.Random | None = None,
 ) -> tuple[dict[str, Any], GroundTruth]:
+    if ctx is not None and rng is not None:
+        raise ValueError("pass either ctx (full context) or rng (seed shorthand), not both")
     if ctx is None:
         ctx = FraudPatternContext(rng=rng) if rng is not None else FraudPatternContext()
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import pytest
 import uuid
 import math
 import random
@@ -74,6 +75,12 @@ def test_generate_stolen_card_fraud_is_deterministic_for_order_id() -> None:
     assert order1["order_id"] == order2["order_id"]
     assert order1["order_id"] == gt1.order_id
     assert isinstance(gt1.order_id, uuid.UUID)
+
+
+def test_generate_stolen_card_fraud_raises_on_conflicting_ctx_and_rng() -> None:
+    ctx = FraudPatternContext(rng=random.Random(1))
+    with pytest.raises(ValueError, match="pass either ctx"):
+        asyncio.run(generate_stolen_card_fraud(ctx, rng=random.Random(2)))
 
 
 def test_placed_at_night_skew_rate_and_derivation_invariant() -> None:
