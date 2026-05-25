@@ -110,6 +110,7 @@ async def _run_generator_batch(
             user_picker=picker,
             stores_by_city=stores_by_city,
             promos=promos,
+            store_hours_by_store_id={},
             rng=rng,
             scoring_enabled=False,
         )
@@ -334,6 +335,7 @@ def test_generator_notify_fires() -> None:
                 user_picker=picker,
                 stores_by_city=stores_by_city,
                 promos=promos,
+                store_hours_by_store_id={},
                 rng=rng,
                 scoring_enabled=False,
             )

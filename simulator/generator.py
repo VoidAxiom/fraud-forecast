@@ -272,12 +272,16 @@ def pick_store_for_user(
     for store in stores:
         store_id = store["store_id"]
         for row in store_hours_by_store_id.get(store_id, []):
-            if (
-                row["day_of_week"] == weekday
-                and row["open_time"] <= current_time <= row["close_time"]
-            ):
-                open_stores.append(store)
-                break
+            if row["day_of_week"] == weekday:
+                open_t = row["open_time"]
+                close_t = row["close_time"]
+                if close_t < open_t:
+                    if current_time >= open_t or current_time <= close_t:
+                        open_stores.append(store)
+                        break
+                elif open_t <= current_time <= close_t:
+                    open_stores.append(store)
+                    break
 
     if open_stores:
         stores = open_stores
