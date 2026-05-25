@@ -1094,10 +1094,9 @@ def _user_worker(
     addresses_written = 0
     payments_written = 0
 
-    user_ids_in_batch: list[str] = []
+    user_created_at_refs: list[tuple[str, _datetime]] = []
     for _ in range(start_idx, end_idx):
         user_id = str(_uuid.UUID(int=_wrng.getrandbits(128), version=4))
-        user_ids_in_batch.append(user_id)
 
         first_name = _fake.first_name()[:100]
         last_name = _fake.last_name()[:100]
@@ -1132,11 +1131,20 @@ def _user_worker(
         risk_tier = _wrng.choices(risk_tiers, weights=risk_tier_weights, k=1)[0]
         referral_source = _wrng.choices(referral_sources, weights=referral_source_weights, k=1)[0]
         referred_by = ""
-        if _wrng.random() < 0.10 and user_ids_in_batch:
-            referred_by = _wrng.choice(user_ids_in_batch[:-1]) if len(user_ids_in_batch) > 1 else ""
 
         exp_days = int(min(1500, max(1, _wrng.expovariate(1.0 / 400.0))))
         created_at = (sim_now - _td(days=exp_days)).replace(microsecond=0)
+        user_created_at_refs.append((user_id, created_at))
+
+        if _wrng.random() < 0.10 and user_created_at_refs:
+            eligible_referrers = [
+                ref_user_id
+                for ref_user_id, ref_created_at in user_created_at_refs[:-1]
+                if ref_created_at < created_at
+            ]
+            if eligible_referrers:
+                referred_by = _wrng.choice(eligible_referrers)
+
         created_at_str = created_at.strftime("%Y-%m-%d %H:%M:%S+00")
         if phone and _wrng.random() < 0.85:
             phone_verified_at = (created_at + _td(days=_wrng.randint(0, 30))).strftime(
@@ -1240,13 +1248,30 @@ def _user_worker(
             exp_year = ""
             billing_addr_id = ""
 
-            if pay_type in ("CREDIT_CARD", "DEBIT_CARD"):
-                issuer_idx = _wrng.choices(
-                    range(len(card_issuer_names)), weights=card_issuer_weights, k=1
-                )[0]
+            if pay_type in ("CREDIT_CARD", "DEBIT_CARD", "PREPAID_CARD"):
+                funding_type_for_pay = {
+                    'CREDIT_CARD': 'CREDIT',
+                    'DEBIT_CARD': 'DEBIT',
+                    'PREPAID_CARD': 'PREPAID',
+                }
+                target_funding = funding_type_for_pay[pay_type]
+                eligible_issuers = [
+                    idx
+                    for idx, funding in enumerate(card_issuer_funding)
+                    if funding == target_funding
+                ]
+                if eligible_issuers:
+                    issuer_weights = [card_issuer_weights[idx] for idx in eligible_issuers]
+                    issuer_idx = eligible_issuers[
+                        _wrng.choices(range(len(eligible_issuers)), weights=issuer_weights, k=1)[0]
+                    ]
+                else:
+                    issuer_idx = _wrng.choices(
+                        range(len(card_issuer_names)), weights=card_issuer_weights, k=1
+                    )[0]
                 card_bin = _wrng.choice(card_issuer_bins[issuer_idx])
                 card_last_four = "".join(str(_wrng.randint(0, 9)) for _ in range(4))
-                card_funding = card_issuer_funding[issuer_idx]
+                card_funding = target_funding
                 is_digital = card_issuer_digital[issuer_idx]
                 card_issuer_bank = card_issuer_names[issuer_idx]
                 if card_bin.startswith(("4",)):
