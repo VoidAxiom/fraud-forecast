@@ -1010,6 +1010,7 @@ def _user_worker(
     """
     import csv as _csv
     import io as _io
+    import bisect as _bisect
     import random as _random
     import uuid as _uuid
     from datetime import date as _date
@@ -1094,7 +1095,7 @@ def _user_worker(
     addresses_written = 0
     payments_written = 0
 
-    user_created_at_refs: list[tuple[str, _datetime]] = []
+    sorted_refs: list[tuple[_datetime, str]] = []
     for _ in range(start_idx, end_idx):
         user_id = str(_uuid.UUID(int=_wrng.getrandbits(128), version=4))
 
@@ -1134,16 +1135,13 @@ def _user_worker(
 
         exp_days = int(min(1500, max(1, _wrng.expovariate(1.0 / 400.0))))
         created_at = (sim_now - _td(days=exp_days)).replace(microsecond=0)
-        user_created_at_refs.append((user_id, created_at))
+        _bisect.insort(sorted_refs, (created_at, user_id))
 
-        if _wrng.random() < 0.10 and user_created_at_refs:
-            eligible_referrers = [
-                ref_user_id
-                for ref_user_id, ref_created_at in user_created_at_refs[:-1]
-                if ref_created_at < created_at
-            ]
-            if eligible_referrers:
-                referred_by = _wrng.choice(eligible_referrers)
+        if _wrng.random() < 0.10 and sorted_refs:
+            idx = _bisect.bisect_left(sorted_refs, (created_at,))
+            if idx > 0:
+                pick_pos = _wrng.randrange(idx)
+                referred_by = sorted_refs[pick_pos][1]
 
         created_at_str = created_at.strftime("%Y-%m-%d %H:%M:%S+00")
         if phone and _wrng.random() < 0.85:
@@ -1250,9 +1248,9 @@ def _user_worker(
 
             if pay_type in ("CREDIT_CARD", "DEBIT_CARD", "PREPAID_CARD"):
                 funding_type_for_pay = {
-                    'CREDIT_CARD': 'CREDIT',
-                    'DEBIT_CARD': 'DEBIT',
-                    'PREPAID_CARD': 'PREPAID',
+                    "CREDIT_CARD": "CREDIT",
+                    "DEBIT_CARD": "DEBIT",
+                    "PREPAID_CARD": "PREPAID",
                 }
                 target_funding = funding_type_for_pay[pay_type]
                 eligible_issuers = [
