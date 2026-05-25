@@ -414,7 +414,7 @@ async def test_backup_poll_once_skips_processed_orders(
     )
 
     now_ts = 1_700_000_000
-    assert fake_redis.get_calls == [(aggregator.BACKUP_PROGRESS_CURSOR_KEY,)]
+    assert fake_redis.get_calls == []
     assert conn.fetch.await_args is not None
     assert conn.fetch.await_args.kwargs == {}
     assert conn.fetch.await_args.args == (
@@ -428,13 +428,7 @@ async def test_backup_poll_once_skips_processed_orders(
     assert fake_redis.sismember_args == [
         (aggregator.processed_bucket_key(timestamp), str(kwargs["order_id"]))
     ]
-    assert fake_redis.set_calls == [
-        (
-            aggregator.BACKUP_PROGRESS_CURSOR_KEY,
-            str(now_ts),
-            aggregator.BACKUP_PROGRESS_CURSOR_TTL_SECONDS,
-        ),
-    ]
+    assert fake_redis.set_calls == []
     update_features_for_order.assert_not_awaited()
 
 
@@ -474,97 +468,11 @@ async def test_backup_poll_once_skips_previous_bucket_processed_orders(
         ),
     ]
     _utcnow_ts.assert_called_once_with()
-    assert fake_redis.set_calls == [
-        (
-            aggregator.BACKUP_PROGRESS_CURSOR_KEY,
-            str(now_ts),
-            aggregator.BACKUP_PROGRESS_CURSOR_TTL_SECONDS,
-        ),
-    ]
+    assert fake_redis.set_calls == []
     update_features_for_order.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-@patch("feature_store.aggregator._utcnow_ts", return_value=1_700_000_000)
-@patch("feature_store.aggregator.update_features_for_order")
-async def test_backup_poll_once_uses_last_backup_cursor(
-    update_features_for_order: AsyncMock,
-    _utcnow_ts: AsyncMock,
-) -> None:
-    kwargs = _build_order_kwargs()
-    row = _build_order_row(**kwargs)
-    conn = AsyncMock()
-    conn.fetch.return_value = [row]
-    pool = AsyncMock()
-    pool_acquire = AsyncMock()
-    pool_acquire.__aenter__.return_value = conn
-    pool.acquire.return_value = pool_acquire
-
-    fake_redis = _FakeRedis(pipeline_results=[], get_result="1699990000")
-
-    await aggregator.run_backup_poll_once(
-        pool=pool,
-        redis_conn=cast(AsyncRedis[str], fake_redis),
-        metrics=aggregator.Metrics(errors=[0]),
-    )
-
-    _utcnow_ts.assert_called_once_with()
-    expected_now_ts = 1_700_000_000
-    assert fake_redis.get_calls == [(aggregator.BACKUP_PROGRESS_CURSOR_KEY,)]
-    assert conn.fetch.await_args is not None
-    assert conn.fetch.await_args.args == (
-        aggregator._BACKUP_POLL_SQL,
-        datetime.datetime.fromtimestamp(1_699_990_000, tz=ZoneInfo("Europe/London")),
-        datetime.datetime.fromtimestamp(expected_now_ts, tz=ZoneInfo("Europe/London")),
-    )
-    assert fake_redis.set_calls == [
-        (
-            aggregator.BACKUP_PROGRESS_CURSOR_KEY,
-            str(expected_now_ts),
-            aggregator.BACKUP_PROGRESS_CURSOR_TTL_SECONDS,
-        ),
-    ]
-    update_features_for_order.assert_awaited_once()
-
-
-@pytest.mark.asyncio
-@patch("feature_store.aggregator._utcnow_ts", return_value=1_700_000_000)
-@patch("feature_store.aggregator.update_features_for_order")
-async def test_backup_poll_once_caps_cursor_lookback(
-    update_features_for_order: AsyncMock,
-    _utcnow_ts: AsyncMock,
-) -> None:
-    kwargs = _build_order_kwargs()
-    row = _build_order_row(**kwargs)
-    conn = AsyncMock()
-    conn.fetch.return_value = [row]
-    pool = AsyncMock()
-    pool_acquire = AsyncMock()
-    pool_acquire.__aenter__.return_value = conn
-    pool.acquire.return_value = pool_acquire
-
-    stale_ts = 1_698_000_000
-    fake_redis = _FakeRedis(pipeline_results=[], get_result=str(stale_ts))
-
-    await aggregator.run_backup_poll_once(
-        pool=pool,
-        redis_conn=cast(AsyncRedis[str], fake_redis),
-        metrics=aggregator.Metrics(errors=[0]),
-    )
-
-    expected_now_ts = 1_700_000_000
-    assert conn.fetch.await_args is not None
-    assert conn.fetch.await_args.args == (
-        aggregator._BACKUP_POLL_SQL,
-        datetime.datetime.fromtimestamp(
-            expected_now_ts - aggregator.BACKUP_POLL_MAX_LOOKBACK_SECONDS,
-            tz=ZoneInfo("Europe/London"),
-        ),
-        datetime.datetime.fromtimestamp(expected_now_ts, tz=ZoneInfo("Europe/London")),
-    )
-    update_features_for_order.assert_awaited_once()
-
-
 @pytest.mark.asyncio
 @patch("feature_store.aggregator._utcnow_ts", return_value=1_700_000_000)
 async def test_mark_order_processed_buckets_keys_and_ttl() -> None:

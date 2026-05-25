@@ -28,10 +28,7 @@ BACKUP_POLL_SECONDS = 30
 CLEANUP_POLL_SECONDS = 60
 ORDER_TTL_SECONDS = 600
 PROCESSED_ORDERS_KEY_PREFIX = "fs:processed_orders"
-BACKUP_PROGRESS_CURSOR_KEY = "fs:aggregator:last_backup_ts"
-BACKUP_PROGRESS_CURSOR_TTL_SECONDS = 3600
 BACKUP_POLL_FALLBACK_SECONDS = 60
-BACKUP_POLL_MAX_LOOKBACK_SECONDS = 60 * 60
 CLEANUP_ZSET_SUFFIXES = (
     ":orders_zset",
     ":spend_zset",
@@ -77,23 +74,6 @@ FROM orders
 WHERE placed_at > $1::TIMESTAMPTZ
   AND placed_at <= $2::TIMESTAMPTZ
 """
-
-
-def _coerce_backup_cursor(raw_cursor: object) -> int | None:
-    if raw_cursor is None:
-        return None
-    if isinstance(raw_cursor, bool):
-        return None
-    if isinstance(raw_cursor, (int, float)):
-        return int(raw_cursor)
-    if isinstance(raw_cursor, (bytes, bytearray)):
-        raw_cursor = raw_cursor.decode("utf-8")
-    if isinstance(raw_cursor, str):
-        try:
-            return int(raw_cursor)
-        except ValueError:
-            return None
-    return None
 
 
 def _configure_logging() -> None:
@@ -801,19 +781,25 @@ async def run_backup_poll_once(
     redis_conn: AsyncRedis[str],
     metrics: Metrics,
 ) -> None:
-    now_ts = _utcnow_ts()
-    last_ts_raw = await redis_conn.get(BACKUP_PROGRESS_CURSOR_KEY)
-    last_ts = _coerce_backup_cursor(last_ts_raw)
-    if last_ts is None:
-        last_ts = now_ts - BACKUP_POLL_FALLBACK_SECONDS
-    cursor_cutoff = now_ts - BACKUP_POLL_MAX_LOOKBACK_SECONDS
-    if last_ts < cursor_cutoff:
-        last_ts = cursor_cutoff
+    """Backup poll for NOTIFY drops.
 
-    last_dt = datetime.datetime.fromtimestamp(last_ts, tz=LONDON_TZ)
+    v1 dev-scope decision (per CLAUDE.md "production-realistic, not production-deployed"):
+    - Single-machine Postgres NOTIFY is reliable; this poll is defense-in-depth only.
+    - Fixed 60-second lookback; we don't try to recover from >60s daemon downtime
+      (the simulator would also be down in that case, so no new orders).
+    - No multi-instance dedupe (single-instance only); fs:processed_orders prevents
+      double-counting between the NOTIFY listener and this backup pass within one run.
+
+    Production deployment (out of scope) would need: durable progress cursor,
+    failure-aware advancement, >=1h dedupe window, multi-instance coordination.
+    """
+    now_ts = _utcnow_ts()
+    cutoff_ts = now_ts - BACKUP_POLL_FALLBACK_SECONDS
+
+    cutoff_dt = datetime.datetime.fromtimestamp(cutoff_ts, tz=LONDON_TZ)
     now_dt = datetime.datetime.fromtimestamp(now_ts, tz=LONDON_TZ)
     async with pool.acquire() as conn:
-        rows = await conn.fetch(_BACKUP_POLL_SQL, last_dt, now_dt)
+        rows = await conn.fetch(_BACKUP_POLL_SQL, cutoff_dt, now_dt)
 
     for row in rows:
         order_id = _coerce_uuid(row["order_id"], "order_id")
@@ -836,12 +822,6 @@ async def run_backup_poll_once(
                 "backup_poll_update_failed",
                 extra={"event": "backup_poll_update_failed", "order_id": order_id_str},
             )
-
-    await redis_conn.set(
-        BACKUP_PROGRESS_CURSOR_KEY,
-        str(now_ts),
-        ex=BACKUP_PROGRESS_CURSOR_TTL_SECONDS,
-    )
 
 
 async def run_backup_poll_loop(
