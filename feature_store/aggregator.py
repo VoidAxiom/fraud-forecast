@@ -5,7 +5,7 @@ import datetime
 import logging
 import os
 from dataclasses import dataclass
-from typing import Any, Iterable, cast
+from typing import Any, Iterable, Union, cast
 from uuid import UUID
 
 import asyncpg  # type: ignore[import]
@@ -106,10 +106,10 @@ class _OrderContext:
     user_id: UUID
     store_id: UUID
     merchant_id: UUID
-    device_id: UUID | None
+    device_id: "UUID | None"  # noqa: UP037,UP045
     ip_address: str
-    payment_method_id: UUID | None
-    delivery_address_id: UUID | None
+    payment_method_id: "UUID | None"  # noqa: UP037,UP045
+    delivery_address_id: "UUID | None"  # noqa: UP037,UP045
     total_pence: int
     placed_at_ts: int
     user_email_domain: str
@@ -123,7 +123,7 @@ def _coerce_uuid(value: object, field: str) -> UUID:
     raise TypeError(f"expected UUID for {field}, got {type(value)!r}")
 
 
-def _coerce_uuid_or_none(value: object, field: str) -> UUID | None:
+def _coerce_uuid_or_none(value: object, field: str) -> "UUID | None":  # noqa: UP037,UP045
     if value is None:
         return None
     return _coerce_uuid(value, field)
@@ -191,7 +191,7 @@ def _coerce_int(value: object) -> int:
     return _safe_int(value)
 
 
-def _last_order_age_minutes(last_scores: list[tuple[str, object]], now_ts: int) -> int | None:
+def _last_order_age_minutes(last_scores: list[tuple[str, object]], now_ts: int) -> "int | None":  # noqa: UP037,UP045
     if not last_scores:
         return None
     _, raw_score = last_scores[0]
@@ -250,7 +250,7 @@ async def _refresh_user_stream_aggregates(
         withscores=True,
     )
     last_order_age_minutes = _last_order_age_minutes(
-        cast(list[tuple[str, object]], previous_orders),
+        cast("list[tuple[str, object]]", previous_orders),
         now_ts,
     )
 
@@ -274,7 +274,7 @@ async def _refresh_user_stream_aggregates(
     unique_payment_methods_24h = _safe_int(results[5] if len(results) > 5 else None)
 
     persist_pipe = redis_conn.pipeline()
-    stream_mapping: dict[str | bytes, bytes | float | int | str] = {
+    stream_mapping: dict[Union[str, bytes], Union[bytes, float, int, str]] = {  # noqa: UP037,UP007
         "orders_1h": orders_1h,
         "orders_24h": orders_24h,
         "spend_1h_pence": spend_1h,
@@ -847,7 +847,7 @@ def _strip_suffix(value: str, suffix: str) -> str:
     return value[: -len(suffix)] if value.endswith(suffix) else value
 
 
-def _extract_entity_from_zset_key(key: str, suffix: str) -> tuple[str, str] | None:
+def _extract_entity_from_zset_key(key: str, suffix: str) -> "tuple[str, str] | None":  # noqa: UP037,UP045
     key_prefix = "fs:"
     suffix_token = suffix
     if not key.startswith(key_prefix) or not key.endswith(suffix_token):
