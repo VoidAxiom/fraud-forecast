@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import os
@@ -72,6 +73,15 @@ def _coerce_float(value: Any) -> float | None:
         return None
 
 
+def _seed_from_uuid(seed_uuid: uuid.UUID, namespace: str) -> int:
+    digest = hashlib.sha256(f"{seed_uuid}:{namespace}".encode()).hexdigest()
+    return int(digest[:16], 16)
+
+
+def _seeded_rng(seed_uuid: uuid.UUID, namespace: str) -> random.Random:
+    return random.Random(_seed_from_uuid(seed_uuid, namespace))
+
+
 def _now_utc() -> datetime:
     return datetime.now(tz=timezone.utc)
 
@@ -82,6 +92,7 @@ def _compute_transition(
     simulated_elapsed_seconds: float,
     rng: random.Random,
     *,
+    order_id: uuid.UUID | None = None,
     avg_prep_time_min: float | None = None,
     distance_km: float | None = None,
 ) -> tuple[str | None, str | None]:
@@ -123,9 +134,26 @@ def _compute_transition(
             return None, None
 
         if normalized_order_type == "PICKUP":
+            if simulated_elapsed_seconds < 60:
+                return None, None
+
+            if order_id is not None:
+                is_no_show = _seeded_rng(order_id, "pickup_no_show").random() < 0.05
+                if is_no_show and simulated_elapsed_seconds > 3600:
+                    return "CANCELLED", "no-show"
+                if is_no_show:
+                    return None, None
+
+                sample_ready_delay_seconds = _seeded_rng(
+                    order_id,
+                    "pickup_ready_delay_minutes",
+                ).uniform(60.0, 1800.0)
+                if simulated_elapsed_seconds >= sample_ready_delay_seconds:
+                    return "DELIVERED", None
+                return None, None
+
             if simulated_elapsed_seconds >= 3600:
                 return "CANCELLED", "no-show"
-
             if simulated_elapsed_seconds >= 60 and rng.random() < 0.95:
                 return "DELIVERED", None
             return None, None
@@ -137,7 +165,11 @@ def _compute_transition(
 
     if status == "IN_TRANSIT":
         distance = _DEFAULT_DISTANCE_KM if distance_km is None else distance_km
-        threshold_seconds = distance * 2.0 * 60.0 * 0.8
+        if order_id is None:
+            travel_factor = rng.uniform(0.8, 1.5)
+        else:
+            travel_factor = _seeded_rng(order_id, "in_transit_factor").uniform(0.8, 1.5)
+        threshold_seconds = distance * 2.0 * 60.0 * travel_factor
         if simulated_elapsed_seconds < threshold_seconds:
             return None, None
 
@@ -301,6 +333,7 @@ async def advance_order(
     next_status, reason = _compute_transition(
         current_status=current_status,
         order_type=order_type,
+        order_id=order_id,
         simulated_elapsed_seconds=simulated_elapsed,
         rng=rng,
         avg_prep_time_min=avg_prep_time_min,
@@ -324,7 +357,7 @@ async def advance_order(
         update_parts.append("terminal_state_reached_at = NOW()")
 
     driver_id: uuid.UUID | None = None
-    if next_status == "PICKED_UP" and order_type.upper() == "DELIVERY":
+    if next_status == "ACCEPTED" and order_type.upper() == "DELIVERY":
         driver_id = await _pick_driver(conn, store_city)
         if driver_id is None:
             logger.info(
