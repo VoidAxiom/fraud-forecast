@@ -55,6 +55,8 @@ def test_returns_ground_truth() -> None:
     assert gt.is_fraud is True
     assert gt.fraud_category == "reseller"
     assert gt.ring_id is None
+    assert isinstance(order_dict["delivery_address_id"], UUID)
+    assert isinstance(order_dict["user_id"], UUID)
     assert isinstance(order_dict["store_id"], UUID)
 
 
@@ -70,6 +72,7 @@ def test_bulk_cart() -> None:
         item_count = order_dict["item_count"]
         assert 10 <= item_count <= 25
         item_counts.append(item_count)
+        assert isinstance(order_dict["user_id"], UUID)
         assert isinstance(order_dict["store_id"], UUID)
 
     mean_item_count = sum(item_counts) / len(item_counts)
@@ -89,14 +92,15 @@ def test_delivery_address_stable() -> None:
         ctx_time = datetime(2026, 1, 3, 11, 0, tzinfo=LONDON_TZ_TEST)
         rng: random.Random = random.Random(321)
 
-        addresses: list[dict[str, object]] = []
+        address_ids: list[UUID] = []
         for _ in range(10):
             order_dict, _ = asyncio.run(
                 generate_reseller_fraud(FraudPatternContext(now=ctx_time, rng=rng))
             )
-            addresses.append(order_dict["delivery_address_id"])
+            assert isinstance(order_dict["delivery_address_id"], UUID)
+            address_ids.append(order_dict["delivery_address_id"])
 
-        assert all(address == addresses[0] for address in addresses)
+        assert all(address == address_ids[0] for address in address_ids)
     finally:
         RESELLER_ACCOUNTS.clear()
         RESELLER_ACCOUNTS.extend(original_accounts)

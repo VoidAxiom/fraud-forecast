@@ -16,6 +16,7 @@ from simulator.fraud_patterns.stolen_card import FraudPatternContext
 class ResellerAccount:
     account_id: UUID
     reseller_address: dict[str, Any]
+    delivery_address_uuid: UUID
     preferred_store_ids: list[UUID]
 
 
@@ -32,6 +33,7 @@ def _create_account(rng: random.Random) -> ResellerAccount:
             f"{rng.randint(1, 9)}{chr(rng.randint(65, 90))}{rng.randint(1, 9)}",
             "city": "London",
         },
+        delivery_address_uuid=UUID(int=rng.getrandbits(128)),
         preferred_store_ids=[UUID(int=rng.getrandbits(128)) for _ in range(rng.randint(1, 3))],
     )
 
@@ -77,9 +79,11 @@ async def generate_reseller_fraud(
         "order_id": order_id,
         "order_total_pence": order_total_pence,
         "item_count": item_count,
-        "delivery_address_id": account.reseller_address,
+        "delivery_address_id": account.delivery_address_uuid,
+        "delivery_address_snapshot": account.reseller_address,
         "payment_method": "RESELLER_OWN_CARD",
         "device_id": "RESELLER_OWN_DEVICE",
+        "user_id": account.account_id,
         "store_id": store_id,
     }
 
