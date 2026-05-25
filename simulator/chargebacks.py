@@ -15,39 +15,6 @@ import asyncpg  # type: ignore[import]
 LOGGER: logging.Logger = logging.getLogger(__name__)
 DATABASE_URL: str | None = os.environ.get("DATABASE_URL")
 
-_CHARGEBACK_CANDIDATES_SQL = """
-(
-SELECT
-  o.order_id,
-  o.placed_at AS order_placed_at,
-  o.delivered_at,
-  o.total_pence,
-  gt.is_fraud,
-  gt.fraud_category
-FROM orders o
-JOIN simulator_ground_truth gt USING (order_id)
-WHERE o.delivered_at IS NOT NULL
-  AND o.delivered_at >= NOW() - INTERVAL '90 days'
-  AND o.chargeback_received_at IS NULL
-  AND o.fraud_outcome IS NULL
-)
-UNION ALL
-(
-SELECT
-  o.order_id,
-  o.placed_at AS order_placed_at,
-  o.delivered_at,
-  o.total_pence,
-  gt.is_fraud,
-  gt.fraud_category
-FROM orders_archive o
-JOIN simulator_ground_truth gt USING (order_id)
-WHERE o.delivered_at >= NOW() - INTERVAL '90 days'
-  AND o.chargeback_received_at IS NULL
-  AND o.fraud_outcome IS NULL
-)
-"""
-
 _CHARGEBACK_INSERT_SQL = """
 INSERT INTO chargebacks (order_id, order_placed_at, reason_code, reason_category, amount_pence, received_at)
 VALUES ($1, $2, 'CB001', $3, $4, NOW())
@@ -70,36 +37,6 @@ SET chargeback_received_at = NOW(),
     fraud_outcome = $4
 WHERE order_id = $1
   AND placed_at = $2
-"""
-
-_REFUND_CANDIDATES_SQL = """
-(
-SELECT
-  o.order_id,
-  o.placed_at AS order_placed_at,
-  o.delivered_at,
-  o.total_pence
-FROM orders o
-JOIN simulator_ground_truth gt USING (order_id)
-WHERE o.delivered_at IS NOT NULL
-  AND o.delivered_at >= NOW() - INTERVAL '5 days'
-  AND gt.fraud_category = 'refund_abuse'
-  AND NOT EXISTS (SELECT 1 FROM refunds r WHERE r.order_id = o.order_id)
-)
-UNION ALL
-(
-SELECT
-  o.order_id,
-  o.placed_at AS order_placed_at,
-  o.delivered_at,
-  o.total_pence
-FROM orders_archive o
-JOIN simulator_ground_truth gt USING (order_id)
-WHERE o.delivered_at IS NOT NULL
-  AND o.delivered_at >= NOW() - INTERVAL '5 days'
-  AND gt.fraud_category = 'refund_abuse'
-  AND NOT EXISTS (SELECT 1 FROM refunds r WHERE r.order_id = o.order_id)
-)
 """
 
 _REFUND_INSERT_SQL = """
@@ -302,7 +239,7 @@ async def generate_refunds(pool: Any) -> None:
                 "FROM orders o\n"
                 "JOIN simulator_ground_truth gt USING (order_id)\n"
                 "WHERE o.delivered_at IS NOT NULL\n"
-                "  AND o.delivered_at >= NOW() - INTERVAL '6 days'\n"
+                "  AND o.delivered_at >= NOW() - INTERVAL '90 days'\n"
                 "  AND gt.fraud_category = 'refund_abuse'\n"
                 "  AND NOT EXISTS (SELECT 1 FROM refunds r WHERE r.order_id = o.order_id)\n"
                 "  AND o.order_id > $1\n"
@@ -317,7 +254,7 @@ async def generate_refunds(pool: Any) -> None:
                 "FROM orders_archive o\n"
                 "JOIN simulator_ground_truth gt USING (order_id)\n"
                 "WHERE o.delivered_at IS NOT NULL\n"
-                "  AND o.delivered_at >= NOW() - INTERVAL '6 days'\n"
+                "  AND o.delivered_at >= NOW() - INTERVAL '90 days'\n"
                 "  AND gt.fraud_category = 'refund_abuse'\n"
                 "  AND NOT EXISTS (SELECT 1 FROM refunds r WHERE r.order_id = o.order_id)\n"
                 "  AND o.order_id > $1)) _cands "
