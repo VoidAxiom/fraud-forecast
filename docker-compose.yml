@@ -105,6 +105,20 @@ services:
     networks:
       - fraud_net
 
+  lifecycle:
+    build: .
+    image: fraud-forecast-app
+    command: python -m simulator.lifecycle
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: ${DATABASE_URL}
+      SIMULATION_TIME_COMPRESSION: ${SIMULATION_TIME_COMPRESSION:-60}
+    networks:
+      - fraud_net
+
 volumes:
   pg_data:
   redis_data:
