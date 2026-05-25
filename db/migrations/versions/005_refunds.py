@@ -31,6 +31,7 @@ CREATE TABLE refunds (
     op.execute("REVOKE ALL ON refunds FROM simulator_user;")
     op.execute("GRANT INSERT ON refunds TO simulator_user;")
     op.execute("GRANT SELECT ON refunds TO analyst_user;")
+    op.execute("ALTER TABLE chargebacks ADD CONSTRAINT chargebacks_order_id_unique UNIQUE (order_id);")
 
 
 def downgrade() -> None:
