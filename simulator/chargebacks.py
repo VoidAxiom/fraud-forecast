@@ -30,7 +30,6 @@ WHERE o.delivered_at IS NOT NULL
   AND o.delivered_at >= NOW() - INTERVAL '90 days'
   AND o.chargeback_received_at IS NULL
   AND o.fraud_outcome IS NULL
-LIMIT 5000
 )
 UNION ALL
 (
@@ -46,7 +45,6 @@ JOIN simulator_ground_truth gt USING (order_id)
 WHERE o.delivered_at >= NOW() - INTERVAL '90 days'
   AND o.chargeback_received_at IS NULL
   AND o.fraud_outcome IS NULL
-LIMIT 5000
 )
 """
 
@@ -87,7 +85,6 @@ WHERE o.delivered_at IS NOT NULL
   AND o.delivered_at >= NOW() - INTERVAL '5 days'
   AND gt.fraud_category = 'refund_abuse'
   AND NOT EXISTS (SELECT 1 FROM refunds r WHERE r.order_id = o.order_id)
-LIMIT 5000
 )
 UNION ALL
 (
@@ -102,7 +99,6 @@ WHERE o.delivered_at IS NOT NULL
   AND o.delivered_at >= NOW() - INTERVAL '5 days'
   AND gt.fraud_category = 'refund_abuse'
   AND NOT EXISTS (SELECT 1 FROM refunds r WHERE r.order_id = o.order_id)
-LIMIT 5000
 )
 """
 
@@ -183,70 +179,97 @@ def _days_to_chargeback_threshold(rng: random.Random, is_fraud: bool) -> float:
 
 async def generate_chargebacks(pool: Any) -> None:
     async with pool.acquire() as conn:
-        candidate_rows = await conn.fetch(_CHARGEBACK_CANDIDATES_SQL)
         now = datetime.datetime.now(datetime.timezone.utc)
+        offset = 0
+        batch_size = 5000
 
-        for row in candidate_rows:
-            order_id = _coerce_order_id(row["order_id"])
-            order_placed_at = row["order_placed_at"]
-            delivered_at = row["delivered_at"]
-            total_pence = int(row["total_pence"])
-            is_fraud = bool(row["is_fraud"])
-            fraud_category = row["fraud_category"]
-
-            rng = random.Random(int(order_id.bytes[:8].hex(), 16))
-            days_to_chargeback = _days_to_chargeback_threshold(rng, is_fraud)
-            delivered_age_days = (now - delivered_at).total_seconds() / 86400
-            chargeback_probability = _chargeback_probability(is_fraud, fraud_category)
-            should_chargeback_now = (
-                delivered_age_days >= days_to_chargeback
-            ) and (rng.random() < chargeback_probability)
-
-            if not should_chargeback_now:
-                continue
-
-            reason_category = "FRAUD" if is_fraud else "OTHER"
-            fraud_outcome = "CHARGEBACK" if is_fraud else "LEGIT"
-
-            await conn.execute(
-                _CHARGEBACK_INSERT_SQL,
-                order_id,
-                order_placed_at,
-                reason_category,
-                total_pence,
+        while True:
+            paged_sql = (
+                "SELECT * FROM ("
+                f"{_CHARGEBACK_CANDIDATES_SQL}"
+                ") _cands ORDER BY order_placed_at"
+                f" LIMIT {batch_size} OFFSET {offset}"
             )
-            await conn.execute(
-                _CHARGEBACK_ORDERS_UPDATE_SQL,
-                order_id,
-                order_placed_at,
-                total_pence,
-                fraud_outcome,
-            )
-            await conn.execute(
-                _CHARGEBACK_ARCHIVE_UPDATE_SQL,
-                order_id,
-                order_placed_at,
-                total_pence,
-                fraud_outcome,
-            )
+            candidate_rows = await conn.fetch(paged_sql)
+            if len(candidate_rows) == 0:
+                break
+
+            for row in candidate_rows:
+                order_id = _coerce_order_id(row["order_id"])
+                order_placed_at = row["order_placed_at"]
+                delivered_at = row["delivered_at"]
+                total_pence = int(row["total_pence"])
+                is_fraud = bool(row["is_fraud"])
+                fraud_category = row["fraud_category"]
+
+                rng = random.Random(int(order_id.bytes[:8].hex(), 16))
+                days_to_chargeback = _days_to_chargeback_threshold(rng, is_fraud)
+                delivered_age_days = (now - delivered_at).total_seconds() / 86400
+                chargeback_probability = _chargeback_probability(is_fraud, fraud_category)
+                should_chargeback_now = (
+                    delivered_age_days >= days_to_chargeback
+                ) and (rng.random() < chargeback_probability)
+
+                if not should_chargeback_now:
+                    continue
+
+                reason_category = "FRAUD" if is_fraud else "OTHER"
+                fraud_outcome = "CHARGEBACK" if is_fraud else "LEGIT"
+
+                async with conn.transaction():
+                    await conn.execute(
+                        _CHARGEBACK_INSERT_SQL,
+                        order_id,
+                        order_placed_at,
+                        reason_category,
+                        total_pence,
+                    )
+                    await conn.execute(
+                        _CHARGEBACK_ORDERS_UPDATE_SQL,
+                        order_id,
+                        order_placed_at,
+                        total_pence,
+                        fraud_outcome,
+                    )
+                    await conn.execute(
+                        _CHARGEBACK_ARCHIVE_UPDATE_SQL,
+                        order_id,
+                        order_placed_at,
+                        total_pence,
+                        fraud_outcome,
+                    )
+            offset += batch_size
 
 
 async def generate_refunds(pool: Any) -> None:
     async with pool.acquire() as conn:
-        candidate_rows = await conn.fetch(_REFUND_CANDIDATES_SQL)
         now = datetime.datetime.now(datetime.timezone.utc)
+        offset = 0
+        batch_size = 5000
 
-        for row in candidate_rows:
-            order_id = _coerce_order_id(row["order_id"])
-            order_placed_at = row["order_placed_at"]
-            delivered_at = row["delivered_at"]
-            total_pence = int(row["total_pence"])
+        while True:
+            paged_sql = (
+                "SELECT * FROM ("
+                f"{_REFUND_CANDIDATES_SQL}"
+                ") _cands ORDER BY order_placed_at"
+                f" LIMIT {batch_size} OFFSET {offset}"
+            )
+            candidate_rows = await conn.fetch(paged_sql)
+            if len(candidate_rows) == 0:
+                break
 
-            delivered_age_hours = (now - delivered_at).total_seconds() / 3600
-            if not (0 <= delivered_age_hours <= 120):
-                continue
+            for row in candidate_rows:
+                order_id = _coerce_order_id(row["order_id"])
+                order_placed_at = row["order_placed_at"]
+                delivered_at = row["delivered_at"]
+                total_pence = int(row["total_pence"])
 
-            await conn.execute(_REFUND_INSERT_SQL, order_id, order_placed_at, total_pence)
+                delivered_age_hours = (now - delivered_at).total_seconds() / 3600
+                if not (0 <= delivered_age_hours <= 120):
+                    continue
+
+                await conn.execute(_REFUND_INSERT_SQL, order_id, order_placed_at, total_pence)
+            offset += batch_size
 
 
 async def finalize_stale_labels(pool: Any) -> None:
