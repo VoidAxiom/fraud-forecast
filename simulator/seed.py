@@ -1008,7 +1008,6 @@ def _user_worker(
     Worker for parallelised user seeding.
     Returns (users_written, addresses_written, payments_written).
     """
-    import bisect as _bisect
     import csv as _csv
     import io as _io
     import random as _random
@@ -1095,7 +1094,7 @@ def _user_worker(
     addresses_written = 0
     payments_written = 0
 
-    sorted_refs: list[tuple[_datetime, str]] = []
+    referral_pool: list[tuple[_datetime, str]] = []
     for _ in range(start_idx, end_idx):
         user_id = str(_uuid.UUID(int=_wrng.getrandbits(128), version=4))
 
@@ -1135,13 +1134,12 @@ def _user_worker(
 
         exp_days = int(min(1500, max(1, _wrng.expovariate(1.0 / 400.0))))
         created_at = (sim_now - _td(days=exp_days)).replace(microsecond=0)
-        _bisect.insort(sorted_refs, (created_at, user_id))
+        referral_pool.append((created_at, user_id))
 
-        if _wrng.random() < 0.10 and sorted_refs:
-            idx = _bisect.bisect_left(sorted_refs, (created_at,))
-            if idx > 0:
-                pick_pos = _wrng.randrange(idx)
-                referred_by = sorted_refs[pick_pos][1]
+        if _wrng.random() < 0.10 and len(referral_pool) > 1:
+            idx = _wrng.randrange(len(referral_pool) - 1)
+            if referral_pool[idx][0] < created_at:
+                referred_by = referral_pool[idx][1]
 
         created_at_str = created_at.strftime("%Y-%m-%d %H:%M:%S+00")
         if phone and _wrng.random() < 0.85:
