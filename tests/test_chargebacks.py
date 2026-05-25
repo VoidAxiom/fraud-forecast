@@ -2,7 +2,27 @@
 from __future__ import annotations
 
 import uuid
-from simulator.chargebacks import _refund_due_at_hours
+from simulator.chargebacks import _chargeback_age_allowed, _refund_age_allowed, _refund_due_at_hours
+
+
+def test_chargeback_age_allowed_within_window() -> None:
+    assert _chargeback_age_allowed(0.0)
+    assert _chargeback_age_allowed(60.0)
+
+
+def test_chargeback_age_allowed_excludes_older_than_60_days() -> None:
+    assert not _chargeback_age_allowed(60.000_000_1)
+    assert not _chargeback_age_allowed(61.0)
+
+
+def test_refund_age_allowed_within_window() -> None:
+    assert _refund_age_allowed(0.0)
+    assert _refund_age_allowed(120.0)
+
+
+def test_refund_age_allowed_excludes_older_than_120_hours() -> None:
+    assert not _refund_age_allowed(120.000_000_1)
+    assert not _refund_age_allowed(121.0)
 
 
 def test_refund_due_at_hours_range() -> None:

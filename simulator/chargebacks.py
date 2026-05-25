@@ -110,8 +110,14 @@ def _chargeback_probability(is_fraud: bool, fraud_category: str | None) -> float
 
 def _days_to_chargeback_threshold(rng: random.Random, is_fraud: bool) -> float:
     if is_fraud:
-        return min(rng.lognormvariate(math.log(14), 0.7), 59.0)
-    return min(rng.lognormvariate(math.log(30), 0.8), 59.0)
+        mu = math.log(14) - 0.7 ** 2 / 2
+        return min(rng.lognormvariate(mu, 0.7), 59.0)
+    mu = math.log(30) - 0.8 ** 2 / 2
+    return min(rng.lognormvariate(mu, 0.8), 59.0)
+
+
+def _chargeback_age_allowed(delivered_age_days: float) -> bool:
+    return delivered_age_days <= 60.0
 
 
 def _refund_due_at_hours(order_id: uuid.UUID) -> float:
@@ -122,6 +128,10 @@ def _refund_due_at_hours(order_id: uuid.UUID) -> float:
     """
     seed = int(order_id.bytes[:8].hex(), 16)
     return random.Random(seed).uniform(0.0, 120.0)
+
+
+def _refund_age_allowed(delivered_age_hours: float) -> bool:
+    return delivered_age_hours <= 120.0
 
 
 async def generate_chargebacks(pool: Any) -> None:
@@ -182,6 +192,8 @@ async def generate_chargebacks(pool: Any) -> None:
                 rng = random.Random(int(order_id.bytes[:8].hex(), 16))
                 days_to_chargeback = _days_to_chargeback_threshold(rng, is_fraud)
                 delivered_age_days = (now - delivered_at).total_seconds() / 86400
+                if not _chargeback_age_allowed(delivered_age_days):
+                    continue
                 chargeback_probability = _chargeback_probability(is_fraud, fraud_category)
                 should_chargeback_now = (
                     delivered_age_days >= days_to_chargeback
@@ -272,6 +284,8 @@ async def generate_refunds(pool: Any) -> None:
                 total_pence = int(row["total_pence"])
 
                 delivered_age_hours = (now - delivered_at).total_seconds() / 3600
+                if not _refund_age_allowed(delivered_age_hours):
+                    continue
                 refund_delay_hours = _refund_due_at_hours(order_id)
                 if delivered_age_hours < refund_delay_hours:
                     continue
