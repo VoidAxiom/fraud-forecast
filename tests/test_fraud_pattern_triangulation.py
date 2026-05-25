@@ -112,8 +112,8 @@ def test_triangulation_address_diversity() -> None:
     init_accounts(random.Random(6), n=30)
 
     account: TriangulationAccount = TRIANGULATION_ACCOUNTS[0]
-    account.delivery_addresses_used.clear()
-    account.cards_used.clear()
+    account.delivery_addresses_used_count = 0
+    account.cards_used_count = 0
 
     class _PinRng2(random.Random):
         def choice(self, seq: Any) -> Any:  # type: ignore[override]
@@ -142,8 +142,8 @@ def test_triangulation_card_diversity() -> None:
     init_accounts(random.Random(8), n=30)
 
     account: TriangulationAccount = TRIANGULATION_ACCOUNTS[0]
-    account.delivery_addresses_used.clear()
-    account.cards_used.clear()
+    account.delivery_addresses_used_count = 0
+    account.cards_used_count = 0
 
     class _PinRng3(random.Random):
         def choice(self, seq: Any) -> Any:  # type: ignore[override]
@@ -165,3 +165,44 @@ def test_triangulation_card_diversity() -> None:
     unique_count = len(set(payment_method_ids))
     pct_unique = unique_count / len(payment_method_ids)
     assert pct_unique >= 0.80, f"expected >= 80% unique cards, got {pct_unique:.1%} ({unique_count}/100)"
+
+
+def test_triangulation_iso2_invariant() -> None:
+    """Card/IP countries should always be the same valid ISO-2 code."""
+    init_accounts(random.Random(10), n=30)
+    ctx = _make_ctx(seed=11)
+
+    for _ in range(200):
+        order_dict, _ = asyncio.run(generate_triangulation_fraud(ctx))
+        card_country = order_dict["card_country"]
+        ip_country = order_dict["ip_country"]
+
+        assert isinstance(card_country, str)
+        assert isinstance(ip_country, str)
+        assert len(card_country) == 2
+        assert len(ip_country) == 2
+        assert card_country.isupper()
+        assert ip_country.isupper()
+        assert card_country == ip_country
+
+
+def test_triangulation_counter_increments() -> None:
+    """Order generation should increment both triangulation counters by one each call."""
+    rng = random.Random(12)
+    init_accounts(rng, n=1)
+
+    class _PinnedCtx(random.Random):
+        def choice(self, seq: Any) -> Any:  # type: ignore[override]
+            return TRIANGULATION_ACCOUNTS[0]
+
+    ctx = FraudPatternContext(
+        now=datetime(2024, 6, 1, 14, 0, tzinfo=LONDON_TZ_TEST),
+        rng=_PinnedCtx(12),
+    )
+
+    for _ in range(5):
+        asyncio.run(generate_triangulation_fraud(ctx))
+
+    account = TRIANGULATION_ACCOUNTS[0]
+    assert account.cards_used_count == 5
+    assert account.delivery_addresses_used_count == 5

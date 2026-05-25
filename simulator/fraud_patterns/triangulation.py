@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import math
 import random
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 from uuid import UUID
 
@@ -26,6 +26,7 @@ _ORDER_VALUE_SIGMA = 0.3
 _ORDER_VALUE_MU = math.log(_ORDER_VALUE_MEAN_GBP) - (_ORDER_VALUE_SIGMA ** 2) / 2
 
 # Foreign-bias card countries (same stolen-card pattern from P3-B)
+_OTHER_ISO2_POOL: list[str] = ["BR", "MX", "PL", "TR", "ZA", "AR", "PH", "PK", "ID", "TH"]
 _CARD_COUNTRIES = [
     ("GB", 0.20),
     ("US", 0.20),
@@ -35,7 +36,16 @@ _CARD_COUNTRIES = [
     ("CN", 0.06),
     ("DE", 0.05),
     ("FR", 0.05),
-    ("other", 0.14),
+    ("BR", 0.014),
+    ("MX", 0.014),
+    ("PL", 0.014),
+    ("TR", 0.014),
+    ("ZA", 0.014),
+    ("AR", 0.014),
+    ("PH", 0.014),
+    ("PK", 0.014),
+    ("ID", 0.014),
+    ("TH", 0.014),
 ]
 
 # AVS: sophisticated variant — often MATCH (fraudster knows the billing addr)
@@ -49,8 +59,8 @@ _CARD_FUNDING_CHOICES = [("PREPAID", 0.40), ("CREDIT", 0.40), ("DEBIT", 0.20)]
 class TriangulationAccount:
     account_id: UUID
     device_id: UUID
-    cards_used: list[dict[str, str]] = field(default_factory=list)
-    delivery_addresses_used: list[UUID] = field(default_factory=list)
+    cards_used_count: int = 0
+    delivery_addresses_used_count: int = 0
 
 
 def _uuid_from_rng(rng: random.Random) -> UUID:
@@ -125,11 +135,11 @@ async def generate_triangulation_fraud(
 
     # New stolen card for this transaction
     card = _new_stolen_card(ctx.rng)
-    account.cards_used.append(card)
+    account.cards_used_count += 1
 
     # New delivery address (the customer who paid the fraudster)
     delivery_address_id = _new_delivery_address(ctx.rng)
-    account.delivery_addresses_used.append(delivery_address_id)
+    account.delivery_addresses_used_count += 1
 
     # Realistic order value ~£25-40 (lognormal mean ~£30, sigma=0.3)
     order_value_gbp = math.exp(ctx.rng.gauss(_ORDER_VALUE_MU, _ORDER_VALUE_SIGMA))
@@ -138,7 +148,7 @@ async def generate_triangulation_fraud(
     order_id = _uuid_from_rng(ctx.rng)
 
     # ip_country: ISO-2, consistent with card country (sophisticated fraudster)
-    ip_country = card["card_country"] if card["card_country"] != "other" else "US"
+    ip_country = card["card_country"]
 
     order_dict: dict[str, Any] = {
         "order_id": order_id,
@@ -158,8 +168,8 @@ async def generate_triangulation_fraud(
 
     pattern_notes = (
         f"fraudster_account_id={account.account_id}, "
-        f"n_addresses_used={len(account.delivery_addresses_used)}, "
-        f"n_cards_used={len(account.cards_used)}"
+        f"n_addresses_used={account.delivery_addresses_used_count}, "
+        f"n_cards_used={account.cards_used_count}"
     )
 
     gt = GroundTruth(
