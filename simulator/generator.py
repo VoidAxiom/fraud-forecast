@@ -330,7 +330,7 @@ def pick_device_and_ip(
 def generate_order_number(rng: random.Random) -> str:
     _ = rng
     order_year = datetime.now(tz=LONDON_TZ).year
-    suffix = base64.b32encode(uuid.uuid4().bytes).decode()[0:6]
+    suffix = base64.b32encode(uuid.uuid4().bytes).decode()[0:10]
     return f"JE-{order_year}-{suffix}"
 
 
@@ -338,12 +338,16 @@ def compute_pricing(
     cart_subtotal_pence: int,
     distance_km: float,
     rng: random.Random,
+    order_type: str = "DELIVERY",
 ) -> tuple[int, int, int, int]:
-    delivery_fee = 250 + min(249, int(distance_km * 20))
-    if delivery_fee < 250:
-        delivery_fee = 250
-    elif delivery_fee > 499:
-        delivery_fee = 499
+    if order_type == "DELIVERY":
+        delivery_fee = 250 + min(249, int(distance_km * 20))
+        if delivery_fee < 250:
+            delivery_fee = 250
+        elif delivery_fee > 499:
+            delivery_fee = 499
+    else:
+        delivery_fee = 0
 
     service_fee = min(250, int(cart_subtotal_pence * 0.10))
 
@@ -1081,7 +1085,7 @@ async def create_one_order(
         applied_discount = _promo_discount(promo, cart.subtotal_pence)
 
         distance_km = _distance_km_for_delivery(store, delivery_address)
-        pricing_tuple = compute_pricing(cart.subtotal_pence, distance_km, rng)
+        pricing_tuple = compute_pricing(cart.subtotal_pence, distance_km, rng, order_type)
 
         snapshot = _build_snapshot(
             user=user,

@@ -17,16 +17,19 @@ from simulator.generator import (
     load_stores_by_city,
     main,
 )
-from simulator.user_picker import WeightedUserPicker
 
 
 DATABASE_URL_SIMULATOR = os.getenv(
     "DATABASE_URL_SIMULATOR",
     "postgresql://simulator_user:simulator_dev_password@postgres:5432/fraud_platform",
 )
+DATABASE_URL_APP = os.getenv(
+    "DATABASE_URL",
+    "postgresql://app:app_dev_password@postgres:5432/fraud_platform",
+)
 REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379/0")
 
-ORDER_NUMBER_RE = re.compile(r"^JE-\d{4}-[A-Z2-7]{6}$")
+ORDER_NUMBER_RE = re.compile(r"^JE-\d{4}-[A-Z2-7]{10}$")
 
 
 class _FixedUserPicker:
@@ -98,16 +101,7 @@ async def _run_generator_batch(
             "SELECT COUNT(*) FROM orders WHERE user_id = $1",
             user_id,
         )
-
-    if fixed_user_id is None:
-        picker: WeightedUserPicker | _FixedUserPicker = WeightedUserPicker(
-            pool,
-            redis,
-            refresh_every=300_000,
-        )
-        await picker.refresh()
-    else:
-        picker = _FixedUserPicker(user_id)
+    picker = _FixedUserPicker(user_id)
 
     rng = random.Random(seed)
     for _ in range(sample_size):
@@ -153,6 +147,7 @@ async def _run_generator_batch(
 def test_generator_creates_valid_order() -> None:
     async def _run() -> None:
         pool = await asyncpg.create_pool(DATABASE_URL_SIMULATOR, min_size=2, max_size=5)
+        app_pool = await asyncpg.create_pool(DATABASE_URL_APP, min_size=1, max_size=3)
         redis = aioredis.from_url(REDIS_URL)
         try:
             _, order_rows = await _run_generator_batch(
@@ -165,7 +160,7 @@ def test_generator_creates_valid_order() -> None:
             assert len(order_rows) == 1
             order_ids: list[uuid.UUID] = [row["order_id"] for row in order_rows]
 
-            async with pool.acquire() as conn:
+            async with app_pool.acquire() as conn:
                 order_item_count = await conn.fetchval(
                     "SELECT COUNT(*) FROM order_items WHERE order_id = ANY($1::uuid[])",
                     order_ids,
@@ -192,6 +187,7 @@ def test_generator_creates_valid_order() -> None:
             assert gt_count == 1
         finally:
             await redis.close()
+            await app_pool.close()
             await pool.close()
 
     asyncio.run(_run())

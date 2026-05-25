@@ -66,36 +66,33 @@ def test_user_picker_weighted_distribution() -> None:
     picker._heavy_users_cache = heavy_users
     picker._buffer = buffer_users
 
-    with (
-        patch.object(
-            picker,
-            "_pick_very_active_user",
-            wraps=picker._pick_very_active_user,
-        ) as very_active_calls,
-        patch.object(
+    with patch.object(
+        picker,
+        "_pick_very_active_user",
+        wraps=picker._pick_very_active_user,
+    ) as very_active_calls:
+        with patch.object(
             picker,
             "_pick_recency_user",
             wraps=picker._pick_recency_user,
-        ) as recency_calls,
-        patch.object(
-            picker,
-            "_pick_heavy_user",
-            wraps=picker._pick_heavy_user,
-        ) as heavy_calls,
-        patch.object(
-            picker,
-            "_pick_uniform_user",
-            wraps=picker._pick_uniform_user,
-        ) as uniform_calls,
-    ):
-        for _ in range(2000):
-            picker.pick(rng)
+        ) as recency_calls:
+            with patch.object(
+                picker,
+                "_pick_heavy_user",
+                wraps=picker._pick_heavy_user,
+            ) as heavy_calls:
+                with patch.object(
+                    picker,
+                    "_pick_uniform_user",
+                    wraps=picker._pick_uniform_user,
+                ) as uniform_calls:
+                    for _ in range(2000):
+                        picker.pick(rng)
 
-        very_active_count = very_active_calls.call_count
-        recency_count = recency_calls.call_count
-        heavy_count = heavy_calls.call_count
-        uniform_count = uniform_calls.call_count
-
+                    very_active_count = very_active_calls.call_count
+                    recency_count = recency_calls.call_count
+                    heavy_count = heavy_calls.call_count
+                    uniform_count = uniform_calls.call_count
     assert 70 <= very_active_count <= 130
 
     remaining = 2000 - very_active_count
