@@ -16,9 +16,9 @@ else:
 
 from simulator.fraud_patterns import GroundTruth, register
 
+LONDON_TZ = ZoneInfo("Europe/London")
 NIGHT_HOURS = (2, 3, 4, 5)  # 2am-6am (2:00-5:59)
 NON_NIGHT_HOURS = tuple(h for h in range(24) if h not in NIGHT_HOURS)
-_EPOCH_NOW: datetime = datetime(2024, 1, 1, 12, 0, 0, tzinfo=ZoneInfo("Europe/London"))
 
 if TYPE_CHECKING:
     from simulator.models import Order as _Order  # type: ignore[import]  # noqa: F401
@@ -26,8 +26,8 @@ if TYPE_CHECKING:
 
 @dataclass
 class FraudPatternContext:
+    now: datetime
     rng: random.Random = field(default_factory=random.Random)
-    now: datetime = field(default=_EPOCH_NOW)
 
 
 def _weighted_choice(rng: random.Random, choices: list[tuple[str, float]]) -> str:
@@ -51,11 +51,20 @@ async def generate_stolen_card_fraud(
     ctx: FraudPatternContext | None = None,
     *,
     rng: random.Random | None = None,
+    now: datetime | None = None,
 ) -> tuple[dict[str, Any], GroundTruth]:
     if ctx is not None and rng is not None:
         raise ValueError("pass either ctx (full context) or rng (seed shorthand), not both")
     if ctx is None:
-        ctx = FraudPatternContext(rng=rng) if rng is not None else FraudPatternContext()
+        if now is None:
+            raise TypeError(
+                "FraudPatternContext.now is required: pass ctx=FraudPatternContext(now=...) or now=<datetime>"
+            )
+        ctx = (
+            FraudPatternContext(now=now, rng=rng)
+            if rng is not None
+            else FraudPatternContext(now=now)
+        )
 
     variant_roll = ctx.rng.random()
     if variant_roll < 0.60:
@@ -99,8 +108,7 @@ async def generate_stolen_card_fraud(
         [("uk", 0.60), ("vpn", 0.25), ("foreign", 0.15)],
     )
     is_high_end_cart = ctx.rng.random() < 0.60
-    _london_tz = ZoneInfo("Europe/London")
-    _now_london = ctx.now.astimezone(_london_tz)
+    _now_london = ctx.now.astimezone(LONDON_TZ)
     if ctx.rng.random() < 0.40:
         _placed_hour = ctx.rng.choice(list(NIGHT_HOURS))
     else:

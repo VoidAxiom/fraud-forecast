@@ -33,6 +33,8 @@ _REGISTRY: dict[str, tuple[PatternFn, float]] = {}
 
 def register(name: str, weight: float) -> Callable[[PatternFn], PatternFn]:
     def deco(fn: PatternFn) -> PatternFn:
+        if weight <= 0:
+            raise ValueError(f"fraud pattern '{name}' must have weight > 0, got {weight}")
         if name in _REGISTRY:
             raise ValueError(f"fraud pattern '{name}' already registered")
         _REGISTRY[name] = (fn, weight)

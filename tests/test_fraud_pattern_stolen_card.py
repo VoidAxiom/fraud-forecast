@@ -18,6 +18,7 @@ else:
 from simulator.fraud_patterns import GroundTruth, _REGISTRY, generate_fraud_order
 from simulator.fraud_patterns.stolen_card import (
     FraudPatternContext,
+    LONDON_TZ,
     NIGHT_HOURS,
     _weighted_choice,
     generate_stolen_card_fraud,
@@ -28,6 +29,25 @@ def test_stolen_card_pattern_is_registered_with_expected_weight() -> None:
     assert "stolen_card" in _REGISTRY
     _, weight = _REGISTRY["stolen_card"]
     assert math.isclose(weight, 0.30, rel_tol=0, abs_tol=1e-12)
+
+
+def test_register_rejects_zero_weight() -> None:
+    from simulator.fraud_patterns import register
+
+    with pytest.raises(ValueError, match="must have weight > 0"):
+        @register("test_zero", 0.0)
+        async def _dummy(ctx=None, *, rng=None, now=None):
+            return None
+
+    with pytest.raises(ValueError, match="must have weight > 0"):
+        @register("test_neg", -1.0)
+        async def _dummy(ctx=None, *, rng=None, now=None):
+            return None
+
+
+def test_fraud_pattern_context_now_is_required() -> None:
+    with pytest.raises(TypeError):
+        FraudPatternContext()
 
 
 def test_generate_stolen_card_fraud_returns_expected_shape_and_truth() -> None:
@@ -78,7 +98,10 @@ def test_generate_stolen_card_fraud_is_deterministic_for_order_id() -> None:
 
 
 def test_generate_stolen_card_fraud_raises_on_conflicting_ctx_and_rng() -> None:
-    ctx = FraudPatternContext(rng=random.Random(1))
+    ctx = FraudPatternContext(
+        rng=random.Random(1),
+        now=datetime(2024, 5, 24, 12, 0, tzinfo=ZoneInfo("Europe/London")),
+    )
     with pytest.raises(ValueError, match="pass either ctx"):
         asyncio.run(generate_stolen_card_fraud(ctx, rng=random.Random(2)))
 
@@ -109,7 +132,9 @@ def test_weighted_choice_returns_choice_from_values() -> None:
 
 
 def test_generate_fraud_order_dispatches_to_stolen_card_pattern() -> None:
-    order_dict, gt = asyncio.run(generate_fraud_order())
+    order_dict, gt = asyncio.run(
+        generate_fraud_order(now=datetime(2024, 5, 24, 12, 0, tzinfo=LONDON_TZ))
+    )
     assert isinstance(order_dict, dict)
     assert isinstance(gt, GroundTruth)
     assert gt.fraud_category == "stolen_card"
@@ -117,8 +142,9 @@ def test_generate_fraud_order_dispatches_to_stolen_card_pattern() -> None:
 
 def test_generate_fraud_order_is_deterministic_with_seeded_rng() -> None:
     """Same RNG seed must produce same order_id and order content end-to-end."""
-    order1, gt1 = asyncio.run(generate_fraud_order(rng=random.Random(7777)))
-    order2, gt2 = asyncio.run(generate_fraud_order(rng=random.Random(7777)))
+    now = datetime(2024, 5, 24, 12, 0, tzinfo=LONDON_TZ)
+    order1, gt1 = asyncio.run(generate_fraud_order(rng=random.Random(7777), now=now))
+    order2, gt2 = asyncio.run(generate_fraud_order(rng=random.Random(7777), now=now))
     assert order1["order_id"] == order2["order_id"]
     assert gt1.order_id == gt2.order_id
     assert order1["order_total_pence"] == order2["order_total_pence"]
