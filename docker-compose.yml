@@ -121,6 +121,21 @@ services:
     networks:
       - fraud_net
 
+  lifecycle:
+    build: .
+    image: fraud-forecast-app
+    command: python -m simulator.lifecycle
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+    environment:
+      - DATABASE_URL=postgresql://app:${POSTGRES_PASSWORD:-app_dev_password}@postgres:5432/fraud_platform
+      - SIMULATION_TIME_COMPRESSION=${SIMULATION_TIME_COMPRESSION:-60}
+      - TZ=Europe/London
+    networks:
+      - fraud_net
+
 volumes:
   pg_data:
   redis_data:
