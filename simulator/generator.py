@@ -589,7 +589,9 @@ def _select_order_type(rng: random.Random, store: dict[str, Any]) -> str:
         return "DINE_IN"
     if bool(store.get("accepts_delivery", True)):
         return "DELIVERY"
-    return "PICKUP"
+    if bool(store.get("accepts_pickup")):
+        return "PICKUP"
+    raise RuntimeError("no eligible order type for store")
 
 
 def _select_delivery_address(

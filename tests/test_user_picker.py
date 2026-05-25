@@ -140,7 +140,7 @@ def test_user_picker_fallback_when_redis_sets_empty() -> None:
 
 
 def test_user_picker_redis_tier_validates_buffer() -> None:
-    """Redis tier picks that are not in the active buffer fall through to next tier."""
+    """Redis tier picks that are not in the active buffer fall through to the base split."""
     rng = random.Random(0)
     buffer_users = [uuid.UUID(int=i) for i in range(100)]
     stale_very_active = [uuid.UUID(int=i + 1000) for i in range(10)]
@@ -149,10 +149,45 @@ def test_user_picker_redis_tier_validates_buffer() -> None:
     picker._buffer = buffer_users
     picker._buffer_set = set(buffer_users)
     picker._very_active_users_cache = stale_very_active
-    picker._heavy_users_cache = []
+    picker._heavy_users_cache = [uuid.UUID(int=i + 10) for i in range(10)]
     allowed = set(buffer_users)
 
-    with patch.object(rng, "random", return_value=0.0):
-        for _ in range(500):
-            picked = picker.pick(rng)
+    def _forced_random_values():
+        for _ in range(6000):
+            yield 0.0
+            yield 0.10
+        for _ in range(3000):
+            yield 0.0
+            yield 0.70
+        for _ in range(1000):
+            yield 0.0
+            yield 0.95
+
+    values = _forced_random_values()
+
+    with patch.object(picker, "_pick_very_active_user", return_value=None) as stale_tier_calls:
+        with patch.object(
+            picker,
+            "_pick_recency_user",
+            return_value=buffer_users[0],
+        ) as recency_calls:
+            with patch.object(
+                picker,
+                "_pick_heavy_user",
+                return_value=buffer_users[1],
+            ) as heavy_calls:
+                with patch.object(
+                    picker,
+                    "_pick_uniform_user",
+                    return_value=buffer_users[2],
+                ) as uniform_calls:
+        with patch.object(rng, "random", side_effect=values.__next__):
+            for _ in range(10_000):
+                picked = picker.pick(rng)
+                assert picked in allowed
+
+    assert stale_tier_calls.call_count == 10_000
+    assert recency_calls.call_count == 6000
+    assert heavy_calls.call_count == 3000
+    assert uniform_calls.call_count == 1000
             assert picked in allowed, f"Picked {picked!r} not in buffer"

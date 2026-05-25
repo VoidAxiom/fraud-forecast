@@ -83,9 +83,8 @@ class WeightedUserPicker:
         very_active_users = self._very_active_users_cache
         if very_active_users and rng.random() < 0.05:
             pick = self._pick_very_active_user(rng, very_active_users)
-            if pick is not None:
+            if pick is not None and pick in self._buffer_set:
                 return pick
-            return self._pick_recency_user(rng)
 
         # Split 60/30/10 across recency/heavy/uniform for all remaining draws.
         branch_roll = rng.random()
@@ -96,7 +95,7 @@ class WeightedUserPicker:
         if branch_roll < 0.90:
             if heavy_users:
                 pick = self._pick_heavy_user(rng, heavy_users)
-                if pick is not None:
+                if pick is not None and pick in self._buffer_set:
                     return pick
                 return self._pick_uniform_user(rng)
             return self._pick_uniform_user(rng)

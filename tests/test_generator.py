@@ -5,8 +5,10 @@ import os
 import random
 import re
 import uuid
+from unittest.mock import patch
 
 import asyncpg
+import pytest
 import redis.asyncio as aioredis
 
 from simulator.generator import (
@@ -14,6 +16,7 @@ from simulator.generator import (
     create_one_order,
     load_active_promos,
     load_config_from_env,
+    _select_order_type,
     load_stores_by_city,
     main,
 )
@@ -162,6 +165,29 @@ def test_is_new_user_promo_logic() -> None:
     assert _check(welcome_promo) is True
     assert _check(other_promo) is False
     assert _check(none_promo) is False
+
+
+def test_select_order_type_requires_pickup_for_fallback() -> None:
+    rng = random.Random()
+    store = {
+        "accepts_delivery": False,
+        "accepts_pickup": False,
+        "accepts_in_store": False,
+    }
+    with patch.object(rng, "random", return_value=0.99):
+        with pytest.raises(RuntimeError, match="no eligible order type for store"):
+            _select_order_type(rng, store)
+
+
+def test_select_order_type_falls_back_to_pickup_when_only_pickup_enabled() -> None:
+    rng = random.Random()
+    store = {
+        "accepts_delivery": False,
+        "accepts_pickup": True,
+        "accepts_in_store": False,
+    }
+    with patch.object(rng, "random", return_value=0.99):
+        assert _select_order_type(rng, store) == "PICKUP"
 
 
 def test_generator_creates_valid_order() -> None:
