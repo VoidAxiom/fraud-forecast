@@ -279,6 +279,35 @@ def test_apply_promo_enforces_max_redemptions_per_user() -> None:
     asyncio.run(_run())
 
 
+def test_apply_promo_first_order_respects_max_redemptions_per_user() -> None:
+    async def _run() -> None:
+        user_id = uuid.uuid4()
+        conn = _FakePromoConn({"WELCOME10": 1})
+        promos = [
+            {
+                "promo_code": "WELCOME10",
+                "promo_type": "NEW_USER",
+                "min_order_pence": 0,
+                "max_redemptions_per_user": 1,
+            }
+        ]
+
+        rng = random.Random(1)
+        with patch.object(rng, "random", return_value=0.01):
+            result = await apply_promo(
+                conn,
+                user_id,
+                rng,
+                True,
+                promos,
+                1000,
+            )
+
+        assert result is None
+
+    asyncio.run(_run())
+
+
 def test_select_order_type_falls_back_to_dine_in_only_when_enabled() -> None:
     rng = random.Random()
     store = {

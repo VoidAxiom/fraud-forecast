@@ -446,35 +446,38 @@ async def apply_promo(
     if not eligible_promos:
         return None
 
+    filtered_promos: list[dict[str, Any]] = []
+    for promo in eligible_promos:
+        promo_code = promo.get("promo_code")
+        if not isinstance(promo_code, str):
+            continue
+        max_redemptions_per_user = promo.get("max_redemptions_per_user")
+        if max_redemptions_per_user is None:
+            filtered_promos.append(promo)
+            continue
+
+        # Read-then-apply check; race condition under concurrency is bounded by the
+        # 100-task semaphore + this being a local-dev simulator (single-process, no
+        # multi-instance). Production would use SELECT FOR UPDATE or unique-constraint
+        # enforcement. See follow-up packet for atomic enforcement if needed.
+        already_redeemed = await _promo_redemption_count(
+            conn=conn,
+            user_id=user_id,
+            promo_code=promo_code,
+        )
+        if already_redeemed < int(max_redemptions_per_user):
+            filtered_promos.append(promo)
+
+    eligible_promos = filtered_promos
+    if not eligible_promos:
+        return None
+
     if not is_first_order:
         eligible_promos = [
             promo
             for promo in eligible_promos
             if not _is_new_user_only_promo(promo)
         ]
-        if not eligible_promos:
-            return None
-
-        filtered_promos: list[dict[str, Any]] = []
-        for promo in eligible_promos:
-            max_redemptions_per_user = promo.get("max_redemptions_per_user")
-            promo_code = promo.get("promo_code")
-
-            if not isinstance(promo_code, str):
-                continue
-            if max_redemptions_per_user is None:
-                filtered_promos.append(promo)
-                continue
-
-            already_redeemed = await _promo_redemption_count(
-                conn=conn,
-                user_id=user_id,
-                promo_code=promo_code,
-            )
-            if already_redeemed < int(max_redemptions_per_user):
-                filtered_promos.append(promo)
-
-        eligible_promos = filtered_promos
         if not eligible_promos:
             return None
 
