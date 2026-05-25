@@ -6,7 +6,7 @@ Each test manages its own keys — no shared state.
 from __future__ import annotations
 
 import asyncio
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 import redis
@@ -238,6 +238,38 @@ def test_get_features_under_10ms_p99(redis_client: redis.Redis) -> None:
             ip_stream_key,
             store_stream_key,
         )
+
+
+def test_get_features_with_empty_string_values(redis_client: redis.Redis) -> None:
+    user_id = UUID("00000000-0000-0000-0000-000000000001")
+    store_id = UUID("00000000-0000-0000-0000-000000000002")
+    merchant_id = UUID("00000000-0000-0000-0000-000000000003")
+    ip_address = "192.168.100.9"
+    email_domain = "example.com"
+    user_stream_key = f"fs:user:{user_id}:stream"
+
+    redis_client.hset(
+        user_stream_key,
+        mapping={"orders_1h": ""},
+    )
+
+    client = FeatureStoreClient(REDIS_URL)
+    try:
+        fs = client.get_features(
+            user_id=user_id,
+            device_id=None,
+            payment_method_id=None,
+            ip_address=ip_address,
+            store_id=store_id,
+            merchant_id=merchant_id,
+            delivery_address_id=None,
+            email_domain=email_domain,
+        )
+
+        assert fs.user_orders_1h == 0
+    finally:
+        client.close()
+        redis_client.delete(user_stream_key)
 
 
 def test_async_get_features_round_trip(redis_client: redis.Redis) -> None:

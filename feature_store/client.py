@@ -25,7 +25,7 @@ from feature_store.schema import FeatureSet
 
 def _to_int(val: object, default: int = 0) -> int:
     """Convert a Redis value (str, None, or already int) to int."""
-    if val is None:
+    if val is None or val == "":
         return default
     return int(str(val))
 
