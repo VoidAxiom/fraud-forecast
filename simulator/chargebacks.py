@@ -180,17 +180,47 @@ def _days_to_chargeback_threshold(rng: random.Random, is_fraud: bool) -> float:
 async def generate_chargebacks(pool: Any) -> None:
     async with pool.acquire() as conn:
         now = datetime.datetime.now(datetime.timezone.utc)
-        offset = 0
         batch_size = 5000
+        cursor = uuid.UUID("00000000-0000-0000-0000-000000000000")
 
         while True:
             paged_sql = (
                 "SELECT * FROM ("
-                f"{_CHARGEBACK_CANDIDATES_SQL}"
-                ") _cands ORDER BY order_placed_at"
-                f" LIMIT {batch_size} OFFSET {offset}"
+                "("
+                "SELECT\n"
+                "  o.order_id,\n"
+                "  o.placed_at AS order_placed_at,\n"
+                "  o.delivered_at,\n"
+                "  o.total_pence,\n"
+                "  gt.is_fraud,\n"
+                "  gt.fraud_category\n"
+                "FROM orders o\n"
+                "JOIN simulator_ground_truth gt USING (order_id)\n"
+                "WHERE o.delivered_at IS NOT NULL\n"
+                "  AND o.delivered_at >= NOW() - INTERVAL '90 days'\n"
+                "  AND o.chargeback_received_at IS NULL\n"
+                "  AND o.fraud_outcome IS NULL\n"
+                "  AND o.order_id > $1\n"
+                ")"
+                "UNION ALL "
+                "("
+                "SELECT\n"
+                "  o.order_id,\n"
+                "  o.placed_at AS order_placed_at,\n"
+                "  o.delivered_at,\n"
+                "  o.total_pence,\n"
+                "  gt.is_fraud,\n"
+                "  gt.fraud_category\n"
+                "FROM orders_archive o\n"
+                "JOIN simulator_ground_truth gt USING (order_id)\n"
+                "WHERE o.delivered_at >= NOW() - INTERVAL '90 days'\n"
+                "  AND o.chargeback_received_at IS NULL\n"
+                "  AND o.fraud_outcome IS NULL\n"
+                "  AND o.order_id > $1)) _cands "
+                "ORDER BY order_id "
+                f"LIMIT {batch_size}"
             )
-            candidate_rows = await conn.fetch(paged_sql)
+            candidate_rows = await conn.fetch(paged_sql, cursor)
             if len(candidate_rows) == 0:
                 break
 
@@ -238,23 +268,53 @@ async def generate_chargebacks(pool: Any) -> None:
                         total_pence,
                         fraud_outcome,
                     )
-            offset += batch_size
+
+            cursor = max(_coerce_order_id(row["order_id"]) for row in candidate_rows)
+            if len(candidate_rows) < batch_size:
+                break
 
 
 async def generate_refunds(pool: Any) -> None:
     async with pool.acquire() as conn:
         now = datetime.datetime.now(datetime.timezone.utc)
-        offset = 0
         batch_size = 5000
+        cursor = uuid.UUID("00000000-0000-0000-0000-000000000000")
 
         while True:
             paged_sql = (
                 "SELECT * FROM ("
-                f"{_REFUND_CANDIDATES_SQL}"
-                ") _cands ORDER BY order_placed_at"
-                f" LIMIT {batch_size} OFFSET {offset}"
+                "("
+                "SELECT\n"
+                "  o.order_id,\n"
+                "  o.placed_at AS order_placed_at,\n"
+                "  o.delivered_at,\n"
+                "  o.total_pence\n"
+                "FROM orders o\n"
+                "JOIN simulator_ground_truth gt USING (order_id)\n"
+                "WHERE o.delivered_at IS NOT NULL\n"
+                "  AND o.delivered_at >= NOW() - INTERVAL '5 days'\n"
+                "  AND gt.fraud_category = 'refund_abuse'\n"
+                "  AND NOT EXISTS (SELECT 1 FROM refunds r WHERE r.order_id = o.order_id)\n"
+                "  AND o.order_id > $1\n"
+                ")"
+                "UNION ALL "
+                "("
+                "SELECT\n"
+                "  o.order_id,\n"
+                "  o.placed_at AS order_placed_at,\n"
+                "  o.delivered_at,\n"
+                "  o.total_pence\n"
+                "FROM orders_archive o\n"
+                "JOIN simulator_ground_truth gt USING (order_id)\n"
+                "WHERE o.delivered_at IS NOT NULL\n"
+                "  AND o.delivered_at >= NOW() - INTERVAL '5 days'\n"
+                "  AND gt.fraud_category = 'refund_abuse'\n"
+                "  AND NOT EXISTS (SELECT 1 FROM refunds r WHERE r.order_id = o.order_id)\n"
+                "  AND o.order_id > $1)) _cands "
+                "ORDER BY order_id "
+                f"LIMIT {batch_size}"
             )
-            candidate_rows = await conn.fetch(paged_sql)
+            candidate_rows = await conn.fetch(paged_sql, cursor)
             if len(candidate_rows) == 0:
                 break
 
@@ -269,7 +329,10 @@ async def generate_refunds(pool: Any) -> None:
                     continue
 
                 await conn.execute(_REFUND_INSERT_SQL, order_id, order_placed_at, total_pence)
-            offset += batch_size
+
+            cursor = max(_coerce_order_id(row["order_id"]) for row in candidate_rows)
+            if len(candidate_rows) < batch_size:
+                break
 
 
 async def finalize_stale_labels(pool: Any) -> None:
