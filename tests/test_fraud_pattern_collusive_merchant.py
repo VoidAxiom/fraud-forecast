@@ -59,6 +59,8 @@ def test_returns_ground_truth() -> None:
     assert gt.fraud_category == "collusive_merchant"
     assert isinstance(gt.pattern_notes, str)
     assert f"store_id={order_dict['store_id']}" == gt.pattern_notes
+    assert gt.ring_id is not None
+    assert gt.ring_id in COLLUSIVE_STORES
 
 
 def test_avs_cvv_mostly_match() -> None:

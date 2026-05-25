@@ -94,7 +94,7 @@ async def generate_collusive_merchant_fraud(
         is_fraud=True,
         fraud_category="collusive_merchant",
         pattern_notes=f"store_id={store_id}",
-        ring_id=None,
+        ring_id=store_id,
     )
 
     return order_dict, gt
