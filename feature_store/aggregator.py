@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from typing import Any, Iterable, cast
 from uuid import UUID
 
-import asyncpg
+import asyncpg  # type: ignore[import]
 import redis.asyncio as aioredis
 from backports.zoneinfo import ZoneInfo
 from pythonjsonlogger import jsonlogger
@@ -79,7 +79,7 @@ def _configure_logging() -> None:
         return
 
     handler = logging.StreamHandler()
-    formatter = jsonlogger.JsonFormatter(
+    formatter = jsonlogger.JsonFormatter(  # type: ignore[no-untyped-call]
         "%(asctime)s %(levelname)s %(name)s %(message)s",
         rename_fields={"asctime": "ts", "levelname": "level"},
     )
@@ -221,7 +221,6 @@ async def write_user_stream_aggregates(
         orders_zset_key,
         0,
         0,
-        desc=True,
         withscores=True,
     )
     last_order_age_minutes = _last_order_age_minutes(
@@ -231,55 +230,34 @@ async def write_user_stream_aggregates(
 
     write_pipe = redis_conn.pipeline()
     write_pipe.zadd(orders_zset_key, {order_id: now_ts})
-
-    result_cursor = 1
     if order.store_id is not None:
         write_pipe.zadd(stores_zset_key, {store_id: now_ts})
-        result_cursor += 1
     if order.payment_method_id is not None:
         write_pipe.zadd(payments_zset_key, {str(order.payment_method_id): now_ts})
-        result_cursor += 1
-
     write_pipe.zadd(spend_zset_key, {f"{order_id}:{order.total_pence}": now_ts})
+    await write_pipe.execute()
 
-    write_pipe.zrangebyscore(spend_zset_key, now_ts - ONE_HOUR_SECONDS, now_ts)
-    spend_1h_index = result_cursor
-    result_cursor += 1
-    write_pipe.zrangebyscore(spend_zset_key, now_ts - TWENTY_FOUR_HOURS_SECONDS, now_ts)
-    spend_24h_index = result_cursor
-    result_cursor += 1
-    write_pipe.zcount(orders_zset_key, now_ts - ONE_HOUR_SECONDS, now_ts)
-    orders_1h_index = result_cursor
-    result_cursor += 1
-    write_pipe.zcount(orders_zset_key, now_ts - TWENTY_FOUR_HOURS_SECONDS, now_ts)
-    orders_24h_index = result_cursor
-    result_cursor += 1
-    write_pipe.zcount(stores_zset_key, now_ts - TWENTY_FOUR_HOURS_SECONDS, now_ts)
-    stores_24h_index = result_cursor
-    result_cursor += 1
-    write_pipe.zcount(payments_zset_key, now_ts - TWENTY_FOUR_HOURS_SECONDS, now_ts)
-    payments_24h_index = result_cursor
-    result_cursor += 1
+    read_pipe = redis_conn.pipeline()
+    read_pipe.zrangebyscore(spend_zset_key, now_ts - ONE_HOUR_SECONDS, now_ts)
+    read_pipe.zrangebyscore(spend_zset_key, now_ts - TWENTY_FOUR_HOURS_SECONDS, now_ts)
+    read_pipe.zcount(orders_zset_key, now_ts - ONE_HOUR_SECONDS, now_ts)
+    read_pipe.zcount(orders_zset_key, now_ts - TWENTY_FOUR_HOURS_SECONDS, now_ts)
+    read_pipe.zcount(stores_zset_key, now_ts - TWENTY_FOUR_HOURS_SECONDS, now_ts)
+    read_pipe.zcount(payments_zset_key, now_ts - TWENTY_FOUR_HOURS_SECONDS, now_ts)
 
-    results = await write_pipe.execute()
+    results = await read_pipe.execute()
 
-    spend_1h = _sum_spend_from_members(
-        _stringify_members(results[spend_1h_index] if len(results) > spend_1h_index else None),
-    )
+    spend_1h = _sum_spend_from_members(_stringify_members(results[0] if len(results) > 0 else None))
     spend_24h = _sum_spend_from_members(
-        _stringify_members(results[spend_24h_index] if len(results) > spend_24h_index else None),
+        _stringify_members(results[1] if len(results) > 1 else None),
     )
-    orders_1h = _safe_int(results[orders_1h_index] if len(results) > orders_1h_index else None)
-    orders_24h = _safe_int(results[orders_24h_index] if len(results) > orders_24h_index else None)
-    unique_stores_24h = _safe_int(
-        results[stores_24h_index] if len(results) > stores_24h_index else None,
-    )
-    unique_payment_methods_24h = _safe_int(
-        results[payments_24h_index] if len(results) > payments_24h_index else None,
-    )
+    orders_1h = _safe_int(results[2] if len(results) > 2 else None)
+    orders_24h = _safe_int(results[3] if len(results) > 3 else None)
+    unique_stores_24h = _safe_int(results[4] if len(results) > 4 else None)
+    unique_payment_methods_24h = _safe_int(results[5] if len(results) > 5 else None)
 
     persist_pipe = redis_conn.pipeline()
-    stream_mapping: dict[str, int] = {
+    stream_mapping: dict[str | bytes, bytes | float | int | str] = {
         "orders_1h": orders_1h,
         "orders_24h": orders_24h,
         "spend_1h_pence": spend_1h,

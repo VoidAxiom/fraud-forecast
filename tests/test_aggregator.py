@@ -5,10 +5,7 @@ from typing import Any, Dict, TypedDict, cast
 from uuid import UUID, uuid4
 from unittest.mock import AsyncMock, patch
 
-try:
-    from backports.zoneinfo import ZoneInfo
-except ImportError:  # pragma: no cover
-    from zoneinfo import ZoneInfo
+from backports.zoneinfo import ZoneInfo
 
 from redis.asyncio import Redis as AsyncRedis
 
@@ -230,15 +227,12 @@ async def test_write_user_stream_aggregates_parses_spend_members() -> None:
 
     fake_redis = _FakeRedis(
         pipeline_results=[
+            [None, None, None],
             [
-                None,
-                None,
-                None,
                 ["a:120", "b:30", "bad"],
                 ["x:300", "y:40", "z:abc"],
                 2,
                 3,
-                2,
                 2,
                 0,
             ],
@@ -252,7 +246,8 @@ async def test_write_user_stream_aggregates_parses_spend_members() -> None:
         redis_conn=cast(AsyncRedis[str], fake_redis), order=order, now_ts=now_ts
     )
 
-    user_hset_calls = fake_redis.pipeline_calls[1].hset_calls
+    user_hset_calls = fake_redis.pipeline_calls[2].hset_calls
+    assert len(fake_redis.pipeline_calls) == 3
     hset_call = user_hset_calls[0]
     user_mapping = hset_call[1]
     assert user_mapping["spend_1h_pence"] == 150
@@ -270,14 +265,12 @@ async def test_write_user_stream_aggregates_uses_previous_order_age() -> None:
 
     fake_redis = _FakeRedis(
         pipeline_results=[
+            [None, None, None],
             [
-                None,
-                None,
                 ["a:120", "b:30", "bad"],
                 ["x:300", "y:40", "z:abc"],
                 2,
                 3,
-                2,
                 2,
                 0,
             ],
@@ -292,7 +285,7 @@ async def test_write_user_stream_aggregates_uses_previous_order_age() -> None:
         redis_conn=cast(AsyncRedis[str], fake_redis), order=order, now_ts=now_ts
     )
 
-    user_hset_calls = fake_redis.pipeline_calls[1].hset_calls
+    user_hset_calls = fake_redis.pipeline_calls[2].hset_calls
     user_mapping = user_hset_calls[0][1]
     assert user_mapping["last_order_age_minutes"] == 10
     assert fake_redis.zrevrange_calls[0][0] == f"fs:user:{row_values['user_id']}:orders_zset"
