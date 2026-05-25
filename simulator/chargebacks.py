@@ -16,6 +16,7 @@ LOGGER: logging.Logger = logging.getLogger(__name__)
 DATABASE_URL: str | None = os.environ.get("DATABASE_URL")
 
 _CHARGEBACK_CANDIDATES_SQL = """
+(
 SELECT
   o.order_id,
   o.placed_at AS order_placed_at,
@@ -30,7 +31,9 @@ WHERE o.delivered_at IS NOT NULL
   AND o.chargeback_received_at IS NULL
   AND o.fraud_outcome IS NULL
 LIMIT 5000
+)
 UNION ALL
+(
 SELECT
   o.order_id,
   o.placed_at AS order_placed_at,
@@ -44,6 +47,7 @@ WHERE o.delivered_at >= NOW() - INTERVAL '90 days'
   AND o.chargeback_received_at IS NULL
   AND o.fraud_outcome IS NULL
 LIMIT 5000
+)
 """
 
 _CHARGEBACK_INSERT_SQL = """
@@ -71,6 +75,7 @@ WHERE order_id = $1
 """
 
 _REFUND_CANDIDATES_SQL = """
+(
 SELECT
   o.order_id,
   o.placed_at AS order_placed_at,
@@ -83,7 +88,9 @@ WHERE o.delivered_at IS NOT NULL
   AND gt.fraud_category = 'refund_abuse'
   AND NOT EXISTS (SELECT 1 FROM refunds r WHERE r.order_id = o.order_id)
 LIMIT 5000
+)
 UNION ALL
+(
 SELECT
   o.order_id,
   o.placed_at AS order_placed_at,
@@ -96,6 +103,7 @@ WHERE o.delivered_at IS NOT NULL
   AND gt.fraud_category = 'refund_abuse'
   AND NOT EXISTS (SELECT 1 FROM refunds r WHERE r.order_id = o.order_id)
 LIMIT 5000
+)
 """
 
 _REFUND_INSERT_SQL = """
@@ -195,7 +203,7 @@ async def generate_chargebacks(pool: Any) -> None:
             ) and (rng.random() < chargeback_probability)
 
             if not should_chargeback_now:
-                if delivered_age_days >= days_to_chargeback:
+                if delivered_age_days >= days_to_chargeback and fraud_category != "refund_abuse":
                     final_outcome = "LEGIT"
                     await conn.execute(
                         "UPDATE orders SET fraud_outcome = $1 WHERE order_id = $2 AND placed_at = $3",
