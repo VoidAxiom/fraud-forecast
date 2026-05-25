@@ -42,7 +42,8 @@ def register(name: str, weight: float) -> Callable[[PatternFn], PatternFn]:
 
 
 # Auto-discover: import every sibling module at package-import time so @register fires
-for _info in pkgutil.iter_modules(__path__):
+# Sort names for deterministic registration order across environments.
+for _info in sorted(pkgutil.iter_modules(__path__), key=lambda i: i.name):
     if not _info.name.startswith("_"):
         importlib.import_module(f"{__name__}.{_info.name}")
 
