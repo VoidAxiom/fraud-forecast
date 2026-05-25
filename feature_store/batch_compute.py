@@ -709,10 +709,8 @@ def main() -> None:
         run_batch()
         return
 
-    _run_scheduler(BackgroundScheduler)
     run_batch()
-    while True:
-        time.sleep(3600)
+    _run_scheduler(BlockingScheduler)
 
 
 if __name__ == "__main__":
