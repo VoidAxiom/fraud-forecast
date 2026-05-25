@@ -372,7 +372,6 @@ async def advance_order(
             return False
 
     if next_status == "CANCELLED":
-        update_parts.append("cancelled_at = NOW()")
         if reason is not None:
             update_parts.append(f"cancellation_reason = ${next_param}")
             update_values.append(reason)
