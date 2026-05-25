@@ -41,7 +41,7 @@ WHERE order_id = $1
 
 _REFUND_INSERT_SQL = """
 INSERT INTO refunds (order_id, order_placed_at, amount_pence, reason, initiated_by, issued_at)
-VALUES ($1, $2, $3, 'order_quality_complaint', 'USER', NOW())
+VALUES ($1, $2, $3, 'order_quality_complaint', 'USER', $4)
 ON CONFLICT (order_id) DO NOTHING
 """
 
@@ -239,7 +239,7 @@ async def generate_refunds(pool: Any) -> None:
                 "FROM orders o\n"
                 "JOIN simulator_ground_truth gt USING (order_id)\n"
                 "WHERE o.delivered_at IS NOT NULL\n"
-                "  AND o.delivered_at >= NOW() - INTERVAL '90 days'\n"
+                "  AND o.delivered_at >= NOW() - INTERVAL '60 days'\n"
                 "  AND gt.fraud_category = 'refund_abuse'\n"
                 "  AND NOT EXISTS (SELECT 1 FROM refunds r WHERE r.order_id = o.order_id)\n"
                 "  AND o.order_id > $1\n"
@@ -254,7 +254,7 @@ async def generate_refunds(pool: Any) -> None:
                 "FROM orders_archive o\n"
                 "JOIN simulator_ground_truth gt USING (order_id)\n"
                 "WHERE o.delivered_at IS NOT NULL\n"
-                "  AND o.delivered_at >= NOW() - INTERVAL '90 days'\n"
+                "  AND o.delivered_at >= NOW() - INTERVAL '60 days'\n"
                 "  AND gt.fraud_category = 'refund_abuse'\n"
                 "  AND NOT EXISTS (SELECT 1 FROM refunds r WHERE r.order_id = o.order_id)\n"
                 "  AND o.order_id > $1)) _cands "
@@ -273,14 +273,17 @@ async def generate_refunds(pool: Any) -> None:
 
                 delivered_age_hours = (now - delivered_at).total_seconds() / 3600
                 refund_delay_hours = _refund_due_at_hours(order_id)
-                # Issue only when the sampled delay has elapsed; 24h grace
-                # handles daemons that missed a tick (matching chargeback pattern).
                 if delivered_age_hours < refund_delay_hours:
                     continue
-                if delivered_age_hours > 120 + 24:
-                    continue
+                issued_at = delivered_at + datetime.timedelta(hours=refund_delay_hours)
 
-                await conn.execute(_REFUND_INSERT_SQL, order_id, order_placed_at, total_pence)
+                await conn.execute(
+                    _REFUND_INSERT_SQL,
+                    order_id,
+                    order_placed_at,
+                    total_pence,
+                    issued_at,
+                )
 
             cursor = max(_coerce_order_id(row["order_id"]) for row in candidate_rows)
             if len(candidate_rows) < batch_size:
