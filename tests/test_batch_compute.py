@@ -1,0 +1,611 @@
+from __future__ import annotations
+
+from decimal import Decimal
+import datetime
+import logging
+import sys
+from typing import Any, Mapping
+
+try:
+    from zoneinfo import ZoneInfo
+except ImportError:
+    from backports.zoneinfo import ZoneInfo  # type: ignore[no-redef]
+
+import feature_store.batch_compute as batch_compute
+import pytest
+
+
+class _FakeResult:
+    def __init__(self, rows: list[dict[str, object]]) -> None:
+        self._rows = rows
+        self._index = 0
+
+    def fetchmany(self, size: int) -> list[dict[str, object]]:
+        start = self._index
+        end = self._index + size
+        self._index = end
+        return self._rows[start:end]
+
+
+class _FakeConnection:
+    def __init__(self, rows: list[dict[str, object]]) -> None:
+        self._rows = rows
+
+    def __enter__(self) -> _FakeConnection:
+        return self
+
+    def __exit__(
+        self,
+        _exc_type: type[BaseException] | None,
+        _exc: BaseException | None,
+        _tb: object,
+    ) -> None:
+        pass
+
+    def execution_options(self, **_: Any) -> _FakeConnection:
+        return self
+
+    def execute(self, statement: object, params: dict[str, object] | None = None) -> _FakeResult:
+        _ = statement
+        _ = params
+        return _FakeResult(self._rows)
+
+
+class _FakeEngine:
+    def __init__(self, rows: list[dict[str, object]]) -> None:
+        self._rows = rows
+
+    def connect(self) -> _FakeConnection:
+        return _FakeConnection(self._rows)
+
+
+class _FakePipeline:
+    def __init__(self, store: dict[str, dict[str, str]]) -> None:
+        self._store = store
+        self._pending: list[tuple[str, dict[str, str]]] = []
+        self.expirations: dict[str, int] = {}
+
+    def hset(self, key: str, mapping: Mapping[str, Any]) -> _FakePipeline:
+        self._pending.append((key, dict(mapping)))
+        return self
+
+    def expire(self, key: str, ttl: int) -> _FakePipeline:
+        self.expirations[key] = ttl
+        return self
+
+    def execute(self) -> list[int]:
+        for key, mapping in self._pending:
+            self._store.setdefault(key, {})
+            self._store[key].update({k: str(v) for k, v in mapping.items()})
+        self._pending.clear()
+        return [1]
+
+
+class _FakeRedis:
+    def __init__(self) -> None:
+        self.store: dict[str, dict[str, str]] = {}
+        self.pipelines: list[_FakePipeline] = []
+
+    def pipeline(self, transaction: bool = False) -> _FakePipeline:
+        _ = transaction
+        pipeline = _FakePipeline(self.store)
+        self.pipelines.append(pipeline)
+        return pipeline
+
+    def close(self) -> None:
+        return None
+
+
+class _FailingConnection(_FakeConnection):
+    def execute(self, statement: object, params: dict[str, object] | None = None) -> _FakeResult:
+        _ = statement
+        _ = params
+        raise RuntimeError("intentional connection failure")
+
+
+class _FailingEngine(_FakeEngine):
+    def connect(self) -> _FakeConnection:
+        return _FailingConnection([])
+
+
+def test_compute_user_batch_features_writes_expected_payload() -> None:
+    now = datetime.datetime(2026, 5, 25, 12, 0, tzinfo=ZoneInfo("Europe/London"))
+    user_id = "00000000-0000-0000-0000-000000000001"
+    rows = [
+        {
+            "user_id": user_id,
+            "created_at": datetime.datetime(
+                2026,
+                5,
+                20,
+                12,
+                tzinfo=ZoneInfo("Europe/London"),
+            ),
+            "lifetime_order_count": 4,
+            "lifetime_spend_pence": 1000,
+            "avg_order_value_pence": 250,
+            "lifetime_chargeback_count": 1,
+            "unique_devices_used": 2,
+            "unique_payment_methods_used": 1,
+            "unique_delivery_addresses": 3,
+            "distinct_cities_ordered_from": 2,
+            "last_placed_at": datetime.datetime(
+                2026,
+                5,
+                24,
+                8,
+                tzinfo=ZoneInfo("Europe/London"),
+            ),
+        }
+    ]
+    engine = _FakeEngine(rows)
+    redis_client = _FakeRedis()
+    expected_key = f"fs:user:{user_id}:batch"
+    original_now = batch_compute._now
+    batch_compute._now = lambda: now
+    try:
+        batch_compute.compute_user_batch_features(engine, redis_client)
+    finally:
+        batch_compute._now = original_now
+
+    assert expected_key in redis_client.store
+    payload = redis_client.store[expected_key]
+
+    assert payload["lifetime_order_count"] == "4"
+    assert payload["lifetime_spend_pence"] == "1000"
+    assert payload["avg_order_value_pence"] == "250"
+    assert payload["lifetime_chargeback_count"] == "1"
+    assert payload["lifetime_refund_count"] == "0"
+    assert payload["lifetime_chargeback_rate"] == "0.25"
+    assert payload["unique_devices_used"] == "2"
+    assert payload["account_age_days"] == "5"
+    assert payload["days_since_last_order"] == "1"
+    assert payload["distinct_cities_ordered_from"] == "2"
+    assert redis_client.pipelines[0].expirations[expected_key] == 172_800
+
+
+def test_compute_user_batch_features_includes_refund_count() -> None:
+    now = datetime.datetime(2026, 5, 25, 12, 0, tzinfo=ZoneInfo("Europe/London"))
+    user_id = "00000000-0000-0000-0000-000000000003"
+    rows = [
+        {
+            "user_id": user_id,
+            "created_at": datetime.datetime(
+                2026,
+                5,
+                20,
+                12,
+                tzinfo=ZoneInfo("Europe/London"),
+            ),
+            "lifetime_order_count": 1,
+            "lifetime_spend_pence": 500,
+            "avg_order_value_pence": 500,
+            "lifetime_chargeback_count": 0,
+            "lifetime_refund_count": 3,
+            "unique_devices_used": 1,
+            "unique_payment_methods_used": 1,
+            "unique_delivery_addresses": 1,
+            "distinct_cities_ordered_from": 1,
+            "last_placed_at": datetime.datetime(
+                2026,
+                5,
+                25,
+                10,
+                tzinfo=ZoneInfo("Europe/London"),
+            ),
+        }
+    ]
+    engine = _FakeEngine(rows)
+    redis_client = _FakeRedis()
+    expected_key = f"fs:user:{user_id}:batch"
+    original_now = batch_compute._now
+    batch_compute._now = lambda: now
+    try:
+        batch_compute.compute_user_batch_features(engine, redis_client)
+    finally:
+        batch_compute._now = original_now
+
+    payload = redis_client.store[expected_key]
+
+    assert payload["lifetime_refund_count"] == "3"
+
+
+def test_to_int_handles_decimal_inputs() -> None:
+    row: dict[str, object] = {
+        "pence_total": Decimal("9007199254740993"),
+    }
+
+    # int(float(Decimal(...))) would round to 9007199254740992; Decimal must stay exact.
+    assert batch_compute._to_int(row, "pence_total") == 9007199254740993
+
+
+def test_round_half_even() -> None:
+    assert batch_compute._round_half_even(Decimal("100.5")) == 100
+
+
+def test_compute_device_batch_features_zero_orders_still_writes_zero_rate() -> None:
+    now = datetime.datetime(2026, 5, 25, 12, 0, tzinfo=ZoneInfo("Europe/London"))
+    device_id = "00000000-0000-0000-0000-000000000002"
+    rows = [
+        {
+            "device_id": device_id,
+            "lifetime_order_count": 0,
+            "lifetime_chargeback_count": 3,
+            "unique_users_lifetime": 0,
+            "distinct_payment_methods_lifetime": 0,
+            "first_seen_at": datetime.datetime(
+                2026,
+                5,
+                18,
+                12,
+                tzinfo=ZoneInfo("Europe/London"),
+            ),
+        }
+    ]
+    engine = _FakeEngine(rows)
+    redis_client = _FakeRedis()
+    original_now = batch_compute._now
+    batch_compute._now = lambda: now
+    try:
+        batch_compute.compute_device_batch_features(engine, redis_client)
+    finally:
+        batch_compute._now = original_now
+
+    expected_key = f"fs:device:{device_id}:batch"
+    payload = redis_client.store[expected_key]
+    assert payload["lifetime_order_count"] == "0"
+    assert payload["lifetime_chargeback_rate"] == "0.0"
+    assert payload["first_seen_days_ago"] == "7"
+    assert payload["unique_users_lifetime"] == "0"
+
+
+def test_run_batch_dispatches_all_entity_computes(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[str] = []
+    engine = object()
+    redis_client = _FakeRedis()
+    monkeypatch.setattr(batch_compute, "get_engine", lambda role="app": engine)
+    monkeypatch.setattr(
+        batch_compute.redis.Redis,
+        "from_url",
+        lambda url, decode_responses=True: redis_client,
+    )
+    monkeypatch.setattr(
+        batch_compute, "compute_user_batch_features", lambda engine, r: calls.append("user")
+    )
+    monkeypatch.setattr(
+        batch_compute, "compute_device_batch_features", lambda engine, r: calls.append("device")
+    )
+    monkeypatch.setattr(
+        batch_compute,
+        "compute_payment_batch_features",
+        lambda engine, r: calls.append("payment"),
+    )
+    monkeypatch.setattr(
+        batch_compute,
+        "compute_ip_batch_features",
+        lambda engine, r: calls.append("ip"),
+    )
+    monkeypatch.setattr(
+        batch_compute,
+        "compute_store_batch_features",
+        lambda engine, r: calls.append("store"),
+    )
+    monkeypatch.setattr(
+        batch_compute,
+        "compute_merchant_batch_features",
+        lambda engine, r: calls.append("merchant"),
+    )
+    monkeypatch.setattr(
+        batch_compute,
+        "compute_email_domain_batch_features",
+        lambda engine, r: calls.append("email_domain"),
+    )
+
+    batch_compute.run_batch()
+
+    assert calls == [
+        "user",
+        "device",
+        "payment",
+        "ip",
+        "store",
+        "merchant",
+        "email_domain",
+    ]
+
+
+def test_run_batch_raises_after_partial_entity_failures(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+    engine = object()
+    redis_client = _FakeRedis()
+    records: list[logging.LogRecord] = []
+
+    class _Capture(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            records.append(record)
+
+    def _failing_entity(entity_name: str, exc_message: str) -> None:
+        def _fail(_engine: object, _r: _FakeRedis) -> None:
+            calls.append(entity_name)
+            raise RuntimeError(exc_message)
+
+        return _fail
+
+    monkeypatch.setattr(batch_compute, "get_engine", lambda role="app": engine)
+    monkeypatch.setattr(
+        batch_compute.redis.Redis,
+        "from_url",
+        lambda url, decode_responses=True: redis_client,
+    )
+    monkeypatch.setattr(
+        batch_compute,
+        "compute_user_batch_features",
+        _failing_entity("user", "user failed"),
+    )
+    monkeypatch.setattr(
+        batch_compute,
+        "compute_device_batch_features",
+        lambda _engine, _r: calls.append("device"),
+    )
+    monkeypatch.setattr(
+        batch_compute,
+        "compute_payment_batch_features",
+        lambda _engine, _r: calls.append("payment"),
+    )
+    monkeypatch.setattr(
+        batch_compute,
+        "compute_ip_batch_features",
+        lambda _engine, _r: calls.append("ip"),
+    )
+    monkeypatch.setattr(
+        batch_compute,
+        "compute_store_batch_features",
+        _failing_entity("store", "store failed"),
+    )
+    monkeypatch.setattr(
+        batch_compute,
+        "compute_merchant_batch_features",
+        lambda _engine, _r: calls.append("merchant"),
+    )
+    monkeypatch.setattr(
+        batch_compute,
+        "compute_email_domain_batch_features",
+        lambda _engine, _r: calls.append("email_domain"),
+    )
+
+    handler = _Capture()
+    batch_compute.LOG.addHandler(handler)
+    try:
+        with pytest.raises(RuntimeError, match="batch_compute had 2 entity failures"):
+            batch_compute.run_batch()
+    finally:
+        batch_compute.LOG.removeHandler(handler)
+
+    assert calls == [
+        "user",
+        "device",
+        "payment",
+        "ip",
+        "store",
+        "merchant",
+        "email_domain",
+    ]
+    assert any(
+        record.msg == "batch_compute_entity_failed" and record.__dict__.get("entity") == "user"
+        for record in records
+    )
+    assert any(
+        record.msg == "batch_compute_entity_failed" and record.__dict__.get("entity") == "store"
+        for record in records
+    )
+    assert any(
+        record.msg == "batch_compute_partial"
+        and record.__dict__.get("failed_entities") == ["user", "store"]
+        for record in records
+    )
+
+
+def test_compute_user_batch_features_queries_rounded_average_order_value() -> None:
+    rows = [
+        {
+            "user_id": "00000000-0000-0000-0000-000000000001",
+            "created_at": datetime.datetime(
+                2026,
+                5,
+                20,
+                12,
+                tzinfo=ZoneInfo("Europe/London"),
+            ),
+            "lifetime_order_count": 2,
+            "lifetime_spend_pence": 101,
+            "avg_order_value_pence": 50,
+            "lifetime_chargeback_count": 0,
+            "lifetime_refund_count": 0,
+            "unique_devices_used": 1,
+            "unique_payment_methods_used": 1,
+            "unique_delivery_addresses": 1,
+            "distinct_cities_ordered_from": 1,
+            "last_placed_at": datetime.datetime(
+                2026,
+                5,
+                25,
+                12,
+                tzinfo=ZoneInfo("Europe/London"),
+            ),
+        }
+    ]
+
+    statements: list[object] = []
+
+    class _CaptureConnection(_FakeConnection):
+        def execute(
+            self, statement: object, params: dict[str, object] | None = None
+        ) -> _FakeResult:
+            _ = params
+            statements.append(statement)
+            return super().execute(statement, params)
+
+    class _CaptureEngine(_FakeEngine):
+        def connect(self) -> _CaptureConnection:
+            return _CaptureConnection(self._rows)
+
+    engine = _CaptureEngine(rows)
+    redis_client = _FakeRedis()
+    batch_compute.compute_user_batch_features(engine, redis_client)
+
+    assert statements
+    statement_text = str(statements[0]).lower()
+    assert "avg(o.total_pence)" in statement_text
+
+
+def test_main_once_runs_batch_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    called: list[str] = []
+    monkeypatch.setattr(sys, "argv", ["batch_compute", "--once"])
+    monkeypatch.setattr(batch_compute, "run_batch", lambda: called.append("run_batch"))
+
+    batch_compute.main()
+
+    assert called == ["run_batch"]
+
+
+def test_parser_accepts_daemon_alias() -> None:
+    parser = batch_compute._build_parser()
+    args = parser.parse_args(["--daemon"])
+
+    assert args.daemon is True
+
+
+def test_main_serve_starts_scheduler(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _FakeTrigger:
+        def __init__(self, **kwargs: Any) -> None:
+            self.kwargs = kwargs
+
+    class _FakeScheduler:
+        def __init__(self, timezone: str) -> None:
+            self.timezone = timezone
+            self.jobs: list[dict[str, Any]] = []
+            self.started = False
+
+        def add_job(self, func: object, trigger: _FakeTrigger) -> None:
+            self.jobs.append({"func": func, "trigger": trigger})
+
+        def start(self) -> None:
+            self.started = True
+
+    _scheduler = _FakeScheduler(timezone=batch_compute.EUROPE_LONDON)
+    run_calls: list[str] = []
+    sys_argv = sys.argv.copy()
+    monkeypatch.setattr(sys, "argv", ["batch_compute", "--serve"])
+    monkeypatch.setattr(batch_compute, "BackgroundScheduler", lambda timezone: _scheduler)
+    monkeypatch.setattr(batch_compute, "CronTrigger", _FakeTrigger)
+    monkeypatch.setattr(batch_compute, "run_batch", lambda: run_calls.append("run_batch"))
+    monkeypatch.setattr(batch_compute.time, "sleep", lambda _: (_ for _ in ()).throw(SystemExit))
+    try:
+        with pytest.raises(SystemExit):
+            batch_compute.main()
+    finally:
+        monkeypatch.setattr(sys, "argv", sys_argv)
+
+    assert _scheduler.started
+    assert run_calls == ["run_batch"]
+    assert len(_scheduler.jobs) == 1
+    assert isinstance(_scheduler.jobs[0]["trigger"], _FakeTrigger)
+    assert _scheduler.jobs[0]["trigger"].kwargs["hour"] == 2
+    assert _scheduler.jobs[0]["trigger"].kwargs["minute"] == 0
+    assert _scheduler.jobs[0]["trigger"].kwargs["timezone"] == batch_compute.EUROPE_LONDON
+
+
+def test_compute_store_batch_features_writes_expected_payload() -> None:
+    now = datetime.datetime(2026, 5, 25, 12, 0, tzinfo=ZoneInfo("Europe/London"))
+    store_id = "00000000-0000-0000-0000-000000000003"
+    rows = [
+        {
+            "store_id": store_id,
+            "total_orders": 2,
+            "lifetime_spend_pence": 1000,
+            "total_orders_30d": 2,
+            "unique_cards_30d": 1,
+            "chargeback_count": 0,
+        }
+    ]
+    engine = _FakeEngine(rows)
+    redis_client = _FakeRedis()
+    expected_key = f"fs:store:{store_id}:batch"
+    original_now = batch_compute._now
+    batch_compute._now = lambda: now
+    try:
+        batch_compute.compute_store_batch_features(engine, redis_client)
+    finally:
+        batch_compute._now = original_now
+
+    assert expected_key in redis_client.store
+    payload = redis_client.store[expected_key]
+    # avg = total_spend // total_orders = 1000 // 2 = 500
+    assert payload["avg_order_value_pence"] == "500"
+    assert payload["chargeback_rate"] == "0.0"
+    assert payload["unique_cards_30d"] == "1"
+    assert payload["total_orders_30d"] == "2"
+    assert redis_client.pipelines[0].expirations[expected_key] == 172_800
+
+
+def test_compute_store_entity_logs_errors() -> None:
+    fake_redis = _FakeRedis()
+    engine = _FailingEngine([])
+
+    records: list[logging.LogRecord] = []
+
+    class _Capture(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            records.append(record)
+
+    handler = _Capture()
+    batch_compute.LOG.addHandler(handler)
+    try:
+        with pytest.raises(RuntimeError, match="intentional connection failure"):
+            batch_compute.compute_store_batch_features(engine, fake_redis)
+    finally:
+        batch_compute.LOG.removeHandler(handler)
+
+    assert any(
+        record.levelno >= logging.ERROR and record.__dict__.get("entity") == "store"
+        for record in records
+    )
+
+
+def test_compute_merchant_batch_features_queries_orders_merchant_snapshot() -> None:
+    rows = [
+        {
+            "merchant_id": "00000000-0000-0000-0000-000000000005",
+            "total_orders": 1,
+            "lifetime_chargeback_count": 0,
+            "total_stores": 1,
+        }
+    ]
+
+    statements: list[object] = []
+
+    class _CaptureConnection(_FakeConnection):
+        def execute(
+            self, statement: object, params: dict[str, object] | None = None
+        ) -> _FakeResult:
+            _ = params
+            statements.append(statement)
+            return super().execute(statement, params)
+
+    class _CaptureEngine(_FakeEngine):
+        def connect(self) -> _CaptureConnection:
+            return _CaptureConnection(self._rows)
+
+    engine = _CaptureEngine(rows)
+    redis_client = _FakeRedis()
+    batch_compute.compute_merchant_batch_features(engine, redis_client)
+
+    assert statements
+    statement_text = str(statements[0]).lower()
+    assert "join stores" not in statement_text
+    assert "from orders o" in statement_text
+    assert "from orders_archive o" in statement_text

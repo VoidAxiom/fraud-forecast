@@ -136,6 +136,23 @@ services:
     networks:
       - fraud_net
 
+  feature_batch:
+    image: fraud-forecast-app
+    build: .
+    command: python -m feature_store.batch_compute --serve
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://app:${POSTGRES_PASSWORD:-app_dev_password}@postgres:5432/fraud_platform
+      REDIS_URL: redis://redis:6379/0
+      TZ: Europe/London
+    restart: unless-stopped
+    networks:
+      - fraud_net
+
 volumes:
   pg_data:
   redis_data:
