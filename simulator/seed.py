@@ -650,6 +650,18 @@ def seed_merchants(scale: float) -> None:
         conn.close()
 
 
+def _pg_array_literal(elements: list[str]) -> str:
+    """Serialize a list of strings to a PostgreSQL array literal."""
+
+    def quote(s: str) -> str:
+        needs_quote = not s or any(c in s for c in (" ", ",", "{", "}", "\\", '"'))
+        if needs_quote:
+            return '"' + s.replace("\\", "\\\\").replace('"', '\\"') + '"'
+        return s
+
+    return "{" + ",".join(quote(e) for e in elements) + "}"
+
+
 def seed_stores(scale: float) -> None:
     start = time.time()
     rng.seed(random.random())
@@ -700,7 +712,7 @@ def seed_stores(scale: float) -> None:
                     if extra not in cuisines:
                         cuisines.append(extra)
 
-                cuisine_types = "{" + ",".join(cuisines) + "}"
+                cuisine_types = _pg_array_literal(cuisines)
                 price_tier = int(rng.choices([1, 2, 3, 4], weights=[30, 45, 20, 5], k=1)[0])
                 accepts_cash = rng.random() < 0.05
                 accepts_in_store = rng.random() < 0.75
