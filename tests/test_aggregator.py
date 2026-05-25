@@ -296,7 +296,7 @@ async def test_write_user_stream_aggregates_uses_previous_order_age() -> None:
                 1,
             ],
         ],
-        zrevrange_result=[[("order-previous", previous_score)]],
+        zrevrange_result=[[("order-current", now_ts), ("order-previous", previous_score)]],
     )
 
     await aggregator.write_user_stream_aggregates(
@@ -311,6 +311,47 @@ async def test_write_user_stream_aggregates_uses_previous_order_age() -> None:
     assert fake_redis.pipeline_calls[2].expire_calls == [
         (user_stream_key, aggregator.TWENTY_FOUR_HOURS_SECONDS),
     ]
+    assert fake_redis.zrevrange_calls[0] == (
+        f"fs:user:{row_values['user_id']}:orders_zset",
+        1,
+        1,
+        False,
+        True,
+    )
+
+
+@pytest.mark.asyncio
+async def test_write_user_stream_aggregates_omits_last_order_age_with_only_current_order() -> None:
+    row_values = _build_order_kwargs()
+    row = _build_order_row(**row_values)
+    order = aggregator._coerce_order_context(row)
+    now_ts = aggregator._utcnow_ts()
+
+    fake_redis = _FakeRedis(
+        pipeline_results=[
+            [None, None, None],
+            [
+                ["a:120", "b:30", "bad"],
+                ["x:300", "y:40", "z:abc"],
+                2,
+                3,
+                2,
+                0,
+            ],
+            [
+                1,
+            ],
+        ],
+        zrevrange_result=[[("order-current", now_ts)]],
+    )
+
+    await aggregator.write_user_stream_aggregates(
+        redis_conn=cast(AsyncRedis[str], fake_redis), order=order, now_ts=now_ts
+    )
+
+    user_hset_calls = fake_redis.pipeline_calls[2].hset_calls
+    user_mapping = user_hset_calls[0][1]
+    assert "last_order_age_minutes" not in user_mapping
 
 
 @pytest.mark.asyncio

@@ -243,8 +243,8 @@ async def _refresh_user_stream_aggregates(
     spend_zset_key = f"fs:user:{user_id}:spend_zset"
     previous_orders = await redis_conn.zrevrange(
         orders_zset_key,
-        0,
-        0,
+        1,
+        1,
         withscores=True,
     )
     last_order_age_minutes = _last_order_age_minutes(
