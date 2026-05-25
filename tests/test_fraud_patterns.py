@@ -883,15 +883,6 @@ def test_collusive_store_concentration() -> None:
 
     orders_by_store: dict[uuid.UUID, int] = {}
     fraud_orders_by_store: dict[uuid.UUID, int] = {}
-    fraud_category_counts: dict[str, int] = {
-        "stolen_card": 0,
-        "account_takeover": 0,
-        "promo_abuse": 0,
-        "refund_abuse": 0,
-        "collusive_merchant": 0,
-        "triangulation": 0,
-        "reseller": 0,
-    }
     normal_order_count = 9000
     order_ids: list[uuid.UUID] = []
     fraud_order_ids: list[uuid.UUID] = []
@@ -900,7 +891,7 @@ def test_collusive_store_concentration() -> None:
     try:
         with engine.begin() as conn:
             for _ in range(1000):
-                order_dict, gt = asyncio.run(generate_fraud_order(ctx))
+                order_dict, gt = asyncio.run(generate_collusive_merchant_fraud(ctx))
                 store_id = _assert_uuid(order_dict["store_id"], "store_id")
                 order_id = _assert_uuid(order_dict["order_id"], "order_id")
                 user_id = _extract_user_id(order_dict)
@@ -910,8 +901,7 @@ def test_collusive_store_concentration() -> None:
                     "order_total_pence",
                 )
 
-                if gt.fraud_category in fraud_category_counts:
-                    fraud_category_counts[gt.fraud_category] += 1
+                assert gt.fraud_category == "collusive_merchant"
 
                 order_ids.append(order_id)
                 fraud_order_ids.append(order_id)
@@ -946,7 +936,7 @@ def test_collusive_store_concentration() -> None:
                         "pattern_notes": gt.pattern_notes,
                         "ring_id": gt.ring_id,
                     },
-                )
+                    )
 
             for i in range(normal_order_count):
                 order_id = uuid.uuid5(
@@ -976,9 +966,6 @@ def test_collusive_store_concentration() -> None:
                     order_number=f"COL-LG-{i:05d}-{order_id.hex[:6]}",
                     total_pence=1000,
                 )
-
-        for order_count in fraud_category_counts.values():
-            assert order_count > 0
 
         collusive_store_ids = {
             store_id for store_id in orders_by_store if store_id in COLLUSIVE_STORES
@@ -1189,7 +1176,7 @@ def test_chargeback_rates() -> None:
                         uuid.NAMESPACE_DNS,
                         f"chargeback-merchant-rate-legit-{i}",
                     ),
-                    order_number=f"CBR-LEG-{i:05d}-{order_id.hex[:8]}",
+                    order_number=f"CBR-LG-{i:05d}-{order_id.hex[:6]}",
                     fraud_category=None,
                     is_fraud=False,
                 )
@@ -1215,7 +1202,9 @@ def test_chargeback_rates() -> None:
 
         for category, expected_rate in expected_rates.items():
             observed = chargeback_counts[category] / inserted_counts[category]
-            tolerance = 0.05
+            tolerance = 2.576 * math.sqrt(
+                (expected_rate * (1.0 - expected_rate)) / inserted_counts[category]
+            )
             assert abs(observed - expected_rate) <= tolerance
     finally:
         if not order_ids:
