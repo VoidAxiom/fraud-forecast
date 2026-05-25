@@ -16,6 +16,9 @@ else:
 
 from simulator.fraud_patterns import GroundTruth, register
 
+NIGHT_HOURS = (2, 3, 4, 5)  # 2am-6am (2:00-5:59)
+NON_NIGHT_HOURS = tuple(h for h in range(24) if h not in NIGHT_HOURS)
+
 if TYPE_CHECKING:
     from simulator.models import Order as _Order  # type: ignore[import]  # noqa: F401
 
@@ -81,8 +84,7 @@ async def generate_stolen_card_fraud(
     avs_result = "NO_MATCH" if ctx.rng.random() < 0.65 else "MATCH"
     cvv_result = "NO_MATCH" if ctx.rng.random() < 0.40 else "MATCH"
 
-    order_total = ctx.rng.gauss(6500, 2500)
-    order_total_pence: int = max(2000, round(order_total))
+    order_total_pence: int = max(2000, int(ctx.rng.gauss(6500, 2500)))
 
     address_type = _weighted_choice(
         ctx.rng,
@@ -94,6 +96,18 @@ async def generate_stolen_card_fraud(
         [("uk", 0.60), ("vpn", 0.25), ("foreign", 0.15)],
     )
     is_high_end_cart = ctx.rng.random() < 0.60
+    _london_tz = ZoneInfo("Europe/London")
+    _now_london = ctx.now.astimezone(_london_tz)
+    if ctx.rng.random() < 0.40:
+        _placed_hour = ctx.rng.choice(list(NIGHT_HOURS))
+    else:
+        _placed_hour = ctx.rng.choice(list(NON_NIGHT_HOURS))
+    placed_at = _now_london.replace(
+        hour=_placed_hour,
+        minute=ctx.rng.randint(0, 59),
+        second=ctx.rng.randint(0, 59),
+        microsecond=0,
+    )
 
     order_dict: dict[str, Any] = {
         "order_total_pence": order_total_pence,
@@ -107,9 +121,8 @@ async def generate_stolen_card_fraud(
         "is_high_end_cart": is_high_end_cart,
         "variant": variant,
         "is_digital_native_bank": False,
-        # Probabilistic 40% night skew (spec §"Pattern 1"); re-derive from ctx.now when
-        # the generator passes simulated timestamps through ctx in a future iteration.
-        "is_night_order": ctx.rng.random() < 0.40,
+        "placed_at": placed_at,
+        "is_night_order": placed_at.hour in NIGHT_HOURS,  # mechanically derived
     }
 
     # Spec says 40% of stolen-card fraud is night-hour oriented; record that signal.

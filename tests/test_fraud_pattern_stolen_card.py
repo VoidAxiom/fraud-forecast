@@ -17,6 +17,7 @@ else:
 from simulator.fraud_patterns import GroundTruth, _REGISTRY, generate_fraud_order
 from simulator.fraud_patterns.stolen_card import (
     FraudPatternContext,
+    NIGHT_HOURS,
     _weighted_choice,
     generate_stolen_card_fraud,
 )
@@ -46,9 +47,11 @@ def test_generate_stolen_card_fraud_returns_expected_shape_and_truth() -> None:
         "is_high_end_cart",
         "variant",
         "is_digital_native_bank",
+        "placed_at",
     }
     assert required_keys.issubset(order_dict)
     assert isinstance(order_dict["order_total_pence"], int)
+    assert isinstance(order_dict["placed_at"], datetime)
     assert isinstance(order_dict["is_new_device"], bool)
     assert order_dict["is_digital_native_bank"] is False
     assert gt.is_fraud is True
@@ -68,19 +71,24 @@ def test_generate_stolen_card_fraud_is_deterministic_for_order_id() -> None:
     assert isinstance(gt1.order_id, uuid.UUID)
 
 
-def test_is_night_order_rate_is_approximately_40_percent() -> None:
-    """is_night_order must hit ~40% rate regardless of wall-clock (seeded RNG)."""
+def test_placed_at_night_skew_rate_and_derivation_invariant() -> None:
+    """placed_at hour is skewed to 2-5am and is_night_order is derived from it."""
     # daytime ctx.now to prove it's not wall-clock-dependent
     ctx = FraudPatternContext(
         rng=random.Random(42),
         now=datetime(2026, 1, 2, 14, 0, tzinfo=ZoneInfo("Europe/London")),
     )
-    results = [
-        asyncio.run(generate_stolen_card_fraud(ctx))[0]["is_night_order"]
-        for _ in range(500)
-    ]
-    rate = sum(results) / len(results)
-    assert 0.30 <= rate <= 0.50, f"night-order rate {rate:.3f} outside [0.30, 0.50]"
+    results = [asyncio.run(generate_stolen_card_fraud(ctx))[0] for _ in range(1000)]
+    night_hours = set(NIGHT_HOURS)
+    rate = sum(1 for order_dict in results if order_dict["placed_at"].hour in night_hours) / len(
+        results
+    )
+
+    assert 0.35 <= rate <= 0.45, f"night-order rate {rate:.3f} outside [0.35, 0.45]"
+    assert all(
+        order_dict["is_night_order"] == (order_dict["placed_at"].hour in night_hours)
+        for order_dict in results
+    )
 
 
 def test_weighted_choice_returns_choice_from_values() -> None:
@@ -103,6 +111,7 @@ def test_generate_fraud_order_is_deterministic_with_seeded_rng() -> None:
     assert order1["order_total_pence"] == order2["order_total_pence"]
     assert order1["variant"] == order2["variant"]
     assert order1["is_night_order"] == order2["is_night_order"]
+    assert order1["placed_at"] == order2["placed_at"]
 
 
 def test_stolen_card_variants_are_within_generous_bounds() -> None:
