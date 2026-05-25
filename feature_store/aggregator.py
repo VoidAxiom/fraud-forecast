@@ -28,6 +28,10 @@ BACKUP_POLL_SECONDS = 30
 CLEANUP_POLL_SECONDS = 60
 ORDER_TTL_SECONDS = 600
 PROCESSED_ORDERS_KEY_PREFIX = "fs:processed_orders"
+BACKUP_PROGRESS_CURSOR_KEY = "fs:aggregator:last_backup_ts"
+BACKUP_PROGRESS_CURSOR_TTL_SECONDS = 3600
+BACKUP_POLL_FALLBACK_SECONDS = 60
+BACKUP_POLL_MAX_LOOKBACK_SECONDS = 60 * 60
 CLEANUP_ZSET_SUFFIXES = (
     ":orders_zset",
     ":spend_zset",
@@ -70,8 +74,26 @@ SELECT
     placed_at,
     user_email_domain
 FROM orders
-WHERE placed_at >= NOW() - INTERVAL '60 seconds'
+WHERE placed_at > $1::TIMESTAMPTZ
+  AND placed_at <= $2::TIMESTAMPTZ
 """
+
+
+def _coerce_backup_cursor(raw_cursor: object) -> int | None:
+    if raw_cursor is None:
+        return None
+    if isinstance(raw_cursor, bool):
+        return None
+    if isinstance(raw_cursor, (int, float)):
+        return int(raw_cursor)
+    if isinstance(raw_cursor, (bytes, bytearray)):
+        raw_cursor = raw_cursor.decode("utf-8")
+    if isinstance(raw_cursor, str):
+        try:
+            return int(raw_cursor)
+        except ValueError:
+            return None
+    return None
 
 
 def _configure_logging() -> None:
@@ -283,6 +305,8 @@ async def _refresh_user_stream_aggregates(
     }
     if last_order_age_minutes is not None:
         stream_mapping["last_order_age_minutes"] = last_order_age_minutes
+    else:
+        persist_pipe.hdel(stream_key, "last_order_age_minutes")
 
     persist_pipe.hset(
         stream_key,
@@ -777,13 +801,23 @@ async def run_backup_poll_once(
     redis_conn: AsyncRedis[str],
     metrics: Metrics,
 ) -> None:
+    now_ts = _utcnow_ts()
+    last_ts_raw = await redis_conn.get(BACKUP_PROGRESS_CURSOR_KEY)
+    last_ts = _coerce_backup_cursor(last_ts_raw)
+    if last_ts is None:
+        last_ts = now_ts - BACKUP_POLL_FALLBACK_SECONDS
+    cursor_cutoff = now_ts - BACKUP_POLL_MAX_LOOKBACK_SECONDS
+    if last_ts < cursor_cutoff:
+        last_ts = cursor_cutoff
+
+    last_dt = datetime.datetime.fromtimestamp(last_ts, tz=LONDON_TZ)
+    now_dt = datetime.datetime.fromtimestamp(now_ts, tz=LONDON_TZ)
     async with pool.acquire() as conn:
-        rows = await conn.fetch(_BACKUP_POLL_SQL)
+        rows = await conn.fetch(_BACKUP_POLL_SQL, last_dt, now_dt)
 
     for row in rows:
         order_id = _coerce_uuid(row["order_id"], "order_id")
         order_id_str = str(order_id)
-        now_ts = _utcnow_ts()
         try:
             processed = await _was_order_processed(
                 redis_conn=redis_conn, order_id=order_id_str, now_ts=now_ts
@@ -802,6 +836,12 @@ async def run_backup_poll_once(
                 "backup_poll_update_failed",
                 extra={"event": "backup_poll_update_failed", "order_id": order_id_str},
             )
+
+    await redis_conn.set(
+        BACKUP_PROGRESS_CURSOR_KEY,
+        str(now_ts),
+        ex=BACKUP_PROGRESS_CURSOR_TTL_SECONDS,
+    )
 
 
 async def run_backup_poll_loop(

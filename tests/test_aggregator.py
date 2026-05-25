@@ -39,6 +39,7 @@ class _FakePipeline:
         self.calls: list[tuple[str, str, object]] = []
         self.zadd_calls: list[tuple[str, dict[str, object]]] = []
         self.hset_calls: list[tuple[str, dict[str, object]]] = []
+        self.hdel_calls: list[tuple[str, str]] = []
         self.expire_calls: list[tuple[str, int]] = []
         self.zrangebyscore_calls: list[tuple[str, int]] = []
         self.zcount_calls: list[tuple[str, int]] = []
@@ -71,6 +72,11 @@ class _FakePipeline:
         self.hset_calls.append((key, mapping))
         return self
 
+    def hdel(self, key: str, field: str) -> _FakePipeline:
+        self.calls.append(("hdel", key, field))
+        self.hdel_calls.append((key, field))
+        return self
+
     def expire(self, key: str, seconds: int) -> _FakePipeline:
         self.calls.append(("expire", key, seconds))
         self.expire_calls.append((key, seconds))
@@ -87,6 +93,8 @@ class _FakeRedis:
         scan_results: list[tuple[int, list[str]]] | None = None,
         zrevrange_result: list[list[tuple[str, object]]] | None = None,
         sismember_result: bool | list[bool] | None = None,
+        get_result: object | list[object] | None = None,
+        set_result: bool | list[bool] = True,
     ) -> None:
         self._pipeline_results = pipeline_results
         self.pipeline_calls: list[_FakePipeline] = []
@@ -100,6 +108,10 @@ class _FakeRedis:
         self.sadd_calls: list[tuple[str, str]] = []
         self.expire_calls: list[tuple[str, int]] = []
         self.zrevrange_calls: list[tuple[str, int, int, bool, bool]] = []
+        self.get_result: object | list[object] | None = get_result
+        self.set_result: bool | list[bool] = set_result
+        self.get_calls: list[tuple[str]] = []
+        self.set_calls: list[tuple[str, object, int | None]] = []
 
     def pipeline(self) -> _FakePipeline:
         result = self._pipeline_results.pop(0) if self._pipeline_results else []
@@ -135,6 +147,24 @@ class _FakeRedis:
     async def expire(self, key: str, ttl: int) -> bool:
         self.expire_calls.append((key, ttl))
         return True
+
+    async def get(self, key: str) -> object | None:
+        self.get_calls.append((key,))
+        value = self.get_result
+        if isinstance(value, list):
+            if not value:
+                return None
+            return value.pop(0)
+        return value
+
+    async def set(self, key: str, value: object, ex: int | None = None) -> bool:
+        self.set_calls.append((key, value, ex))
+        value_to_return = self.set_result
+        if isinstance(value_to_return, list):
+            if not value_to_return:
+                return False
+            return bool(value_to_return.pop(0))
+        return value_to_return
 
     async def scan(self, cursor: int, match: str, count: int) -> tuple[int, list[str]]:
         self.scan_calls.append((cursor, match, count))
@@ -352,6 +382,10 @@ async def test_write_user_stream_aggregates_omits_last_order_age_with_only_curre
     user_hset_calls = fake_redis.pipeline_calls[2].hset_calls
     user_mapping = user_hset_calls[0][1]
     assert "last_order_age_minutes" not in user_mapping
+    user_stream_key = f"fs:user:{row_values['user_id']}:stream"
+    assert fake_redis.pipeline_calls[2].hdel_calls == [
+        (user_stream_key, "last_order_age_minutes"),
+    ]
 
 
 @pytest.mark.asyncio
@@ -379,9 +413,27 @@ async def test_backup_poll_once_skips_processed_orders(
         metrics=aggregator.Metrics(errors=[0]),
     )
 
+    now_ts = 1_700_000_000
+    assert fake_redis.get_calls == [(aggregator.BACKUP_PROGRESS_CURSOR_KEY,)]
+    assert conn.fetch.await_args is not None
+    assert conn.fetch.await_args.kwargs == {}
+    assert conn.fetch.await_args.args == (
+        aggregator._BACKUP_POLL_SQL,
+        datetime.datetime.fromtimestamp(
+            now_ts - aggregator.BACKUP_POLL_FALLBACK_SECONDS, tz=ZoneInfo("Europe/London")
+        ),
+        datetime.datetime.fromtimestamp(now_ts, tz=ZoneInfo("Europe/London")),
+    )
     _utcnow_ts.assert_called_once_with()
     assert fake_redis.sismember_args == [
         (aggregator.processed_bucket_key(timestamp), str(kwargs["order_id"]))
+    ]
+    assert fake_redis.set_calls == [
+        (
+            aggregator.BACKUP_PROGRESS_CURSOR_KEY,
+            str(now_ts),
+            aggregator.BACKUP_PROGRESS_CURSOR_TTL_SECONDS,
+        ),
     ]
     update_features_for_order.assert_not_awaited()
 
@@ -422,7 +474,95 @@ async def test_backup_poll_once_skips_previous_bucket_processed_orders(
         ),
     ]
     _utcnow_ts.assert_called_once_with()
+    assert fake_redis.set_calls == [
+        (
+            aggregator.BACKUP_PROGRESS_CURSOR_KEY,
+            str(now_ts),
+            aggregator.BACKUP_PROGRESS_CURSOR_TTL_SECONDS,
+        ),
+    ]
     update_features_for_order.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@patch("feature_store.aggregator._utcnow_ts", return_value=1_700_000_000)
+@patch("feature_store.aggregator.update_features_for_order")
+async def test_backup_poll_once_uses_last_backup_cursor(
+    update_features_for_order: AsyncMock,
+    _utcnow_ts: AsyncMock,
+) -> None:
+    kwargs = _build_order_kwargs()
+    row = _build_order_row(**kwargs)
+    conn = AsyncMock()
+    conn.fetch.return_value = [row]
+    pool = AsyncMock()
+    pool_acquire = AsyncMock()
+    pool_acquire.__aenter__.return_value = conn
+    pool.acquire.return_value = pool_acquire
+
+    fake_redis = _FakeRedis(pipeline_results=[], get_result="1699990000")
+
+    await aggregator.run_backup_poll_once(
+        pool=pool,
+        redis_conn=cast(AsyncRedis[str], fake_redis),
+        metrics=aggregator.Metrics(errors=[0]),
+    )
+
+    _utcnow_ts.assert_called_once_with()
+    expected_now_ts = 1_700_000_000
+    assert fake_redis.get_calls == [(aggregator.BACKUP_PROGRESS_CURSOR_KEY,)]
+    assert conn.fetch.await_args is not None
+    assert conn.fetch.await_args.args == (
+        aggregator._BACKUP_POLL_SQL,
+        datetime.datetime.fromtimestamp(1_699_990_000, tz=ZoneInfo("Europe/London")),
+        datetime.datetime.fromtimestamp(expected_now_ts, tz=ZoneInfo("Europe/London")),
+    )
+    assert fake_redis.set_calls == [
+        (
+            aggregator.BACKUP_PROGRESS_CURSOR_KEY,
+            str(expected_now_ts),
+            aggregator.BACKUP_PROGRESS_CURSOR_TTL_SECONDS,
+        ),
+    ]
+    update_features_for_order.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@patch("feature_store.aggregator._utcnow_ts", return_value=1_700_000_000)
+@patch("feature_store.aggregator.update_features_for_order")
+async def test_backup_poll_once_caps_cursor_lookback(
+    update_features_for_order: AsyncMock,
+    _utcnow_ts: AsyncMock,
+) -> None:
+    kwargs = _build_order_kwargs()
+    row = _build_order_row(**kwargs)
+    conn = AsyncMock()
+    conn.fetch.return_value = [row]
+    pool = AsyncMock()
+    pool_acquire = AsyncMock()
+    pool_acquire.__aenter__.return_value = conn
+    pool.acquire.return_value = pool_acquire
+
+    stale_ts = 1_698_000_000
+    fake_redis = _FakeRedis(pipeline_results=[], get_result=str(stale_ts))
+
+    await aggregator.run_backup_poll_once(
+        pool=pool,
+        redis_conn=cast(AsyncRedis[str], fake_redis),
+        metrics=aggregator.Metrics(errors=[0]),
+    )
+
+    expected_now_ts = 1_700_000_000
+    assert conn.fetch.await_args is not None
+    assert conn.fetch.await_args.args == (
+        aggregator._BACKUP_POLL_SQL,
+        datetime.datetime.fromtimestamp(
+            expected_now_ts - aggregator.BACKUP_POLL_MAX_LOOKBACK_SECONDS,
+            tz=ZoneInfo("Europe/London"),
+        ),
+        datetime.datetime.fromtimestamp(expected_now_ts, tz=ZoneInfo("Europe/London")),
+    )
+    update_features_for_order.assert_awaited_once()
 
 
 @pytest.mark.asyncio
