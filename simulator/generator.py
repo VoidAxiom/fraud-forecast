@@ -137,13 +137,43 @@ async def load_active_promos(pool: asyncpg.Pool) -> list[dict[str, Any]]:
     rows = await pool.fetch(
         """
         SELECT promo_id, promo_code, promo_type, discount_amount_pence, discount_percent,
-               min_order_pence, max_redemptions_per_user, valid_from, valid_until, is_targeted
+               min_order_pence, max_redemptions_per_user, valid_from, valid_until, is_targeted,
+               (promo_type = 'NEW_USER') as is_new_user_only
         FROM promotions
         WHERE (valid_until IS NULL OR valid_until > NOW())
           AND (valid_from IS NULL OR valid_from <= NOW())
         """,
     )
     return [dict(row) for row in rows]
+
+
+def _is_new_user_only_promo(promo: dict[str, Any]) -> bool:
+    is_new_user_only = promo.get("is_new_user_only")
+    if isinstance(is_new_user_only, bool):
+        return is_new_user_only
+
+    promo_type = promo.get("promo_type")
+    return isinstance(promo_type, str) and promo_type.upper() == "NEW_USER"
+
+
+async def _promo_redemption_count(
+    conn: asyncpg.Connection,
+    user_id: uuid.UUID,
+    promo_code: str,
+) -> int:
+    redemptions = await conn.fetchval(
+        """
+        SELECT COUNT(*)
+        FROM (
+            SELECT 1 FROM orders WHERE user_id=$1 AND promo_code=$2
+            UNION ALL
+            SELECT 1 FROM orders_archive WHERE user_id=$1 AND promo_code=$2
+        ) AS promo_redemptions
+        """,
+        user_id,
+        promo_code,
+    )
+    return int(redemptions)
 
 
 async def load_user_data(
@@ -399,7 +429,9 @@ def compute_pricing(
     return delivery_fee, service_fee, tip, 0
 
 
-def apply_promo(
+async def apply_promo(
+    conn: asyncpg.Connection,
+    user_id: uuid.UUID,
     rng: random.Random,
     is_first_order: bool,
     eligible_promos: list[dict[str, Any]],
@@ -413,6 +445,38 @@ def apply_promo(
 
     if not eligible_promos:
         return None
+
+    if not is_first_order:
+        eligible_promos = [
+            promo
+            for promo in eligible_promos
+            if not _is_new_user_only_promo(promo)
+        ]
+        if not eligible_promos:
+            return None
+
+        filtered_promos: list[dict[str, Any]] = []
+        for promo in eligible_promos:
+            max_redemptions_per_user = promo.get("max_redemptions_per_user")
+            promo_code = promo.get("promo_code")
+
+            if not isinstance(promo_code, str):
+                continue
+            if max_redemptions_per_user is None:
+                filtered_promos.append(promo)
+                continue
+
+            already_redeemed = await _promo_redemption_count(
+                conn=conn,
+                user_id=user_id,
+                promo_code=promo_code,
+            )
+            if already_redeemed < int(max_redemptions_per_user):
+                filtered_promos.append(promo)
+
+        eligible_promos = filtered_promos
+        if not eligible_promos:
+            return None
 
     if is_first_order:
         if rng.random() >= 0.80:
@@ -576,14 +640,18 @@ def _select_order_type(rng: random.Random, store: dict[str, Any]) -> str:
             return "DELIVERY"
         if bool(store.get("accepts_pickup", True)):
             return "PICKUP"
-        return "DINE_IN"
+        if bool(store.get("accepts_in_store", True)):
+            return "DINE_IN"
+        raise RuntimeError("no eligible order type for store")
 
     if roll < 0.95:
         if bool(store.get("accepts_pickup", True)):
             return "PICKUP"
         if bool(store.get("accepts_delivery", True)):
             return "DELIVERY"
-        return "DINE_IN"
+        if bool(store.get("accepts_in_store", True)):
+            return "DINE_IN"
+        raise RuntimeError("no eligible order type for store")
 
     if bool(store.get("accepts_in_store", True)):
         return "DINE_IN"
@@ -1148,7 +1216,14 @@ async def create_one_order(
         )
         is_first_order_for_user = user_total_orders_lifetime == 0
 
-        promo = apply_promo(rng, is_first_order_for_user, promos, cart.subtotal_pence)
+        promo = await apply_promo(
+            conn,
+            user_id,
+            rng,
+            is_first_order_for_user,
+            promos,
+            cart.subtotal_pence,
+        )
         applied_discount = _promo_discount(promo, cart.subtotal_pence)
 
         distance_km = _distance_km_for_delivery(store, delivery_address)

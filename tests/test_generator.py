@@ -14,6 +14,7 @@ import redis.asyncio as aioredis
 from simulator.generator import (
     _read_runtime_rate,
     create_one_order,
+    apply_promo,
     load_active_promos,
     load_config_from_env,
     _select_order_type,
@@ -41,6 +42,19 @@ class _FixedUserPicker:
 
     def pick(self, _rng: random.Random) -> uuid.UUID:
         return self._user_id
+
+
+class _FakePromoConn:
+    def __init__(self, counts: dict[str, int]) -> None:
+        self.counts = counts
+
+    async def fetchval(
+        self,
+        _query: str,
+        _user_id: uuid.UUID,
+        promo_code: str,
+    ) -> int:
+        return self.counts.get(promo_code, 0)
 
 
 async def _pick_user(
@@ -188,6 +202,113 @@ def test_select_order_type_falls_back_to_pickup_when_only_pickup_enabled() -> No
     }
     with patch.object(rng, "random", return_value=0.99):
         assert _select_order_type(rng, store) == "PICKUP"
+
+
+def test_apply_promo_ignores_new_user_only_for_repeat_orders() -> None:
+    async def _run() -> None:
+        user_id = uuid.uuid4()
+        conn = _FakePromoConn({"WELCOME10": 0, "SUMMER20": 0})
+        promos = [
+            {
+                "promo_code": "WELCOME10",
+                "promo_type": "NEW_USER",
+                "min_order_pence": 0,
+                "max_redemptions_per_user": 1,
+            },
+            {
+                "promo_code": "SUMMER20",
+                "promo_type": "PERCENT_OFF",
+                "min_order_pence": 0,
+                "max_redemptions_per_user": 1,
+            },
+        ]
+
+        rng = random.Random(1)
+        with patch.object(rng, "random", return_value=0.01), patch.object(
+            rng,
+            "choice",
+            side_effect=lambda options: options[0],
+        ):
+            result = await apply_promo(
+                conn,
+                user_id,
+                rng,
+                False,
+                promos,
+                1000,
+            )
+
+        assert result is not None
+        assert result["promo_code"] == "SUMMER20"
+
+    asyncio.run(_run())
+
+
+def test_apply_promo_enforces_max_redemptions_per_user() -> None:
+    async def _run() -> None:
+        user_id = uuid.uuid4()
+        conn = _FakePromoConn({"WELCOME10": 2, "SUMMER20": 1})
+        promos = [
+            {
+                "promo_code": "WELCOME10",
+                "promo_type": "NEW_USER",
+                "min_order_pence": 0,
+                "max_redemptions_per_user": 1,
+            },
+            {
+                "promo_code": "SUMMER20",
+                "promo_type": "PERCENT_OFF",
+                "min_order_pence": 0,
+                "max_redemptions_per_user": 1,
+            },
+        ]
+
+        rng = random.Random(1)
+        with patch.object(rng, "random", return_value=0.01):
+            result = await apply_promo(
+                conn,
+                user_id,
+                rng,
+                False,
+                promos,
+                1000,
+            )
+
+        assert result is None
+
+    asyncio.run(_run())
+
+
+def test_select_order_type_falls_back_to_dine_in_only_when_enabled() -> None:
+    rng = random.Random()
+    store = {
+        "accepts_delivery": False,
+        "accepts_pickup": False,
+        "accepts_in_store": True,
+    }
+
+    with patch.object(rng, "random", return_value=0.74):
+        assert _select_order_type(rng, store) == "DINE_IN"
+
+    with patch.object(rng, "random", return_value=0.94):
+        assert _select_order_type(rng, store) == "DINE_IN"
+
+
+def test_select_order_type_raises_when_no_dine_in_is_eligible() -> None:
+    rng = random.Random()
+    store = {
+        "accepts_delivery": False,
+        "accepts_pickup": False,
+        "accepts_in_store": False,
+    }
+
+    with patch.object(rng, "random", return_value=0.74):
+        with pytest.raises(RuntimeError, match="no eligible order type for store"):
+            _select_order_type(rng, store)
+
+    with patch.object(rng, "random", return_value=0.94):
+        with pytest.raises(RuntimeError, match="no eligible order type for store"):
+            _select_order_type(rng, store)
 
 
 def test_generator_creates_valid_order() -> None:
