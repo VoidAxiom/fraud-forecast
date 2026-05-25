@@ -1088,7 +1088,7 @@ async def insert_order(
                     order_id,
                     placed_at,
                     item.item_id,
-                    item.item_name,
+                    item.name,
                     item.qty,
                     item.unit_price_pence,
                     item.line_total_pence,
