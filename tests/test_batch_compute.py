@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from decimal import Decimal
 import datetime
 import logging
 import sys
@@ -209,6 +210,15 @@ def test_compute_user_batch_features_includes_refund_count() -> None:
     assert payload["lifetime_refund_count"] == "3"
 
 
+def test_to_int_handles_decimal_inputs() -> None:
+    row: dict[str, object] = {
+        "pence_total": Decimal("9007199254740993"),
+    }
+
+    # int(float(Decimal(...))) would round to 9007199254740992; Decimal must stay exact.
+    assert batch_compute._to_int(row, "pence_total") == 9007199254740993
+
+
 def test_compute_device_batch_features_zero_orders_still_writes_zero_rate() -> None:
     now = datetime.datetime(2026, 5, 25, 12, 0, tzinfo=ZoneInfo("Europe/London"))
     device_id = "00000000-0000-0000-0000-000000000002"
@@ -255,8 +265,12 @@ def test_run_batch_dispatches_all_entity_computes(monkeypatch: pytest.MonkeyPatc
         "from_url",
         lambda url, decode_responses=True: redis_client,
     )
-    monkeypatch.setattr(batch_compute, "compute_user_batch_features", lambda engine, r: calls.append("user"))
-    monkeypatch.setattr(batch_compute, "compute_device_batch_features", lambda engine, r: calls.append("device"))
+    monkeypatch.setattr(
+        batch_compute, "compute_user_batch_features", lambda engine, r: calls.append("user")
+    )
+    monkeypatch.setattr(
+        batch_compute, "compute_device_batch_features", lambda engine, r: calls.append("device")
+    )
     monkeypatch.setattr(
         batch_compute,
         "compute_payment_batch_features",
@@ -397,3 +411,38 @@ def test_compute_store_entity_logs_errors() -> None:
         record.levelno >= logging.ERROR and record.__dict__.get("entity") == "store"
         for record in records
     )
+
+
+def test_compute_merchant_batch_features_queries_orders_merchant_snapshot() -> None:
+    rows = [
+        {
+            "merchant_id": "00000000-0000-0000-0000-000000000005",
+            "total_orders": 1,
+            "lifetime_chargeback_count": 0,
+            "total_stores": 1,
+        }
+    ]
+
+    statements: list[object] = []
+
+    class _CaptureConnection(_FakeConnection):
+        def execute(
+            self, statement: object, params: dict[str, object] | None = None
+        ) -> _FakeResult:
+            _ = params
+            statements.append(statement)
+            return super().execute(statement, params)
+
+    class _CaptureEngine(_FakeEngine):
+        def connect(self) -> _CaptureConnection:
+            return _CaptureConnection(self._rows)
+
+    engine = _CaptureEngine(rows)
+    redis_client = _FakeRedis()
+    batch_compute.compute_merchant_batch_features(engine, redis_client)
+
+    assert statements
+    statement_text = str(statements[0]).lower()
+    assert "join stores" not in statement_text
+    assert "from orders o" in statement_text
+    assert "from orders_archive o" in statement_text

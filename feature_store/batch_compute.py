@@ -6,6 +6,7 @@ import os
 import sys
 import time
 from datetime import datetime, timedelta
+from decimal import Decimal
 from typing import Any, Mapping, cast
 
 import redis
@@ -49,7 +50,7 @@ def _now() -> datetime:
     return datetime.now(ZoneInfo(EUROPE_LONDON))
 
 
-def _to_int(row: Mapping[str, object], key: str, default: int = 0) -> int:
+def _to_int(row: Mapping[str, Any], key: str, default: int = 0) -> int:
     if key not in row:
         return default
     value = row[key]
@@ -57,9 +58,9 @@ def _to_int(row: Mapping[str, object], key: str, default: int = 0) -> int:
         return default
     if isinstance(value, int):
         return value
-    if isinstance(value, float):
+    if isinstance(value, Decimal):
         return int(value)
-    return int(float(str(value)))
+    return int(value)
 
 
 def _to_str(row: Mapping[str, object], key: str) -> str | None:
@@ -464,13 +465,11 @@ def compute_merchant_batch_features(engine: Engine, r: redis.Redis[str]) -> None
     query = text(
         """
         WITH all_orders AS (
-          SELECT s.merchant_id, o.order_id, s.store_id
+          SELECT o.merchant_id, o.order_id, o.store_id
           FROM orders o
-          JOIN stores s ON s.store_id = o.store_id
           UNION ALL
-          SELECT s.merchant_id, o.order_id, s.store_id
+          SELECT o.merchant_id, o.order_id, o.store_id
           FROM orders_archive o
-          JOIN stores s ON s.store_id = o.store_id
         ),
         merchant_orders AS (
           SELECT merchant_id, COUNT(order_id) AS total_orders
@@ -484,14 +483,14 @@ def compute_merchant_batch_features(engine: Engine, r: redis.Redis[str]) -> None
           GROUP BY ao.merchant_id
         )
         SELECT
-          s.merchant_id,
+          ao.merchant_id,
           COALESCE(mo.total_orders, 0) AS total_orders,
           COALESCE(mc.chargeback_count, 0) AS lifetime_chargeback_count,
-          COUNT(DISTINCT s.store_id) AS total_stores
-        FROM stores AS s
-        LEFT JOIN merchant_orders mo ON mo.merchant_id = s.merchant_id
-        LEFT JOIN merchant_chargebacks mc ON mc.merchant_id = s.merchant_id
-        GROUP BY s.merchant_id, mo.total_orders, mc.chargeback_count
+          COUNT(DISTINCT ao.store_id) AS total_stores
+        FROM all_orders AS ao
+        LEFT JOIN merchant_orders mo ON mo.merchant_id = ao.merchant_id
+        LEFT JOIN merchant_chargebacks mc ON mc.merchant_id = ao.merchant_id
+        GROUP BY ao.merchant_id, mo.total_orders, mc.chargeback_count
         """
     )
 
@@ -577,7 +576,9 @@ def compute_email_domain_batch_features(engine: Engine, r: redis.Redis[str]) -> 
                     pipe.expire(f"fs:email_domain:{email_domain}:batch", BATCH_TTL_SECONDS)
                 pipe.execute()
     except Exception as exc:  # pragma: no cover - exception-path is validated by unit tests
-        LOG.exception("batch_compute_entity_error", extra={"entity": "email_domain", "error": str(exc)})
+        LOG.exception(
+            "batch_compute_entity_error", extra={"entity": "email_domain", "error": str(exc)}
+        )
 
 
 def run_batch() -> None:
