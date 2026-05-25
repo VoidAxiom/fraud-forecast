@@ -4,11 +4,19 @@ from __future__ import annotations
 
 import math
 import random
+import sys
 import uuid
 from typing import Any
 
+if sys.version_info >= (3, 9):
+    from zoneinfo import ZoneInfo
+else:
+    from backports.zoneinfo import ZoneInfo
+
 from simulator.fraud_patterns import GroundTruth, register
 from simulator.fraud_patterns.stolen_card import FraudPatternContext
+
+LONDON_TZ = ZoneInfo("Europe/London")
 
 
 def _weighted_choice(rng: random.Random, choices: list[tuple[str, float]]) -> str:
@@ -78,6 +86,13 @@ async def generate_account_takeover_fraud(
     raw = math.exp(ctx.rng.gauss(mu, sigma))
     order_total_pence = max(1, int(raw))
 
+    if ctx.now.tzinfo is None:
+        raise ValueError(
+            "FraudPatternContext.now must be timezone-aware; "
+            "got a naive datetime which would be treated as host-local time"
+        )
+    _now_london = ctx.now.astimezone(LONDON_TZ)
+
     may_collide = ctx.rng.random() < 0.30
 
     order_dict: dict[str, Any] = {
@@ -92,14 +107,14 @@ async def generate_account_takeover_fraud(
         "is_new_delivery_address": is_new_delivery_address,
         "order_total_pence": order_total_pence,
         "order_value_mode": order_value_mode,
-        "placed_at": ctx.now,
+        "placed_at": _now_london,
     }
 
     # Phase 2-C resolves victim_user_id via DB filter; this packet stamps the filter criteria into pattern_notes
     pattern_notes = f"victim_user_id={victim_user_id}, new_device, ip_country={ip_country}"
     if may_collide:
         pattern_notes += ", may_collide_with_real_order=true"
-    pattern_notes += ", _target_user_filter={\"risk_tier\": \"TRUSTED\", \"min_orders_lifetime\": 10}"
+    pattern_notes += ', _target_user_filter={"risk_tier": "TRUSTED", "min_orders_lifetime": 10}'
 
     gt = GroundTruth(
         order_id=order_dict["order_id"],
