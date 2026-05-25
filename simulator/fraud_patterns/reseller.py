@@ -62,9 +62,9 @@ async def generate_reseller_fraud(
 
     preferred_stores = account.preferred_store_ids
     if preferred_stores and ctx.rng.random() < 0.70:
-        store_id: UUID | str = ctx.rng.choice(preferred_stores)
+        store_id: UUID = ctx.rng.choice(preferred_stores)
     else:
-        store_id = "RESELLER_OTHER_STORE"
+        store_id = UUID(int=ctx.rng.getrandbits(128))
 
     order_id: UUID = UUID(int=ctx.rng.getrandbits(128))
     pattern_notes: str = (

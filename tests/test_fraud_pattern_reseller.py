@@ -6,6 +6,7 @@ import asyncio
 import random
 import sys
 from datetime import datetime
+from uuid import UUID
 
 if sys.version_info >= (3, 9):
     from zoneinfo import ZoneInfo
@@ -54,6 +55,7 @@ def test_returns_ground_truth() -> None:
     assert gt.is_fraud is True
     assert gt.fraud_category == "reseller"
     assert gt.ring_id is None
+    assert isinstance(order_dict["store_id"], UUID)
 
 
 def test_bulk_cart() -> None:
@@ -68,6 +70,7 @@ def test_bulk_cart() -> None:
         item_count = order_dict["item_count"]
         assert 10 <= item_count <= 25
         item_counts.append(item_count)
+        assert isinstance(order_dict["store_id"], UUID)
 
     mean_item_count = sum(item_counts) / len(item_counts)
     assert 16.0 <= mean_item_count <= 19.0
