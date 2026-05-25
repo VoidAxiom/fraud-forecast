@@ -108,6 +108,11 @@ async def generate_stolen_card_fraud(
         [("uk", 0.60), ("vpn", 0.25), ("foreign", 0.15)],
     )
     is_high_end_cart = ctx.rng.random() < 0.60
+    if ctx.now.tzinfo is None:
+        raise ValueError(
+            "FraudPatternContext.now must be timezone-aware; "
+            "got a naive datetime which would be treated as host-local time"
+        )
     _now_london = ctx.now.astimezone(LONDON_TZ)
     if ctx.rng.random() < 0.40:
         _placed_hour = ctx.rng.choice(list(NIGHT_HOURS))

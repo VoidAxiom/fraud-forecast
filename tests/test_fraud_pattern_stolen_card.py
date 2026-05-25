@@ -50,6 +50,13 @@ def test_fraud_pattern_context_now_is_required() -> None:
         FraudPatternContext()
 
 
+def test_naive_datetime_raises() -> None:
+    ctx_naive = FraudPatternContext(now=datetime(2024, 3, 15, 14, 0, 0))
+
+    with pytest.raises(ValueError):
+        asyncio.run(generate_stolen_card_fraud(ctx=ctx_naive))
+
+
 def test_generate_stolen_card_fraud_returns_expected_shape_and_truth() -> None:
     ctx = FraudPatternContext(
         rng=random.Random(123),
