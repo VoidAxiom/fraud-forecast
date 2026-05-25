@@ -177,6 +177,16 @@ def _days_to_chargeback_threshold(rng: random.Random, is_fraud: bool) -> float:
     return rng.lognormvariate(math.log(30), 0.8)
 
 
+def _refund_due_at_hours(order_id: uuid.UUID) -> float:
+    """Deterministic 0-5d refund delay (in hours) sampled per order_id.
+
+    Seeds a Random with the first 8 bytes of the order UUID so the same
+    delay is returned on every daemon tick — making issuance idempotent.
+    """
+    seed = int(order_id.bytes[:8].hex(), 16)
+    return random.Random(seed).uniform(0.0, 120.0)
+
+
 async def generate_chargebacks(pool: Any) -> None:
     async with pool.acquire() as conn:
         now = datetime.datetime.now(datetime.timezone.utc)
@@ -292,7 +302,7 @@ async def generate_refunds(pool: Any) -> None:
                 "FROM orders o\n"
                 "JOIN simulator_ground_truth gt USING (order_id)\n"
                 "WHERE o.delivered_at IS NOT NULL\n"
-                "  AND o.delivered_at >= NOW() - INTERVAL '5 days'\n"
+                "  AND o.delivered_at >= NOW() - INTERVAL '6 days'\n"
                 "  AND gt.fraud_category = 'refund_abuse'\n"
                 "  AND NOT EXISTS (SELECT 1 FROM refunds r WHERE r.order_id = o.order_id)\n"
                 "  AND o.order_id > $1\n"
@@ -307,7 +317,7 @@ async def generate_refunds(pool: Any) -> None:
                 "FROM orders_archive o\n"
                 "JOIN simulator_ground_truth gt USING (order_id)\n"
                 "WHERE o.delivered_at IS NOT NULL\n"
-                "  AND o.delivered_at >= NOW() - INTERVAL '5 days'\n"
+                "  AND o.delivered_at >= NOW() - INTERVAL '6 days'\n"
                 "  AND gt.fraud_category = 'refund_abuse'\n"
                 "  AND NOT EXISTS (SELECT 1 FROM refunds r WHERE r.order_id = o.order_id)\n"
                 "  AND o.order_id > $1)) _cands "
@@ -325,7 +335,12 @@ async def generate_refunds(pool: Any) -> None:
                 total_pence = int(row["total_pence"])
 
                 delivered_age_hours = (now - delivered_at).total_seconds() / 3600
-                if not (0 <= delivered_age_hours <= 120):
+                refund_delay_hours = _refund_due_at_hours(order_id)
+                # Issue only when the sampled delay has elapsed; 24h grace
+                # handles daemons that missed a tick (matching chargeback pattern).
+                if delivered_age_hours < refund_delay_hours:
+                    continue
+                if delivered_age_hours > 120 + 24:
                     continue
 
                 await conn.execute(_REFUND_INSERT_SQL, order_id, order_placed_at, total_pence)
