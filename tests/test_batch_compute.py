@@ -163,6 +163,52 @@ def test_compute_user_batch_features_writes_expected_payload() -> None:
     assert redis_client.pipelines[0].expirations[expected_key] == 172_800
 
 
+def test_compute_user_batch_features_includes_refund_count() -> None:
+    now = datetime.datetime(2026, 5, 25, 12, 0, tzinfo=ZoneInfo("Europe/London"))
+    user_id = "00000000-0000-0000-0000-000000000003"
+    rows = [
+        {
+            "user_id": user_id,
+            "created_at": datetime.datetime(
+                2026,
+                5,
+                20,
+                12,
+                tzinfo=ZoneInfo("Europe/London"),
+            ),
+            "lifetime_order_count": 1,
+            "lifetime_spend_pence": 500,
+            "avg_order_value_pence": 500,
+            "lifetime_chargeback_count": 0,
+            "lifetime_refund_count": 3,
+            "unique_devices_used": 1,
+            "unique_payment_methods_used": 1,
+            "unique_delivery_addresses": 1,
+            "distinct_cities_ordered_from": 1,
+            "last_placed_at": datetime.datetime(
+                2026,
+                5,
+                25,
+                10,
+                tzinfo=ZoneInfo("Europe/London"),
+            ),
+        }
+    ]
+    engine = _FakeEngine(rows)
+    redis_client = _FakeRedis()
+    expected_key = f"fs:user:{user_id}:batch"
+    original_now = batch_compute._now
+    batch_compute._now = lambda: now
+    try:
+        batch_compute.compute_user_batch_features(engine, redis_client)
+    finally:
+        batch_compute._now = original_now
+
+    payload = redis_client.store[expected_key]
+
+    assert payload["lifetime_refund_count"] == "3"
+
+
 def test_compute_device_batch_features_zero_orders_still_writes_zero_rate() -> None:
     now = datetime.datetime(2026, 5, 25, 12, 0, tzinfo=ZoneInfo("Europe/London"))
     device_id = "00000000-0000-0000-0000-000000000002"
@@ -295,6 +341,39 @@ def test_main_serve_starts_scheduler(
     assert _scheduler.jobs[0]["trigger"].kwargs["hour"] == 2
     assert _scheduler.jobs[0]["trigger"].kwargs["minute"] == 0
     assert _scheduler.jobs[0]["trigger"].kwargs["timezone"] == batch_compute.EUROPE_LONDON
+
+
+def test_compute_store_batch_features_writes_expected_payload() -> None:
+    now = datetime.datetime(2026, 5, 25, 12, 0, tzinfo=ZoneInfo("Europe/London"))
+    store_id = "00000000-0000-0000-0000-000000000003"
+    rows = [
+        {
+            "store_id": store_id,
+            "total_orders": 2,
+            "lifetime_spend_pence": 1000,
+            "total_orders_30d": 2,
+            "unique_cards_30d": 1,
+            "chargeback_count": 0,
+        }
+    ]
+    engine = _FakeEngine(rows)
+    redis_client = _FakeRedis()
+    expected_key = f"fs:store:{store_id}:batch"
+    original_now = batch_compute._now
+    batch_compute._now = lambda: now
+    try:
+        batch_compute.compute_store_batch_features(engine, redis_client)
+    finally:
+        batch_compute._now = original_now
+
+    assert expected_key in redis_client.store
+    payload = redis_client.store[expected_key]
+    # avg = total_spend // total_orders = 1000 // 2 = 500
+    assert payload["avg_order_value_pence"] == "500"
+    assert payload["chargeback_rate"] == "0.0"
+    assert payload["unique_cards_30d"] == "1"
+    assert payload["total_orders_30d"] == "2"
+    assert redis_client.pipelines[0].expirations[expected_key] == 172_800
 
 
 def test_compute_store_entity_logs_errors() -> None:

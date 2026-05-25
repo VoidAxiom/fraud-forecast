@@ -122,6 +122,7 @@ def compute_user_batch_features(engine: Engine, r: redis.Redis[str]) -> None:
           COALESCE(SUM(o.total_pence), 0) AS lifetime_spend_pence,
           COALESCE(AVG(o.total_pence), 0) AS avg_order_value_pence,
           COALESCE(COUNT(cb.order_id), 0) AS lifetime_chargeback_count,
+          COALESCE(COUNT(r.refund_id), 0) AS lifetime_refund_count,
           COUNT(DISTINCT o.device_id) AS unique_devices_used,
           COUNT(DISTINCT o.payment_method_id) AS unique_payment_methods_used,
           COUNT(DISTINCT o.delivery_address_id) AS unique_delivery_addresses,
@@ -130,6 +131,7 @@ def compute_user_batch_features(engine: Engine, r: redis.Redis[str]) -> None:
         FROM all_orders AS o
         JOIN users AS u ON u.user_id = o.user_id
         LEFT JOIN chargebacks AS cb ON cb.order_id = o.order_id
+        LEFT JOIN refunds AS r ON r.order_id = o.order_id
         GROUP BY o.user_id, u.created_at
         """
     )
@@ -166,7 +168,10 @@ def compute_user_batch_features(engine: Engine, r: redis.Redis[str]) -> None:
                             "lifetime_spend_pence": spend,
                             "avg_order_value_pence": avg_order_value,
                             "lifetime_chargeback_count": chargeback_count,
-                            "lifetime_refund_count": 0,
+                            "lifetime_refund_count": _to_int(
+                                row,
+                                "lifetime_refund_count",
+                            ),
                             "lifetime_chargeback_rate": chargeback_rate,
                             "unique_devices_used": _to_int(row, "unique_devices_used"),
                             "unique_payment_methods_used": _to_int(
@@ -395,10 +400,10 @@ def compute_store_batch_features(engine: Engine, r: redis.Redis[str]) -> None:
     query = text(
         """
         WITH all_orders AS (
-          SELECT order_id, store_id, total_pence, card_last_four, placed_at
+          SELECT order_id, store_id, total_pence, payment_method_id, placed_at
           FROM orders
           UNION ALL
-          SELECT order_id, store_id, total_pence, card_last_four, placed_at
+          SELECT order_id, store_id, total_pence, payment_method_id, placed_at
           FROM orders_archive
         )
         SELECT
@@ -407,7 +412,7 @@ def compute_store_batch_features(engine: Engine, r: redis.Redis[str]) -> None:
           COALESCE(SUM(o.total_pence), 0) AS lifetime_spend_pence,
           SUM(CASE WHEN o.placed_at >= :thirty_days_ago THEN 1 ELSE 0 END) AS total_orders_30d,
           COUNT(
-            DISTINCT CASE WHEN o.placed_at >= :thirty_days_ago THEN o.card_last_four END
+            DISTINCT CASE WHEN o.placed_at >= :thirty_days_ago THEN o.payment_method_id END
           ) AS unique_cards_30d,
           COALESCE(COUNT(cb.order_id), 0) AS chargeback_count
         FROM all_orders AS o
@@ -523,6 +528,8 @@ def compute_merchant_batch_features(engine: Engine, r: redis.Redis[str]) -> None
 
 def compute_email_domain_batch_features(engine: Engine, r: redis.Redis[str]) -> None:
     """Compute all email-domain batch features."""
+    # Lifetime aggregation is intentional per spec/PHASE_4.md feature catalog.
+    # No rolling window is specified for email_domain batch features.
     query = text(
         """
         WITH all_orders AS (
