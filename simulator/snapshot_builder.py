@@ -205,8 +205,8 @@ def build_order_snapshot(
     created_at_london = user.created_at.astimezone(london_tz)
     user_account_age_days = (placed_at_london - created_at_london).days
 
-    delivery_latitude = float(delivery_address.latitude) if delivery_address else None
-    delivery_longitude = float(delivery_address.longitude) if delivery_address else None
+    delivery_latitude = float(delivery_address.latitude) if delivery_address and delivery_address.latitude is not None else None
+    delivery_longitude = float(delivery_address.longitude) if delivery_address and delivery_address.longitude is not None else None
     store_latitude = float(store.latitude)
     store_longitude = float(store.longitude)
     delivery_distance_km = (
