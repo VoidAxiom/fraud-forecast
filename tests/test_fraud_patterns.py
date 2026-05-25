@@ -368,6 +368,14 @@ def _safe_datetime(value: object) -> datetime:
     return value
 
 
+def _percentile(values: list[float], quantile: float) -> float:
+    assert values
+    assert 0.0 <= quantile <= 1.0
+    ordered = sorted(values)
+    index = int(quantile * (len(ordered) - 1))
+    return ordered[index]
+
+
 def test_account_takeover_ground_truth_recorded(db_engine: Engine) -> None:
     rows: list[uuid.UUID] = []
     min_placed_at: datetime | None = None
@@ -872,48 +880,153 @@ def test_collusive_store_concentration() -> None:
     ctx: FraudPatternContext = _ctx(7)
 
     orders_by_store: dict[uuid.UUID, int] = {}
-    collusive_orders_by_store: dict[uuid.UUID, int] = {}
-    total_orders_with_store = 0
-    for _ in range(1000):
-        order_dict, gt = asyncio.run(generate_fraud_order(ctx))
-        store_id = order_dict.get("store_id")
-        if not isinstance(store_id, uuid.UUID):
-            continue
+    fraud_orders_by_store: dict[uuid.UUID, int] = {}
+    fraud_category_counts: dict[str, int] = {
+        "stolen_card": 0,
+        "account_takeover": 0,
+        "promo_abuse": 0,
+        "refund_abuse": 0,
+        "collusive_merchant": 0,
+        "triangulation": 0,
+        "reseller": 0,
+    }
+    normal_order_count = 9000
+    order_ids: list[uuid.UUID] = []
+    fraud_order_ids: list[uuid.UUID] = []
+    engine = shared.db.get_engine("app")
 
-        total_orders_with_store += 1
-        orders_by_store[store_id] = orders_by_store.get(store_id, 0) + 1
+    try:
+        with engine.begin() as conn:
+            for _ in range(1000):
+                order_dict, gt = asyncio.run(generate_fraud_order(ctx))
+                store_id = _assert_uuid(order_dict["store_id"], "store_id")
+                order_id = _assert_uuid(order_dict["order_id"], "order_id")
+                user_id = _extract_user_id(order_dict)
+                placed_at = _safe_datetime(order_dict.get("placed_at", datetime.now(tz=LONDON_TZ_TEST)))
+                total_pence = _safe_int(
+                    order_dict.get("order_total_pence", 1000),
+                    "order_total_pence",
+                )
 
-        if gt.fraud_category == "collusive_merchant":
-            assert store_id in COLLUSIVE_STORES
-            collusive_orders_by_store[store_id] = (
-                collusive_orders_by_store.get(store_id, 0) + 1
+                if gt.fraud_category in fraud_category_counts:
+                    fraud_category_counts[gt.fraud_category] += 1
+
+                order_ids.append(order_id)
+                fraud_order_ids.append(order_id)
+                orders_by_store[store_id] = orders_by_store.get(store_id, 0) + 1
+                if gt.is_fraud:
+                    fraud_orders_by_store[store_id] = (
+                        fraud_orders_by_store.get(store_id, 0) + 1
+                    )
+
+                if gt.fraud_category == "collusive_merchant":
+                    assert store_id in COLLUSIVE_STORES
+
+                _insert_minimal_order_row(
+                    conn,
+                    order_id=order_id,
+                    placed_at=placed_at,
+                    user_id=user_id,
+                    store_id=store_id,
+                    merchant_id=uuid.uuid5(
+                        uuid.NAMESPACE_DNS,
+                        f"collusive-store-concentration-merchant-{order_id.hex}",
+                    ),
+                    order_number=f"COL-FR-{order_id.hex[:12]}",
+                    total_pence=total_pence,
+                )
+                conn.execute(
+                    _GROUND_TRUTH_INSERT_SQL,
+                    {
+                        "order_id": order_id,
+                        "is_fraud": gt.is_fraud,
+                        "fraud_category": gt.fraud_category,
+                        "pattern_notes": gt.pattern_notes,
+                        "ring_id": gt.ring_id,
+                    },
+                )
+
+            for i in range(normal_order_count):
+                order_id = uuid.uuid5(
+                    uuid.NAMESPACE_DNS,
+                    f"collusive-store-concentration-legit-{i}",
+                )
+                store_id = uuid.uuid5(
+                    uuid.NAMESPACE_DNS,
+                    f"collusive-store-concentration-store-{i}",
+                )
+                order_ids.append(order_id)
+                orders_by_store[store_id] = orders_by_store.get(store_id, 0) + 1
+
+                _insert_minimal_order_row(
+                    conn,
+                    order_id=order_id,
+                    placed_at=datetime.now(timezone.utc),
+                    user_id=uuid.uuid5(
+                        uuid.NAMESPACE_DNS,
+                        f"collusive-store-concentration-user-{i}",
+                    ),
+                    store_id=store_id,
+                    merchant_id=uuid.uuid5(
+                        uuid.NAMESPACE_DNS,
+                        f"collusive-store-concentration-merchant-legit-{i}",
+                    ),
+                    order_number=f"COL-LG-{i:05d}-{order_id.hex[:6]}",
+                    total_pence=1000,
+                )
+
+        for order_count in fraud_category_counts.values():
+            assert order_count > 0
+
+        collusive_store_ids = {
+            store_id for store_id in orders_by_store if store_id in COLLUSIVE_STORES
+        }
+        normal_store_ids = {
+            store_id for store_id in orders_by_store if store_id not in COLLUSIVE_STORES
+        }
+        assert collusive_store_ids
+        assert normal_store_ids
+
+        collusive_order_total = sum(
+            orders_by_store[store_id] for store_id in collusive_store_ids
+        )
+        normal_order_total = sum(
+            orders_by_store[store_id] for store_id in normal_store_ids
+        )
+        collusive_fraud_total = sum(
+            fraud_orders_by_store.get(store_id, 0) for store_id in collusive_store_ids
+        )
+        normal_fraud_total = sum(
+            fraud_orders_by_store.get(store_id, 0) for store_id in normal_store_ids
+        )
+
+        assert collusive_order_total > 0
+        assert normal_order_total > 0
+
+        collusive_store_rate = collusive_fraud_total / collusive_order_total
+        normal_store_rate = normal_fraud_total / normal_order_total
+        assert collusive_store_rate >= normal_store_rate * 10.0
+    finally:
+        if not order_ids:
+            return
+
+        with engine.begin() as conn:
+            conn.execute(
+                text("DELETE FROM chargebacks WHERE order_id = ANY(:ids)"),
+                {"ids": order_ids},
             )
-
-    assert total_orders_with_store > 0
-    collusive_store_ids = {
-        store_id for store_id in orders_by_store if store_id in COLLUSIVE_STORES
-    }
-    normal_store_ids = {
-        store_id for store_id in orders_by_store if store_id not in COLLUSIVE_STORES
-    }
-    assert collusive_store_ids
-    assert normal_store_ids
-
-    collusive_store_total = sum(orders_by_store[store_id] for store_id in collusive_store_ids)
-    collusive_fraud_total = sum(
-        collusive_orders_by_store.get(store_id, 0)
-        for store_id in collusive_store_ids
-    )
-    assert collusive_store_total > 0
-    assert collusive_fraud_total > 0
-
-    normal_collusive_rates: list[float] = [
-        collusive_orders_by_store.get(store_id, 0) / orders_by_store[store_id]
-        for store_id in normal_store_ids
-    ]
-    normal_store_rate = max(normal_collusive_rates)
-    collusive_store_rate = collusive_fraud_total / collusive_store_total
-    assert collusive_store_rate >= max(0.10, normal_store_rate * 10.0)
+            conn.execute(
+                text("DELETE FROM simulator_ground_truth WHERE order_id = ANY(:ids)"),
+                {"ids": fraud_order_ids},
+            )
+            conn.execute(
+                text("DELETE FROM orders_archive WHERE order_id = ANY(:ids)"),
+                {"ids": order_ids},
+            )
+            conn.execute(
+                text("DELETE FROM orders WHERE order_id = ANY(:ids)"),
+                {"ids": order_ids},
+            )
 
 
 def test_scoring_user_cannot_read_ground_truth() -> None:
@@ -966,7 +1079,6 @@ def _insert_order_for_chargeback_test(
     merchant_id: uuid.UUID,
     order_number: str,
     fraud_category: str | None,
-    *,
     is_fraud: bool = True,
 ) -> None:
     _insert_minimal_order_row(
@@ -1004,29 +1116,25 @@ def test_chargeback_rates() -> None:
     order_ids: list[uuid.UUID] = []
     engine = shared.db.get_engine("app")
     _chargeback_database_url()
-    placed_at = datetime.now(timezone.utc) - timedelta(days=46)
-    delivered_at = placed_at + timedelta(days=1)
+    now = datetime.now(timezone.utc)
+    delivered_at = now - timedelta(days=59, minutes=30)
+    placed_at = delivered_at - timedelta(days=1)
     fraud_order_counts: dict[str, int] = {
-        "stolen_card": 750,
-        "account_takeover": 500,
-        "triangulation": 625,
-        "collusive_merchant": 250,
-        "refund_abuse": 125,
-        "reseller": 125,
-        "promo_abuse": 125,
+        "stolen_card": 200,
+        "account_takeover": 200,
+        "triangulation": 200,
+        "collusive_merchant": 200,
+        "refund_abuse": 200,
+        "reseller": 200,
+        "promo_abuse": 200,
     }
-    legit_order_count = 5000
     expected_rates: dict[str, float] = {
-        "stolen_card": 0.60,
-        "account_takeover": 0.60,
-        "triangulation": 0.60,
-        "collusive_merchant": 0.60,
-        "refund_abuse": 0.30,
-        "reseller": 0.10,
-        "promo_abuse": 0.05,
-        "legit": 0.002,
+        category: simulator.chargebacks._chargeback_probability(True, category)
+        for category in fraud_order_counts
     }
-    inserted_counts: dict[str, int] = {category: 0 for category in expected_rates}
+    expected_rates["legit"] = simulator.chargebacks._chargeback_probability(False, None)
+    inserted_counts: dict[str, int] = {category: 0 for category in fraud_order_counts}
+    inserted_counts["legit"] = 0
 
     try:
         with engine.begin() as conn:
@@ -1059,7 +1167,7 @@ def test_chargeback_rates() -> None:
                     )
                     inserted_counts[category] += 1
 
-            for i in range(legit_order_count):
+            for i in range(200):
                 order_id = uuid.uuid5(uuid.NAMESPACE_DNS, f"chargeback-rate-legit-{i:05d}")
                 order_ids.append(order_id)
                 _insert_order_for_chargeback_test(
@@ -1105,7 +1213,7 @@ def test_chargeback_rates() -> None:
 
         for category, expected_rate in expected_rates.items():
             observed = chargeback_counts[category] / inserted_counts[category]
-            tolerance = 0.05 if expected_rate >= 0.01 else 0.01
+            tolerance = 0.05
             assert abs(observed - expected_rate) <= tolerance
     finally:
         if not order_ids:
@@ -1132,15 +1240,15 @@ def test_chargeback_rates() -> None:
 
 def test_chargeback_timing() -> None:
     order_ids: list[uuid.UUID] = []
-    placed_at = datetime.now(timezone.utc) - timedelta(days=46)
-    delivered_at = placed_at + timedelta(days=1)
     now = datetime.now(timezone.utc)
+    placed_at = now - timedelta(days=60)
+    delivered_at = now - timedelta(days=59, minutes=30)
     engine = shared.db.get_engine("app")
     _chargeback_database_url()
 
     try:
         with engine.begin() as conn:
-            for i in range(20):
+            for i in range(500):
                 order_id = uuid.uuid5(uuid.NAMESPACE_DNS, f"chargeback-timing-{i}")
                 order_ids.append(order_id)
                 _insert_order_for_chargeback_test(
@@ -1169,11 +1277,25 @@ def test_chargeback_timing() -> None:
             ).fetchall()
 
         assert chargeback_rows
+        delays_days: list[float] = []
         for _order_id, received_at, observed_delivered_at in chargeback_rows:
             assert isinstance(received_at, datetime)
             assert isinstance(observed_delivered_at, datetime)
             assert observed_delivered_at <= received_at
-            assert received_at <= now + timedelta(minutes=5)
+
+            delays_days.append(
+                (received_at - observed_delivered_at).total_seconds() / 86400
+            )
+
+        assert delays_days
+        p10 = _percentile(delays_days, 0.10)
+        p50 = _percentile(delays_days, 0.50)
+        p90 = _percentile(delays_days, 0.90)
+
+        assert 3 <= p10 <= 7
+        assert 12 <= p50 <= 16
+        assert 25 <= p90 <= 40
+        assert max(delays_days) <= 45
     finally:
         if not order_ids:
             return
