@@ -1,14 +1,15 @@
 from __future__ import annotations
 
+import asyncio
 import datetime as dt
+import time
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Protocol, Union, cast
 from uuid import UUID, uuid4
 
+import numpy as np  # type: ignore[import]
 import pytest
-
-from shared.db import get_engine
 
 _RedisValue = Union[bytes, float, int, str]
 _RedisMapping = Mapping[Union[str, bytes], _RedisValue]
@@ -87,11 +88,67 @@ if TYPE_CHECKING:
         errors: list[int]
 
     class _FeatureSet(Protocol):
-        feature_fetch_latency_ms: float
-        missing_features: list[str]
-        user_lifetime_order_count: int
         user_orders_1h: int
         user_orders_24h: int
+        user_spend_1h_pence: int
+        user_spend_24h_pence: int
+        user_unique_stores_24h: int
+        user_unique_payment_methods_24h: int
+        user_last_order_age_minutes: int
+        user_lifetime_order_count: int
+        user_lifetime_spend_pence: int
+        user_avg_order_value_pence: int
+        user_lifetime_chargeback_count: int
+        user_lifetime_refund_count: int
+        user_lifetime_chargeback_rate: float
+        user_unique_devices_used: int
+        user_unique_payment_methods_used: int
+        user_unique_delivery_addresses: int
+        user_account_age_days: int
+        user_days_since_last_order: int
+        user_distinct_cities_ordered_from: int
+        device_orders_1h: int
+        device_orders_24h: int
+        device_unique_users_24h: int
+        device_unique_payment_methods_24h: int
+        device_lifetime_order_count: int
+        device_lifetime_chargeback_rate: float
+        device_unique_users_lifetime: int
+        device_first_seen_days_ago: int
+        device_distinct_payment_methods_lifetime: int
+        payment_orders_1h: int
+        payment_orders_24h: int
+        payment_unique_users_24h: int
+        payment_decline_count_24h: int
+        payment_lifetime_order_count: int
+        payment_lifetime_chargeback_count: int
+        payment_lifetime_chargeback_rate: float
+        payment_unique_users_lifetime: int
+        payment_distinct_delivery_addresses_lifetime: int
+        ip_orders_1h: int
+        ip_orders_24h: int
+        ip_unique_users_24h: int
+        ip_unique_devices_24h: int
+        ip_lifetime_order_count: int
+        ip_unique_users_lifetime: int
+        ip_chargeback_rate: float
+        ip_first_seen_days_ago: int
+        store_orders_1h: int
+        store_orders_24h: int
+        store_unique_users_24h: int
+        store_unique_cards_1h: int
+        store_avg_order_value_pence: int
+        store_chargeback_rate: float
+        store_unique_cards_30d: int
+        store_total_orders_30d: int
+        merchant_chargeback_rate: float
+        merchant_total_stores: int
+        email_domain_chargeback_rate: float
+        email_domain_total_orders: int
+        address_orders_24h: int
+        address_unique_users_24h: int
+        feature_fetch_latency_ms: float
+        missing_features: list[str]
 
     class _FeatureStoreClient(Protocol):
         def close(self) -> None: ...
@@ -114,6 +171,17 @@ if TYPE_CHECKING:
     class _AggregatorModule(Protocol):
         PROCESSED_ORDERS_KEY_PREFIX: str
         Metrics: type[_Metrics]
+
+        def _on_order_placed(
+            self,
+            pool: object,
+            redis_conn: _AsyncRedis,
+            metrics: _Metrics,
+            connection: object,
+            pid: int,
+            channel: str,
+            payload: str,
+        ) -> None: ...
 
         async def update_features_for_order(
             self,
@@ -148,6 +216,8 @@ if TYPE_CHECKING:
             engine: object,
             r: _SyncRedis,
         ) -> None: ...
+
+        def run_batch(self) -> None: ...
 
     aggregator: _AggregatorModule
     batch_compute: _BatchComputeModule
@@ -239,6 +309,90 @@ _ORDER_PLACEHOLDERS = ", ".join(f"${index}" for index in range(1, len(_ORDER_COL
 _INSERT_ORDER_SQL = (
     f"INSERT INTO orders ({', '.join(_ORDER_COLUMNS)}) VALUES ({_ORDER_PLACEHOLDERS})"
 )
+_INSERT_ORDER_NOTIFY_SQL = (
+    f"WITH inserted AS ({_INSERT_ORDER_SQL} RETURNING order_id) "
+    "SELECT pg_notify('order_placed', (SELECT order_id::text FROM inserted))"
+)
+_BATCH_HASH_PATTERNS = (
+    "fs:user:*:batch",
+    "fs:device:*:batch",
+    "fs:payment:*:batch",
+    "fs:ip:*:batch",
+    "fs:store:*:batch",
+    "fs:merchant:*:batch",
+    "fs:email_domain:*:batch",
+)
+_BATCH_ENTITY_FIELDS: Mapping[str, tuple[str, tuple[str, ...]]] = {
+    "user": (
+        "fs:user:*:batch",
+        (
+            "lifetime_order_count",
+            "lifetime_spend_pence",
+            "avg_order_value_pence",
+            "lifetime_chargeback_count",
+            "lifetime_refund_count",
+            "lifetime_chargeback_rate",
+            "unique_devices_used",
+            "unique_payment_methods_used",
+            "unique_delivery_addresses",
+            "account_age_days",
+            "days_since_last_order",
+            "distinct_cities_ordered_from",
+        ),
+    ),
+    "device": (
+        "fs:device:*:batch",
+        (
+            "lifetime_order_count",
+            "lifetime_chargeback_rate",
+            "unique_users_lifetime",
+            "first_seen_days_ago",
+            "distinct_payment_methods_lifetime",
+        ),
+    ),
+    "payment": (
+        "fs:payment:*:batch",
+        (
+            "lifetime_order_count",
+            "lifetime_chargeback_count",
+            "lifetime_chargeback_rate",
+            "unique_users_lifetime",
+            "distinct_delivery_addresses_lifetime",
+        ),
+    ),
+    "ip": (
+        "fs:ip:*:batch",
+        (
+            "lifetime_order_count",
+            "unique_users_lifetime",
+            "chargeback_rate",
+            "first_seen_days_ago",
+        ),
+    ),
+    "store": (
+        "fs:store:*:batch",
+        (
+            "avg_order_value_pence",
+            "chargeback_rate",
+            "unique_cards_30d",
+            "total_orders_30d",
+        ),
+    ),
+    "merchant": (
+        "fs:merchant:*:batch",
+        (
+            "chargeback_rate",
+            "total_stores",
+        ),
+    ),
+    "email_domain": (
+        "fs:email_domain:*:batch",
+        (
+            "chargeback_rate",
+            "total_orders",
+        ),
+    ),
+}
 
 
 class _AsyncConnection(Protocol):
@@ -249,6 +403,16 @@ class _AsyncConnection(Protocol):
 
 class _AsyncDirectConnection(_AsyncConnection, Protocol):
     async def close(self) -> None: ...
+
+
+class _NotifyCallback(Protocol):
+    def __call__(self, connection: object, pid: int, channel: str, payload: str) -> None: ...
+
+
+class _AsyncListenerConnection(_AsyncDirectConnection, Protocol):
+    async def add_listener(self, channel: str, callback: _NotifyCallback) -> None: ...
+
+    async def remove_listener(self, channel: str, callback: _NotifyCallback) -> None: ...
 
 
 class _PoolAcquireContext(Protocol):
@@ -272,6 +436,14 @@ class _AsyncPool(Protocol):
 class _RedisHashSnapshot:
     payload: dict[str, str]
     ttl_seconds: int
+
+
+@dataclass(frozen=True)
+class _ThroughputOrder:
+    order_id: UUID
+    user_id: UUID
+    expected_user_orders_1h: int
+    row: Mapping[str, object]
 
 
 def _now_london() -> dt.datetime:
@@ -414,6 +586,27 @@ async def _insert_order(conn: _AsyncConnection, order_row: Mapping[str, object])
     await conn.execute(_INSERT_ORDER_SQL, *values)
 
 
+async def _insert_order_and_notify(pool: _AsyncPool, order_row: Mapping[str, object]) -> float:
+    async with pool.acquire() as conn:
+        values = [order_row[column] for column in _ORDER_COLUMNS]
+        t_insert_ms = time.perf_counter() * 1000.0
+        await conn.execute(_INSERT_ORDER_NOTIFY_SQL, *values)
+        return t_insert_ms
+
+
+async def _insert_order_parents(
+    pool: _AsyncPool,
+    user_ids: Iterable[UUID],
+    merchant_id: UUID,
+    store_id: UUID,
+) -> None:
+    async with pool.acquire() as conn:
+        await _insert_merchant(conn, merchant_id)
+        await _insert_store(conn, store_id, merchant_id)
+        for user_id in user_ids:
+            await _insert_user(conn, user_id)
+
+
 async def _insert_order_graph(
     pool: _AsyncPool,
     user_id: UUID,
@@ -445,6 +638,26 @@ async def _delete_order_graph(
         await conn.execute("DELETE FROM users WHERE user_id = $1", user_id)
 
 
+async def _delete_seed_order_graph(
+    pool: _AsyncPool,
+    user_ids: Iterable[UUID],
+    merchant_id: UUID,
+    store_id: UUID,
+    order_ids: Iterable[UUID],
+) -> None:
+    async with pool.acquire() as conn:
+        ids = list(order_ids)
+        if ids:
+            await conn.execute("DELETE FROM orders WHERE order_id = ANY($1::uuid[])", ids)
+
+        await conn.execute("DELETE FROM stores WHERE store_id = $1", store_id)
+        await conn.execute("DELETE FROM merchants WHERE merchant_id = $1", merchant_id)
+
+        users = list(user_ids)
+        if users:
+            await conn.execute("DELETE FROM users WHERE user_id = ANY($1::uuid[])", users)
+
+
 def _user_stream_keys(user_id: UUID) -> list[str]:
     uid = str(user_id)
     return [
@@ -474,6 +687,27 @@ def _order_context_keys(user_id: UUID, store_id: UUID, ip_address: str) -> list[
         f"fs:store:{sid}:users_zset",
         f"fs:store:{sid}:cards_1h_zset",
     ]
+
+
+def _multi_user_order_context_keys(
+    user_ids: Iterable[UUID],
+    store_id: UUID,
+    ip_address: str,
+) -> list[str]:
+    sid = str(store_id)
+    keys: set[str] = {
+        f"fs:ip:{ip_address}:stream",
+        f"fs:ip:{ip_address}:orders_zset",
+        f"fs:ip:{ip_address}:users_zset",
+        f"fs:ip:{ip_address}:devices_zset",
+        f"fs:store:{sid}:stream",
+        f"fs:store:{sid}:orders_zset",
+        f"fs:store:{sid}:users_zset",
+        f"fs:store:{sid}:cards_1h_zset",
+    }
+    for user_id in user_ids:
+        keys.update(_user_stream_keys(user_id))
+    return sorted(keys)
 
 
 async def _delete_redis_keys(redis_conn: _AsyncRedis, keys: Iterable[str]) -> None:
@@ -516,8 +750,39 @@ async def _redis_hget_int(
     return int(str(value))
 
 
+async def _poll_until_user_count_visible(
+    redis_conn: _AsyncRedis,
+    user_id: UUID,
+    expected_orders_1h: int,
+    t_insert_ms: float,
+    timeout_seconds: float,
+) -> float | None:
+    stream_key = f"fs:user:{user_id}:stream"
+    deadline = time.perf_counter() + timeout_seconds
+
+    while time.perf_counter() < deadline:
+        if await _redis_hget_int(redis_conn, stream_key, "orders_1h") >= expected_orders_1h:
+            t_visible_ms = time.perf_counter() * 1000.0
+            return t_visible_ms - t_insert_ms
+        await asyncio.sleep(0.01)
+
+    return None
+
+
 def _scan_keys(redis_client: _SyncRedis, pattern: str) -> list[str]:
     return [str(key) for key in redis_client.scan_iter(match=pattern)]
+
+
+def _assert_hash_has_fields(
+    redis_client: _SyncRedis,
+    key: str,
+    expected_fields: Iterable[str],
+) -> None:
+    payload = {str(field): str(value) for field, value in redis_client.hgetall(key).items()}
+
+    assert payload, key
+    for field_name in expected_fields:
+        assert field_name in payload, f"{key} missing {field_name}"
 
 
 def _snapshot_hashes(
@@ -642,27 +907,83 @@ async def test_sliding_window_decay() -> None:
 
 @pytest.mark.asyncio
 async def test_batch_features_populated() -> None:
-    pg_conn = cast(_AsyncDirectConnection, await asyncpg.connect(DATABASE_URL))
+    user_ids = [uuid4() for _ in range(10)]
+    store_id = uuid4()
+    merchant_id = uuid4()
+    device_ids = [uuid4() for _ in range(5)]
+    payment_method_ids = [uuid4() for _ in range(5)]
+    delivery_address_ids = [uuid4() for _ in range(10)]
+    email_domain = f"feature-store-batch-{uuid4().hex}.example.com"
+    ip_addresses = [f"10.250.0.{index}" for index in range(1, 6)]
+    placed_at = _now_london()
+    order_rows: list[dict[str, object]] = []
+
+    for index in range(50):
+        user_id = user_ids[index % len(user_ids)]
+        order_id = uuid4()
+        order_row = _minimal_order_row(
+            user_id=user_id,
+            store_id=store_id,
+            merchant_id=merchant_id,
+            order_id=order_id,
+            placed_at=placed_at + dt.timedelta(seconds=index),
+            order_number=f"FS-{order_id.hex[:12]}",
+        )
+        order_row["user_total_orders_lifetime"] = index + 1
+        order_row["user_total_orders_30d"] = index + 1
+        order_row["user_total_spend_lifetime_pence"] = 1500 * (index + 1)
+        order_row["user_email"] = f"feature-store-{user_id}@{email_domain}"
+        order_row["user_email_domain"] = email_domain
+        order_row["device_id"] = device_ids[index % len(device_ids)]
+        order_row["payment_method_id"] = payment_method_ids[index % len(payment_method_ids)]
+        order_row["delivery_address_id"] = delivery_address_ids[index % len(delivery_address_ids)]
+        order_row["ip_address"] = ip_addresses[index % len(ip_addresses)]
+        order_rows.append(order_row)
+
+    order_ids = [_to_uuid(order_row["order_id"]) for order_row in order_rows]
+    pg_pool = cast(
+        _AsyncPool,
+        await asyncpg.create_pool(DATABASE_URL, min_size=1, max_size=5),
+    )
     redis_sync: _SyncRedis = redis.Redis.from_url(REDIS_URL, decode_responses=True)
     try:
-        snapshot = _snapshot_hashes(redis_sync, "fs:user:*:batch")
+        snapshots = {
+            pattern: _snapshot_hashes(redis_sync, pattern) for pattern in _BATCH_HASH_PATTERNS
+        }
         try:
-            user_id_raw = await pg_conn.fetchval("SELECT user_id FROM users LIMIT 1")
-            if user_id_raw is None:
-                assert True
-                return
+            await _insert_order_parents(pg_pool, user_ids, merchant_id, store_id)
+            async with pg_pool.acquire() as conn:
+                for order_row in order_rows:
+                    await _insert_order(conn, order_row)
 
-            _to_uuid(user_id_raw)
-            engine = get_engine("app")
-            batch_compute.compute_user_batch_features(engine, redis_sync)
+            batch_compute.run_batch()
 
-            batch_keys = _scan_keys(redis_sync, "fs:user:*:batch")
-            assert any("lifetime_order_count" in redis_sync.hgetall(key) for key in batch_keys)
+            expected_keys = {
+                "user": f"fs:user:{user_ids[0]}:batch",
+                "device": f"fs:device:{device_ids[0]}:batch",
+                "payment": f"fs:payment:{payment_method_ids[0]}:batch",
+                "ip": f"fs:ip:{ip_addresses[0]}:batch",
+                "store": f"fs:store:{store_id}:batch",
+                "merchant": f"fs:merchant:{merchant_id}:batch",
+                "email_domain": f"fs:email_domain:{email_domain}:batch",
+            }
+            for entity_name, key in expected_keys.items():
+                pattern, expected_fields = _BATCH_ENTITY_FIELDS[entity_name]
+                assert _scan_keys(redis_sync, pattern)
+                _assert_hash_has_fields(redis_sync, key, expected_fields)
         finally:
-            _restore_hashes(redis_sync, "fs:user:*:batch", snapshot)
+            await _delete_seed_order_graph(
+                pg_pool,
+                user_ids,
+                merchant_id,
+                store_id,
+                order_ids,
+            )
+            for pattern, snapshot in snapshots.items():
+                _restore_hashes(redis_sync, pattern, snapshot)
     finally:
-        await pg_conn.close()
         redis_sync.close()
+        await pg_pool.close()
 
 
 def test_client_get_features_under_10ms() -> None:
@@ -744,6 +1065,9 @@ def test_missing_features_have_defaults() -> None:
     store_id = uuid4()
     merchant_id = uuid4()
     user_stream_key = f"fs:user:{user_id}:stream"
+    user_batch_key = f"fs:user:{user_id}:batch"
+    ip_address = f"198.51.100.{int(user_id.int % 200) + 1}"
+    email_domain = f"missing-{user_id.hex}.example.com"
 
     client = FeatureStoreClient(REDIS_URL)
     try:
@@ -751,20 +1075,92 @@ def test_missing_features_have_defaults() -> None:
             user_id=user_id,
             device_id=None,
             payment_method_id=None,
-            ip_address="192.168.1.100",
+            ip_address=ip_address,
             store_id=store_id,
             merchant_id=merchant_id,
             delivery_address_id=None,
-            email_domain="example.com",
+            email_domain=email_domain,
         )
     finally:
         client.close()
 
-    assert feature_set.user_orders_1h == 0
-    assert feature_set.user_orders_24h == 0
-    assert feature_set.user_lifetime_order_count == 0
-    assert len(feature_set.missing_features) > 0
-    assert user_stream_key in feature_set.missing_features
+    int_defaults = (
+        feature_set.user_orders_1h,
+        feature_set.user_orders_24h,
+        feature_set.user_spend_1h_pence,
+        feature_set.user_spend_24h_pence,
+        feature_set.user_unique_stores_24h,
+        feature_set.user_unique_payment_methods_24h,
+        feature_set.user_last_order_age_minutes,
+        feature_set.user_lifetime_order_count,
+        feature_set.user_lifetime_spend_pence,
+        feature_set.user_avg_order_value_pence,
+        feature_set.user_lifetime_chargeback_count,
+        feature_set.user_lifetime_refund_count,
+        feature_set.user_unique_devices_used,
+        feature_set.user_unique_payment_methods_used,
+        feature_set.user_unique_delivery_addresses,
+        feature_set.user_account_age_days,
+        feature_set.user_days_since_last_order,
+        feature_set.user_distinct_cities_ordered_from,
+        feature_set.device_orders_1h,
+        feature_set.device_orders_24h,
+        feature_set.device_unique_users_24h,
+        feature_set.device_unique_payment_methods_24h,
+        feature_set.device_lifetime_order_count,
+        feature_set.device_unique_users_lifetime,
+        feature_set.device_first_seen_days_ago,
+        feature_set.device_distinct_payment_methods_lifetime,
+        feature_set.payment_orders_1h,
+        feature_set.payment_orders_24h,
+        feature_set.payment_unique_users_24h,
+        feature_set.payment_decline_count_24h,
+        feature_set.payment_lifetime_order_count,
+        feature_set.payment_lifetime_chargeback_count,
+        feature_set.payment_unique_users_lifetime,
+        feature_set.payment_distinct_delivery_addresses_lifetime,
+        feature_set.ip_orders_1h,
+        feature_set.ip_orders_24h,
+        feature_set.ip_unique_users_24h,
+        feature_set.ip_unique_devices_24h,
+        feature_set.ip_lifetime_order_count,
+        feature_set.ip_unique_users_lifetime,
+        feature_set.ip_first_seen_days_ago,
+        feature_set.store_orders_1h,
+        feature_set.store_orders_24h,
+        feature_set.store_unique_users_24h,
+        feature_set.store_unique_cards_1h,
+        feature_set.store_avg_order_value_pence,
+        feature_set.store_unique_cards_30d,
+        feature_set.store_total_orders_30d,
+        feature_set.merchant_total_stores,
+        feature_set.email_domain_total_orders,
+        feature_set.address_orders_24h,
+        feature_set.address_unique_users_24h,
+    )
+    float_defaults = (
+        feature_set.user_lifetime_chargeback_rate,
+        feature_set.device_lifetime_chargeback_rate,
+        feature_set.payment_lifetime_chargeback_rate,
+        feature_set.ip_chargeback_rate,
+        feature_set.store_chargeback_rate,
+        feature_set.merchant_chargeback_rate,
+        feature_set.email_domain_chargeback_rate,
+    )
+    expected_missing = {
+        user_stream_key,
+        user_batch_key,
+        f"fs:ip:{ip_address}:stream",
+        f"fs:ip:{ip_address}:batch",
+        f"fs:store:{store_id}:stream",
+        f"fs:store:{store_id}:batch",
+        f"fs:merchant:{merchant_id}:batch",
+        f"fs:email_domain:{email_domain}:batch",
+    }
+
+    assert all(value == 0 for value in int_defaults)
+    assert all(value == 0.0 for value in float_defaults)
+    assert set(feature_set.missing_features) == expected_missing
 
 
 @pytest.mark.asyncio
@@ -861,52 +1257,136 @@ async def test_no_unbounded_redis_growth() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.slow
 async def test_stream_throughput() -> None:
-    user_id = uuid4()
+    target_orders_per_second = 100
+    duration_seconds = 60
+    total_orders = target_orders_per_second * duration_seconds
+    visible_timeout_seconds = 5.0
+    user_ids = [uuid4() for _ in range(total_orders)]
     store_id = uuid4()
     merchant_id = uuid4()
     placed_at = _now_london()
-    order_ids = [uuid4() for _ in range(10)]
-    order_rows = [
-        _minimal_order_row(
+    throughput_orders: list[_ThroughputOrder] = []
+
+    for index in range(total_orders):
+        user_id = user_ids[index]
+        order_id = uuid4()
+        order_row = _minimal_order_row(
             user_id=user_id,
             store_id=store_id,
             merchant_id=merchant_id,
             order_id=order_id,
-            placed_at=placed_at,
+            placed_at=placed_at + dt.timedelta(milliseconds=index),
             order_number=f"FS-{order_id.hex[:12]}",
         )
-        for order_id in order_ids
-    ]
+        throughput_orders.append(
+            _ThroughputOrder(
+                order_id=order_id,
+                user_id=user_id,
+                expected_user_orders_1h=1,
+                row=order_row,
+            )
+        )
+
+    order_ids = [order.order_id for order in throughput_orders]
     metrics = aggregator.Metrics(errors=[0])
-    ip_address = str(order_rows[0]["ip_address"])
-    pg_pool = cast(
+    ip_address = str(throughput_orders[0].row["ip_address"])
+    insert_pool = cast(
         _AsyncPool,
-        await asyncpg.create_pool(DATABASE_URL, min_size=1, max_size=5),
+        await asyncpg.create_pool(DATABASE_URL, min_size=5, max_size=20),
     )
+    aggregator_pool = cast(
+        _AsyncPool,
+        await asyncpg.create_pool(DATABASE_URL, min_size=5, max_size=20),
+    )
+    listener_conn = cast(_AsyncListenerConnection, await asyncpg.connect(DATABASE_URL))
     redis_async: _AsyncRedis = aioredis.from_url(REDIS_URL, decode_responses=True)
+    latencies_ms: list[float] = []
+    errors: list[BaseException] = []
+    visibility_tasks: list[asyncio.Task[float | None]] = []
+
+    def listener_callback(connection: object, pid: int, channel: str, payload: str) -> None:
+        aggregator._on_order_placed(
+            pool=aggregator_pool,
+            redis_conn=redis_async,
+            metrics=metrics,
+            connection=connection,
+            pid=pid,
+            channel=channel,
+            payload=payload,
+        )
+
+    async def schedule_visibility_poll(
+        throughput_order: _ThroughputOrder,
+    ) -> asyncio.Task[float | None]:
+        t_insert_ms = await _insert_order_and_notify(insert_pool, throughput_order.row)
+        return asyncio.create_task(
+            _poll_until_user_count_visible(
+                redis_conn=redis_async,
+                user_id=throughput_order.user_id,
+                expected_orders_1h=throughput_order.expected_user_orders_1h,
+                t_insert_ms=t_insert_ms,
+                timeout_seconds=visible_timeout_seconds,
+            )
+        )
 
     try:
+        await listener_conn.add_listener("order_placed", listener_callback)
         try:
-            await _insert_order_graph(pg_pool, user_id, merchant_id, store_id, order_rows)
-            for order_id in order_ids:
-                updated = await aggregator.update_features_for_order(
-                    pool=pg_pool,
-                    redis_conn=redis_async,
-                    order_id=order_id,
-                )
-                assert updated is True
-
-            assert metrics.errors[0] == 0
-            assert (
-                await _redis_hget_int(redis_async, f"fs:user:{user_id}:stream", "orders_1h") == 10
-            )
-        finally:
-            await _delete_order_graph(pg_pool, user_id, merchant_id, store_id, order_ids)
+            await _insert_order_parents(insert_pool, user_ids, merchant_id, store_id)
             await _delete_redis_keys(
-                redis_async, _order_context_keys(user_id, store_id, ip_address)
+                redis_async, _multi_user_order_context_keys(user_ids, store_id, ip_address)
+            )
+
+            start = time.perf_counter()
+            for offset in range(0, total_orders, target_orders_per_second):
+                chunk = throughput_orders[offset : offset + target_orders_per_second]
+                chunk_results = await asyncio.gather(
+                    *(schedule_visibility_poll(order) for order in chunk),
+                    return_exceptions=True,
+                )
+
+                for chunk_result in chunk_results:
+                    if isinstance(chunk_result, BaseException):
+                        errors.append(chunk_result)
+                    else:
+                        visibility_tasks.append(chunk_result)
+
+                target_elapsed = (offset // target_orders_per_second) + 1
+                sleep_seconds = start + target_elapsed - time.perf_counter()
+                if sleep_seconds > 0:
+                    await asyncio.sleep(sleep_seconds)
+
+            visibility_results = await asyncio.gather(
+                *visibility_tasks,
+                return_exceptions=True,
+            )
+            for visible_result in visibility_results:
+                if isinstance(visible_result, BaseException):
+                    errors.append(visible_result)
+                elif visible_result is not None:
+                    latencies_ms.append(visible_result)
+
+            assert not errors, [repr(error) for error in errors[:5]]
+            assert metrics.errors[0] == 0
+            assert len(latencies_ms) >= 5500
+            assert float(np.percentile(latencies_ms, 99)) < 1000.0
+        finally:
+            await listener_conn.remove_listener("order_placed", listener_callback)
+            await _delete_seed_order_graph(
+                insert_pool,
+                user_ids,
+                merchant_id,
+                store_id,
+                order_ids,
+            )
+            await _delete_redis_keys(
+                redis_async, _multi_user_order_context_keys(user_ids, store_id, ip_address)
             )
             await _remove_processed_order_ids(redis_async, order_ids)
     finally:
+        await listener_conn.close()
         await redis_async.close()
-        await pg_pool.close()
+        await aggregator_pool.close()
+        await insert_pool.close()
