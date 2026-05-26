@@ -528,7 +528,7 @@ def test_apply_fraud_order_attrs_propagates_identity_ids() -> None:
         "user_id": fraud_user_id,
         "store_id": fraud_store_id,
         "device_id": fraud_device_id,
-        "payment_method_id": fraud_pm_id,
+        "payment_method_id": str(fraud_pm_id),
         "delivery_address_id": fraud_addr_id,
         "order_total_pence": 8500,
         "avs_result": "NO_MATCH",

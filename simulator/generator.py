@@ -1225,6 +1225,7 @@ def _apply_fraud_order_attrs(
     - user_id, store_id, device_id, payment_method_id, delivery_address_id
       (FK columns only; sentinel values "VICTIM_SAVED"/"ABUSER_SAVED" are
       skipped - the legit-path value is retained)
+      FK values are coerced to uuid.UUID regardless of source type.
     - card_country -> card_issuer_country (ISO-2 normalised)
     - card_funding_type, is_digital_native_bank
     - ip_country (explicit), ip_type (vpn/foreign -> ip_is_* flags)
@@ -1251,7 +1252,7 @@ def _apply_fraud_order_attrs(
         if key in fraud_dict:
             val = fraud_dict[key]
             if val not in ("VICTIM_SAVED", "ABUSER_SAVED") and val is not None:
-                snapshot[key] = val
+                snapshot[key] = uuid.UUID(str(val)) if not isinstance(val, uuid.UUID) else val
 
     if "avs_result" in fraud_dict:
         snapshot["avs_result"] = fraud_dict["avs_result"]
