@@ -547,6 +547,44 @@ def test_apply_fraud_order_attrs_propagates_identity_ids() -> None:
     assert snapshot["cvv_result"] == "NO_MATCH"
 
 
+def test_apply_fraud_identity_overrides_synthesizes_missing_user_row() -> None:
+    async def _run() -> None:
+        class _MissingUserConn:
+            async def fetchrow(self, _query: str, *_args: object) -> None:
+                return None
+
+        fraud_user_id = uuid.UUID(int=1000)
+        snapshot = {
+            "user_id": uuid.UUID(int=1),
+            "user_email": "legit@example.com",
+            "user_email_domain": "example.com",
+            "user_phone": "07123456789",
+            "user_risk_tier_at_order": "LOW",
+            "user_account_age_days": 365,
+            "user_total_orders_lifetime": 42,
+            "user_total_orders_30d": 8,
+            "user_total_spend_lifetime_pence": 123456,
+            "is_first_order_for_user": False,
+        }
+        fraud_dict = {"user_id": fraud_user_id}
+
+        _apply_fraud_order_attrs(snapshot, fraud_dict)
+        await _apply_fraud_identity_overrides(_MissingUserConn(), snapshot, fraud_dict)
+
+        assert snapshot["user_id"] == fraud_user_id
+        assert snapshot["user_email"] == f"{fraud_user_id}@fraud.test"
+        assert snapshot["user_email_domain"] == "fraud.test"
+        assert snapshot["user_phone"] is None
+        assert snapshot["user_risk_tier_at_order"] is None
+        assert snapshot["user_account_age_days"] == 0
+        assert snapshot["user_total_orders_lifetime"] == 0
+        assert snapshot["user_total_orders_30d"] == 0
+        assert snapshot["user_total_spend_lifetime_pence"] == 0
+        assert snapshot["is_first_order_for_user"] is True
+
+    asyncio.run(_run())
+
+
 def test_apply_fraud_order_attrs_skips_sentinel_ids() -> None:
     """Sentinel strings VICTIM_SAVED / ABUSER_SAVED are not written to snapshot."""
     legit_pm_id = uuid.UUID(int=4)

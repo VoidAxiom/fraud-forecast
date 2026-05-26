@@ -1240,6 +1240,10 @@ def _apply_fraud_order_attrs(
       handled by _apply_fraud_identity_overrides (async, DB-backed).
     """
     if "order_total_pence" in fraud_dict:
+        # DESIGN: fraud_dict.total_pence is the canonical fraud amount; subtotal/vat/fees
+        # from legit cart are kept since ML training uses total_pence directly and
+        # doesn't reconcile against components. The "inconsistency" is intentional -
+        # ML reads top-line total_pence + per-entity features, not arithmetic identity.
         snapshot["total_pence"] = int(fraud_dict["order_total_pence"])
 
     for key in (
@@ -1305,9 +1309,9 @@ async def _apply_fraud_identity_overrides(
 
     Called after _apply_fraud_order_attrs has stamped the FK columns.  Looks
     up the row for each FK that was actually overridden and back-fills the
-    denormalized snapshot columns that insert_order writes.  Rows that do not
-    exist in the DB (synthetic fraud UUIDs) are silently skipped - the FK
-    column is already set; derived columns stay at their legit-path values.
+    denormalized snapshot columns that insert_order writes. Rows that do not
+    exist in the DB (synthetic fraud UUIDs) receive explicit synthetic/null
+    derived values so the fraud FK is not mixed with legit-path attributes.
     """
     if "user_id" in fraud_dict and fraud_dict.get("user_id") not in (
         None,
@@ -1325,6 +1329,17 @@ async def _apply_fraud_identity_overrides(
             snapshot["user_email_domain"] = email.split("@", 1)[1] if "@" in email else "unknown"
             snapshot["user_phone"] = row["phone"]
             snapshot["user_risk_tier_at_order"] = row["risk_tier"]
+        else:
+            synthetic_email = f"{snapshot['user_id']}@fraud.test"
+            snapshot["user_email"] = synthetic_email
+            snapshot["user_email_domain"] = "fraud.test"
+            snapshot["user_phone"] = None
+            snapshot["user_risk_tier_at_order"] = None
+            snapshot["user_account_age_days"] = 0
+            snapshot["user_total_orders_lifetime"] = 0
+            snapshot["user_total_orders_30d"] = 0
+            snapshot["user_total_spend_lifetime_pence"] = 0
+            snapshot["is_first_order_for_user"] = True
 
     if "store_id" in fraud_dict and fraud_dict.get("store_id") not in (None,):
         store_id = fraud_dict["store_id"]
@@ -1339,6 +1354,11 @@ async def _apply_fraud_identity_overrides(
             snapshot["store_country"] = row["country"] if row["country"] is not None else "GB"
             snapshot["store_latitude"] = float(row["latitude"])
             snapshot["store_longitude"] = float(row["longitude"])
+        else:
+            snapshot["merchant_id"] = None
+            snapshot["store_city"] = "FRAUD_RING"
+            snapshot["store_latitude"] = None
+            snapshot["store_longitude"] = None
 
     if "device_id" in fraud_dict and fraud_dict.get("device_id") not in (None,):
         device_id = fraud_dict["device_id"]
@@ -1354,6 +1374,13 @@ async def _apply_fraud_identity_overrides(
             snapshot["app_version"] = row["app_version"]
             snapshot["browser_name"] = row["browser_name"]
             snapshot["browser_version"] = row["browser_version"]
+        else:
+            snapshot["device_type"] = None
+            snapshot["platform"] = None
+            snapshot["os_version"] = None
+            snapshot["app_version"] = None
+            snapshot["browser_name"] = None
+            snapshot["browser_version"] = None
 
     if "payment_method_id" in fraud_dict and fraud_dict.get("payment_method_id") not in (
         None,
@@ -1375,6 +1402,15 @@ async def _apply_fraud_identity_overrides(
             snapshot["card_funding_type"] = row["card_funding_type"]
             snapshot["card_issuer_country"] = row["card_issuer_country"]
             snapshot["is_digital_native_bank"] = row["is_digital_native_bank"]
+        else:
+            card_issuer_country = (
+                snapshot.get("card_issuer_country") if "card_country" in fraud_dict else None
+            )
+            snapshot["card_bin"] = None
+            snapshot["card_last_four"] = None
+            snapshot["card_brand"] = None
+            snapshot["card_issuer_country"] = card_issuer_country
+            snapshot["card_issuer_bank"] = None
 
     if "delivery_address_id" in fraud_dict and fraud_dict.get("delivery_address_id") not in (
         None,
@@ -1393,6 +1429,11 @@ async def _apply_fraud_identity_overrides(
                 snapshot["delivery_longitude"] = float(row["longitude"])
             if row["address_type"] is not None:
                 snapshot["delivery_address_type"] = row["address_type"]
+        else:
+            snapshot["delivery_latitude"] = None
+            snapshot["delivery_longitude"] = None
+            snapshot["delivery_address_snapshot"] = json.dumps({"city": "FRAUD_RING"})
+            snapshot["delivery_city"] = "FRAUD_RING"
 
 
 async def create_one_order(
@@ -1512,6 +1553,11 @@ async def create_one_order(
 
         attempts = 0
         placed_at = datetime.now(tz=LONDON_TZ)
+        # DESIGN: placed_at stays wall-clock (generator-owned). Patterns like stolen_card
+        # that set 2-5am timestamps for time-of-day fraud signal are ignored - real-time
+        # simulator pacing conflict (overriding to past timestamps breaks partition window,
+        # aggregator NOTIFY consistency, and lifecycle daemon assumptions). v1 limitation;
+        # see <P3-K1 follow-up issue> for the future fraud-time-shift mode.
         fraud_order_dict: dict[str, Any] | None = None
         fraud_ground_truth: GroundTruth | None = None
         if is_fraud_order:
