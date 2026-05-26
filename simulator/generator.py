@@ -26,18 +26,39 @@ from shared.money import VATLineItem, calculate_total, calculate_vat
 
 from simulator.cart_builder import Cart, UserProfile, build_realistic_cart
 from simulator.fraud_patterns import GroundTruth, generate_fraud_order
+from simulator.fraud_patterns.account_takeover import _IP_COUNTRY_RESOLUTION, _OTHER_ISO2_POOL
 from simulator.fraud_patterns.stolen_card import FraudPatternContext
 from simulator.user_picker import WeightedUserPicker
 
 logger = logging.getLogger(__name__)
+
+
+def _parse_fraud_rate(raw: str | None, default: float = 0.02) -> float:
+    if not raw:
+        return default
+
+    try:
+        rate = float(raw)
+    except ValueError:
+        logger.warning(
+            "invalid_fraud_injection_rate raw=%r falling_back_to=%s",
+            raw,
+            default,
+        )
+        return default
+
+    return max(0.0, min(1.0, rate))
+
 
 DATABASE_URL_SIMULATOR = os.environ.get(
     "DATABASE_URL_SIMULATOR",
     "postgresql://simulator_user:simulator_dev_password@postgres:5432/fraud_platform",
 )
 REDIS_URL = os.environ.get("REDIS_URL", "redis://redis:6379/0")
+FRAUD_INJECTION_RATE = _parse_fraud_rate(os.getenv("FRAUD_INJECTION_RATE"))
 
 LONDON_TZ = ZoneInfo("Europe/London")
+_FALLBACK_OTHER_CARD_COUNTRY = _OTHER_ISO2_POOL[0]
 
 _UK_ISP_PREFIXES: list[str] = [
     "80.0",
@@ -56,6 +77,25 @@ _UK_ISP_PREFIXES: list[str] = [
     "109.145",
     "109.146",
 ]
+
+
+def _resolve_card_country(raw: str) -> str:
+    if raw in _IP_COUNTRY_RESOLUTION:
+        resolved = _IP_COUNTRY_RESOLUTION[raw] or _FALLBACK_OTHER_CARD_COUNTRY
+    elif raw == "foreign_other":
+        resolved = _FALLBACK_OTHER_CARD_COUNTRY
+    else:
+        resolved = raw
+
+    normalized = resolved.upper()
+    if len(normalized) == 2:
+        return normalized
+
+    logger.warning(
+        "invalid_fraud_card_country raw=%r falling_back_to=GB",
+        raw,
+    )
+    return "GB"
 
 
 @dataclass(frozen=True)
