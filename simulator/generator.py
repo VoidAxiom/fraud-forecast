@@ -12,7 +12,8 @@ import time
 import uuid
 from dataclasses import dataclass
 from datetime import date, datetime
-from decimal import Decimal, ROUND_HALF_UP
+from decimal import ROUND_HALF_UP, Decimal
+
 if sys.version_info >= (3, 9):
     from zoneinfo import ZoneInfo
 else:
@@ -21,10 +22,12 @@ from typing import Any
 
 import asyncpg
 import redis.asyncio as aioredis
+from shared.money import VATLineItem, calculate_total, calculate_vat
 
 from simulator.cart_builder import Cart, UserProfile, build_realistic_cart
+from simulator.fraud_patterns import GroundTruth, generate_fraud_order
+from simulator.fraud_patterns.stolen_card import FraudPatternContext
 from simulator.user_picker import WeightedUserPicker
-from shared.money import VATLineItem, calculate_total, calculate_vat
 
 logger = logging.getLogger(__name__)
 
@@ -905,6 +908,11 @@ async def insert_order(
     snapshot: dict[str, Any],
     cart: Cart,
     placed_at: datetime,
+    *,
+    is_fraud: bool = False,
+    fraud_category: str | None = None,
+    pattern_notes: str | None = None,
+    ring_id: uuid.UUID | None = None,
 ) -> tuple[uuid.UUID, datetime]:
     order_row = {
         "order_id": uuid.uuid4(),
@@ -1123,10 +1131,16 @@ async def insert_order(
 
         await conn.execute(
             """
-            INSERT INTO simulator_ground_truth (order_id, is_fraud, fraud_category)
-            VALUES ($1, false, NULL)
+            INSERT INTO simulator_ground_truth (
+                order_id, is_fraud, fraud_category, pattern_notes, ring_id
+            )
+            VALUES ($1, $2, $3, $4, $5)
             """,
             order_id,
+            is_fraud,
+            fraud_category,
+            pattern_notes,
+            ring_id,
         )
 
     return order_id, placed_at
@@ -1166,6 +1180,8 @@ async def create_one_order(
 ) -> None:
     async with pool.acquire() as conn:
         user_id = user_picker.pick(rng)
+        fraud_roll = rng.random()
+        is_fraud_order = fraud_roll < float(os.getenv("FRAUD_INJECTION_RATE", "0.02"))
         user_data = await load_user_data(conn, user_id)
         user = user_data["user"]
 
@@ -1267,10 +1283,27 @@ async def create_one_order(
 
         attempts = 0
         placed_at = datetime.now(tz=LONDON_TZ)
+        fraud_ground_truth: GroundTruth | None = None
+        if is_fraud_order:
+            ctx = FraudPatternContext(now=placed_at, rng=rng)
+            _, fraud_ground_truth = await generate_fraud_order(ctx)
+
         while True:
             try:
                 snapshot["order_number"] = generate_order_number(rng)
-                order_id, _ = await insert_order(conn, snapshot, cart, placed_at)
+                if fraud_ground_truth is None:
+                    order_id, _ = await insert_order(conn, snapshot, cart, placed_at)
+                else:
+                    order_id, _ = await insert_order(
+                        conn,
+                        snapshot,
+                        cart,
+                        placed_at,
+                        is_fraud=True,
+                        fraud_category=fraud_ground_truth.fraud_category,
+                        pattern_notes=fraud_ground_truth.pattern_notes,
+                        ring_id=fraud_ground_truth.ring_id,
+                    )
                 break
             except asyncpg.UniqueViolationError:
                 attempts += 1

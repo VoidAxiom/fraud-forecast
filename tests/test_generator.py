@@ -5,14 +5,17 @@ import inspect
 import os
 import random
 import re
-from datetime import datetime, time, timezone
 import uuid
-from unittest.mock import patch
+from contextlib import ExitStack
+from datetime import datetime, time, timezone
+from unittest.mock import AsyncMock, patch
 
 import asyncpg
 import pytest
 import redis.asyncio as aioredis
 
+from simulator.cart_builder import Cart
+from simulator.fraud_patterns import GroundTruth
 from simulator.generator import (
     _read_runtime_rate,
     create_one_order,
@@ -417,7 +420,7 @@ def test_generator_creates_valid_order() -> None:
                     """
                     SELECT COUNT(*)
                     FROM simulator_ground_truth
-                    WHERE order_id = ANY($1::uuid[]) AND is_fraud = FALSE
+                    WHERE order_id = ANY($1::uuid[])
                     """,
                     order_ids,
                 )
@@ -437,6 +440,185 @@ def test_insert_order_builds_item_rows_with_cartitem_name() -> None:
     source = inspect.getsource(insert_order)
     assert "item.item_name" not in source
     assert "item.name" in source
+
+
+def test_fraud_injection_rate_over_500_orders() -> None:
+    async def _run() -> None:
+        sample_size = 500
+        fraud_rate = 0.02
+        tolerance = 0.005
+        fraud_target = int(sample_size * fraud_rate)
+        user_id = uuid.UUID(int=1)
+        store_id = uuid.UUID(int=2)
+        payment_method_id = uuid.UUID(int=3)
+        device_id = uuid.UUID(int=4)
+        ring_id = uuid.UUID(int=5)
+        user_data = {
+            "user": {"user_id": user_id},
+            "addresses": [],
+            "default_address": {"city": "London"},
+            "devices": [{"device_id": device_id}],
+            "payment_methods": [{"payment_method_id": payment_method_id}],
+        }
+        store = {
+            "store_id": store_id,
+            "accepts_in_store": False,
+        }
+        cart = Cart(store_id=store_id, items=[])
+        fraud_rolls = [
+            (fraud_rate / 2 if index < fraud_target else fraud_rate + tolerance + 0.1)
+            for index in range(sample_size)
+        ]
+        random_rolls: list[float] = []
+        for fraud_roll in fraud_rolls:
+            random_rolls.extend([fraud_roll, 0.10])
+
+        inserted_fraud_flags: list[bool] = []
+
+        class _FakeAcquire:
+            async def __aenter__(self) -> object:
+                return object()
+
+            async def __aexit__(self, *_args: object) -> None:
+                return None
+
+        class _FakePool:
+            def acquire(self) -> _FakeAcquire:
+                return _FakeAcquire()
+
+        async def fake_load_user_data(_conn: object, _user_id: uuid.UUID) -> dict[str, object]:
+            return user_data
+
+        async def fake_is_new_payment_method(
+            _conn: object,
+            _user_id: uuid.UUID,
+            _payment_method_id: uuid.UUID,
+        ) -> bool:
+            return False
+
+        async def fake_load_menu_items(_conn: object, _store_id: uuid.UUID) -> list[object]:
+            return [object()]
+
+        async def fake_read_user_order_metrics(
+            _conn: object,
+            _user_id: uuid.UUID,
+        ) -> tuple[int, int, int]:
+            return 0, 0, 0
+
+        async def fake_apply_promo(
+            _conn: object,
+            _user_id: uuid.UUID,
+            _rng: random.Random,
+            _is_first_order_for_user: bool,
+            _promos: list[dict[str, object]],
+            _subtotal_pence: int,
+        ) -> None:
+            return None
+
+        async def fake_insert_order(
+            _conn: object,
+            _snapshot: dict[str, object],
+            _cart: Cart,
+            placed_at: datetime,
+            *,
+            is_fraud: bool = False,
+            fraud_category: str | None = None,
+            pattern_notes: str | None = None,
+            ring_id: uuid.UUID | None = None,
+        ) -> tuple[uuid.UUID, datetime]:
+            inserted_fraud_flags.append(is_fraud)
+            if is_fraud:
+                assert fraud_category == "stolen_card"
+                assert pattern_notes == "stubbed fraud pattern"
+                assert ring_id == uuid.UUID(int=5)
+            else:
+                assert fraud_category is None
+                assert pattern_notes is None
+                assert ring_id is None
+            return uuid.UUID(int=len(inserted_fraud_flags)), placed_at
+
+        async def fake_notify_order_placed(_conn: object, _order_id: uuid.UUID) -> None:
+            return None
+
+        fraud_dispatcher = AsyncMock(
+            return_value=(
+                {},
+                GroundTruth(
+                    order_id=uuid.UUID(int=9),
+                    is_fraud=True,
+                    fraud_category="stolen_card",
+                    pattern_notes="stubbed fraud pattern",
+                    ring_id=ring_id,
+                ),
+            )
+        )
+        rng = random.Random(123)
+
+        with ExitStack() as stack:
+            stack.enter_context(patch.dict(os.environ, {"FRAUD_INJECTION_RATE": str(fraud_rate)}))
+            stack.enter_context(patch.object(rng, "random", side_effect=random_rolls))
+            stack.enter_context(patch("simulator.generator.load_user_data", fake_load_user_data))
+            stack.enter_context(
+                patch("simulator.generator.pick_store_for_user", return_value=store)
+            )
+            stack.enter_context(
+                patch("simulator.generator._select_order_type", return_value="PICKUP")
+            )
+            stack.enter_context(
+                patch("simulator.generator.pick_channel_for_user", return_value="WEB")
+            )
+            stack.enter_context(
+                patch(
+                    "simulator.generator.pick_device_and_ip",
+                    return_value=({"device_id": device_id}, "81.2.3.4"),
+                )
+            )
+            stack.enter_context(
+                patch("simulator.generator._is_new_payment_method", fake_is_new_payment_method)
+            )
+            stack.enter_context(patch("simulator.generator._load_menu_items", fake_load_menu_items))
+            stack.enter_context(
+                patch("simulator.generator.build_realistic_cart", return_value=cart)
+            )
+            stack.enter_context(
+                patch("simulator.generator._read_user_order_metrics", fake_read_user_order_metrics)
+            )
+            stack.enter_context(patch("simulator.generator.apply_promo", fake_apply_promo))
+            stack.enter_context(
+                patch("simulator.generator.compute_pricing", return_value=(0, 0, 0, 0))
+            )
+            stack.enter_context(patch("simulator.generator._build_snapshot", return_value={}))
+            stack.enter_context(
+                patch(
+                    "simulator.generator.generate_order_number",
+                    return_value="JE-0000-AAAAAAAAAA",
+                )
+            )
+            stack.enter_context(patch("simulator.generator.generate_fraud_order", fraud_dispatcher))
+            stack.enter_context(patch("simulator.generator.insert_order", fake_insert_order))
+            stack.enter_context(
+                patch("simulator.generator.notify_order_placed", fake_notify_order_placed)
+            )
+
+            for _ in range(sample_size):
+                await create_one_order(
+                    pool=_FakePool(),
+                    user_picker=_FixedUserPicker(user_id),
+                    stores_by_city={"London": [store]},
+                    store_hours_by_store_id={store_id: []},
+                    promos=[],
+                    rng=rng,
+                    scoring_enabled=False,
+                )
+
+        fraud_count = sum(1 for is_fraud in inserted_fraud_flags if is_fraud)
+        injection_rate = fraud_count / sample_size
+
+        assert len(inserted_fraud_flags) == sample_size
+        assert abs(injection_rate - fraud_rate) <= tolerance
+        assert fraud_dispatcher.await_count == fraud_count
+
+    asyncio.run(_run())
 
 
 def test_generator_order_number_unique() -> None:
