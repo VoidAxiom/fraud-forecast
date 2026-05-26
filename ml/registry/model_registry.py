@@ -92,8 +92,8 @@ class ModelRegistry:
         """Return all versions for a model_type in chronological order.
 
         This uses the local wall-clock timestamp embedded in the version name;
-        use metadata.json saved_at for exact UTC ordering during ambiguous DST
-        hours.
+        use metadata.json saved_at for exact UTC ordering when multiple
+        versions share the same wall-clock second.
         """
         model_type_dir = self._model_type_dir(model_type)
         if not model_type_dir.exists():
@@ -104,13 +104,28 @@ class ModelRegistry:
             for entry in model_type_dir.iterdir()
             if entry.is_dir() and not entry.is_symlink() and VERSION_RE.fullmatch(entry.name)
         ]
-        # Sort key: primary = wall-clock timestamp prefix (vYYYYMMDD_HHMMSS in
-        # Europe/London); secondary = full version name for deterministic tiebreaking.
-        # Known limitation: during the autumn DST clock-back hour, the timestamp prefix
-        # can repeat, so two versions saved within that ambiguous hour may not be
-        # sorted strictly by UTC creation time. For this local-dev registry this is
-        # acceptable; use stored metadata.json saved_at for exact ordering if needed.
-        return sorted(versions, key=lambda version: (version[:16], version))
+        return sorted(
+            versions,
+            key=lambda version: (
+                version[:16],
+                self._read_saved_at(model_type_dir, version),
+                version,
+            ),
+        )
+
+    def _read_saved_at(self, model_type_dir: Path, version: str) -> str:
+        """Read metadata.json saved_at for sorting; return "" if unavailable."""
+        metadata_path = model_type_dir / version / "metadata.json"
+        try:
+            with metadata_path.open("r", encoding="utf-8") as metadata_file:
+                metadata = json.load(metadata_file)
+        except Exception:
+            return ""
+
+        saved_at = metadata.get("saved_at")
+        if isinstance(saved_at, str):
+            return saved_at
+        return ""
 
     def get_current(self, model_type: str) -> Optional[str]:  # noqa: UP045 - packet requires Python 3.8 syntax.
         """Return the version the production symlink currently points to, or None."""
@@ -120,6 +135,12 @@ class ModelRegistry:
 
         target = prod_symlink.resolve(strict=False)
         if not target.is_dir():
+            return None
+
+        resolved_model_type_dir = (self.root / model_type).resolve(strict=False)
+        if target.parent != resolved_model_type_dir:
+            return None
+        if not VERSION_RE.fullmatch(target.name):
             return None
 
         return target.name

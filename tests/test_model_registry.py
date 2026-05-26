@@ -63,6 +63,7 @@ def test_save_multiple_versions_lists_chronologically(
         "v20260301_120000_aaaaaaaa",
         "v20260308_120000_88888888",
     ]
+    save_microseconds = [100000, 200000, 100000]
     uuid_suffixes = [version.rsplit("_", 1)[1] for version in versions_to_save]
 
     class Clock:
@@ -70,7 +71,10 @@ def test_save_multiple_versions_lists_chronologically(
         def now(cls, tz: tzinfo) -> datetime:
             version = versions_to_save.pop(0)
             timestamp = version.rsplit("_", 1)[0]
-            return datetime.strptime(timestamp, "v%Y%m%d_%H%M%S").replace(tzinfo=tz)
+            return datetime.strptime(timestamp, "v%Y%m%d_%H%M%S").replace(
+                tzinfo=tz,
+                microsecond=save_microseconds.pop(0),
+            )
 
     def next_uuid() -> uuid.UUID:
         return _uuid_with_prefix(uuid_suffixes.pop(0))
@@ -85,8 +89,8 @@ def test_save_multiple_versions_lists_chronologically(
 
     model_type_dir = tmp_path / "xgboost"
     listing_order = [
-        model_type_dir / first,
         model_type_dir / second,
+        model_type_dir / first,
         model_type_dir / third,
     ]
     original_iterdir = Path.iterdir
@@ -98,7 +102,7 @@ def test_save_multiple_versions_lists_chronologically(
 
     monkeypatch.setattr(Path, "iterdir", ordered_iterdir)
 
-    assert registry.list_versions("xgboost") == [second, first, third]
+    assert registry.list_versions("xgboost") == [first, second, third]
 
 
 def test_bytes_artefact_writes_model_bst(tmp_path: Path) -> None:
@@ -276,3 +280,16 @@ def test_invalid_model_type_empty(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="Invalid model_type"):
         registry.save("", b"x", {})
+
+
+def test_get_current_returns_none_when_production_points_outside_model_type_dir(
+    tmp_path: Path,
+) -> None:
+    registry = ModelRegistry(tmp_path)
+    model_type_dir = tmp_path / "xgboost"
+    outside_version_dir = tmp_path / "v20260301_120000_abcdef12"
+    model_type_dir.mkdir()
+    outside_version_dir.mkdir()
+    (model_type_dir / "production").symlink_to(outside_version_dir, target_is_directory=True)
+
+    assert registry.get_current("xgboost") is None
