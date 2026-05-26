@@ -99,6 +99,7 @@ services:
       - REDIS_URL=redis://redis:6379/0
       - ORDERS_PER_SECOND=${ORDERS_PER_SECOND:-1}
       - SIMULATION_TIME_COMPRESSION=${SIMULATION_TIME_COMPRESSION:-1}
+      - SIMULATION_FORCE_PEAK=${SIMULATION_FORCE_PEAK:-true}
       - SCORING_ENABLED=${SCORING_ENABLED:-false}
       - TZ=Europe/London
     restart: unless-stopped

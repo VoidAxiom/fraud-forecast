@@ -34,6 +34,8 @@ from simulator.fraud_patterns.stolen_card import FraudPatternContext
 from simulator.fraud_patterns.triangulation import init_accounts as init_triangulation_accounts
 from simulator.user_picker import WeightedUserPicker
 
+FORCE_PEAK = os.getenv("SIMULATION_FORCE_PEAK", "false").lower() in {"true", "1", "yes"}
+
 logger = logging.getLogger(__name__)
 
 
@@ -397,7 +399,10 @@ def pick_store_for_user(
     elif not stores:
         raise RuntimeError("no active stores available")
     else:
-        raise RuntimeError("no stores in current open-hours window")
+        if FORCE_PEAK:
+            pass  # bypass open-hours filter; use all candidate stores
+        else:
+            raise RuntimeError("no stores in current open-hours window")
 
     weights: list[float] = []
     for store in stores:
