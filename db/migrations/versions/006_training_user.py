@@ -29,10 +29,6 @@ END $$;
         "simulator_ground_truth, users, devices, payment_methods, stores, "
         "merchants, user_addresses TO training_user;"
     )
-    op.execute(
-        "ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON TABLES TO training_user;"
-    )
-
 
 def downgrade() -> None:
     # Forward-only; training_user role removal not automated.
