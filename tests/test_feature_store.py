@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import datetime as dt
 import time
+import math
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Protocol, Union, cast
@@ -1377,7 +1378,7 @@ async def test_stream_throughput() -> None:
             assert metrics.errors[0] == 0
             assert len(latencies_ms) == total_orders
             sorted_latencies = sorted(latencies_ms)
-            p99_index = min(int(len(sorted_latencies) * 0.99), len(sorted_latencies) - 1)
+            p99_index = max(math.ceil(len(sorted_latencies) * 0.99) - 1, 0)
             p99_ms = sorted_latencies[p99_index]
             assert p99_ms < 1000.0
         finally:
