@@ -139,7 +139,10 @@ class ModelRegistry:
         if not prod_symlink.is_symlink():
             return None
 
-        target = prod_symlink.resolve(strict=False)
+        try:
+            target = prod_symlink.resolve(strict=False)
+        except (RuntimeError, OSError):
+            return None
         if not target.is_dir():
             return None
 

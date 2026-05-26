@@ -293,3 +293,16 @@ def test_get_current_returns_none_when_production_points_outside_model_type_dir(
     (model_type_dir / "production").symlink_to(outside_version_dir, target_is_directory=True)
 
     assert registry.get_current("xgboost") is None
+
+
+def test_get_current_returns_none_for_cyclic_production_symlink(tmp_path: Path) -> None:
+    registry = ModelRegistry(tmp_path)
+    model_type_dir = tmp_path / "xgboost"
+    production_link = model_type_dir / "production"
+    model_type_dir.mkdir()
+    try:
+        production_link.symlink_to("production", target_is_directory=True)
+    except OSError as exc:
+        pytest.skip(f"Could not create cyclic symlink on this platform: {exc}")
+
+    assert registry.get_current("xgboost") is None
