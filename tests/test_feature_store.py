@@ -8,7 +8,6 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Protocol, Union, cast
 from uuid import UUID, uuid4
 
-import numpy as np  # type: ignore[import]
 import pytest
 
 _RedisValue = Union[bytes, float, int, str]
@@ -1186,21 +1185,6 @@ async def test_aggregator_recovers_from_dropped_notify() -> None:
     redis_async: _AsyncRedis = aioredis.from_url(REDIS_URL, decode_responses=True)
 
     try:
-        # Clear stale processed-order markers from previous tests so the
-        # backup poll sees a clean slate.
-        cursor: int = 0
-        while True:
-            cursor_raw, keys_raw = await redis_async.scan(
-                cursor=cursor,
-                match=f"{aggregator.PROCESSED_ORDERS_KEY_PREFIX}:*",
-                count=100,
-            )
-            cursor = int(cursor_raw)
-            if keys_raw:
-                await redis_async.delete(*[str(k) for k in keys_raw])
-            if cursor == 0:
-                break
-
         try:
             await _insert_order_graph(pg_pool, user_id, merchant_id, store_id, [order_row])
 
@@ -1365,13 +1349,18 @@ async def test_stream_throughput() -> None:
             for visible_result in visibility_results:
                 if isinstance(visible_result, BaseException):
                     errors.append(visible_result)
-                elif visible_result is not None:
+                elif visible_result is None:
+                    errors.append(RuntimeError("feature visibility timed out for one order"))
+                else:
                     latencies_ms.append(visible_result)
 
             assert not errors, [repr(error) for error in errors[:5]]
             assert metrics.errors[0] == 0
-            assert len(latencies_ms) >= 5500
-            assert float(np.percentile(latencies_ms, 99)) < 1000.0
+            assert len(latencies_ms) == total_orders
+            sorted_latencies = sorted(latencies_ms)
+            p99_index = min(int(len(sorted_latencies) * 0.99), len(sorted_latencies) - 1)
+            p99_ms = sorted_latencies[p99_index]
+            assert p99_ms < 1000.0
         finally:
             await listener_conn.remove_listener("order_placed", listener_callback)
             await _delete_seed_order_graph(
