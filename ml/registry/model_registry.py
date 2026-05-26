@@ -26,8 +26,11 @@ VERSION_RE: Pattern[str] = re.compile(r"^v_\d{8}_\d{6}$")
 class ModelRegistry:
     """Pure-filesystem store for versioned model artefacts."""
 
-    def __init__(self, root: Path = Path("/var/lib/models")) -> None:
-        self.root = root
+    def __init__(
+        self,
+        root: Union[str, Path] = Path("/var/lib/models"),  # noqa: UP007 - packet requires Python 3.8 syntax.
+    ) -> None:
+        self.root = Path(root)
 
     def save(
         self,
@@ -69,6 +72,10 @@ class ModelRegistry:
         version_dir = model_type_dir / version
         if not version_dir.is_dir():
             raise FileNotFoundError(f"Model version does not exist: {version}")
+        if version_dir.is_symlink():
+            raise ValueError(
+                f"Version dir is a symlink, not a real directory: {version}"
+            )
 
         prod_symlink = model_type_dir / PRODUCTION_LINK
         tmp_symlink = (

@@ -19,6 +19,14 @@ def test_save_bytes_lists_version_and_current_is_none_before_promote(tmp_path: P
     assert registry.get_current("xgboost") is None
 
 
+def test_string_root_is_coerced_to_path(tmp_path: Path) -> None:
+    registry = ModelRegistry(str(tmp_path))
+
+    version = registry.save("xgboost", b"model-bytes", {})
+
+    assert registry.list_versions("xgboost") == [version]
+
+
 def test_promote_sets_current_version(tmp_path: Path) -> None:
     registry = ModelRegistry(tmp_path)
     version = registry.save("xgboost", b"model-bytes", {"metric": "auc"})
@@ -183,6 +191,21 @@ def test_promote_nonexistent_version_raises_error(tmp_path: Path) -> None:
 
     with pytest.raises((FileNotFoundError, ValueError)):
         registry.promote("xgboost", "v_20260301_120000")
+
+
+def test_promote_rejects_symlink_version_dir(tmp_path: Path) -> None:
+    registry = ModelRegistry(tmp_path)
+    model_type_dir = tmp_path / "xgboost"
+    target_dir = tmp_path / "outside_registry"
+    version = "v_20260301_120000"
+    model_type_dir.mkdir()
+    target_dir.mkdir()
+    (model_type_dir / version).symlink_to(target_dir, target_is_directory=True)
+
+    with pytest.raises(ValueError, match="Version dir is a symlink"):
+        registry.promote("xgboost", version)
+
+    assert registry.get_current("xgboost") is None
 
 
 def test_invalid_model_type_absolute_path(tmp_path: Path) -> None:
