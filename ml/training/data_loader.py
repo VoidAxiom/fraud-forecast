@@ -74,7 +74,12 @@ _REQUIRED_COLUMNS: Tuple[str, ...] = (
 )
 
 _TRAINING_SQL = """
-WITH order_features AS (
+WITH all_orders AS (
+    SELECT * FROM orders
+    UNION ALL
+    SELECT * FROM orders_archive
+),
+order_features AS (
     SELECT
         o.order_id,
         o.placed_at,
@@ -131,14 +136,14 @@ WITH order_features AS (
         END AS device_lifetime_order_count,
         (
             SELECT COUNT(DISTINCT o2.user_id)
-            FROM orders o2
+            FROM all_orders o2
             WHERE o2.device_id = o.device_id
               AND o2.placed_at < o.placed_at
         ) AS device_unique_users_lifetime,
         CAST(0.0 AS DOUBLE PRECISION) AS payment_lifetime_chargeback_rate,
         (
             SELECT COUNT(DISTINCT o2.user_id)
-            FROM orders o2
+            FROM all_orders o2
             WHERE o2.ip_address = o.ip_address
               AND o2.placed_at >= o.placed_at - INTERVAL '24 hours'
               AND o2.placed_at < o.placed_at
@@ -186,7 +191,7 @@ WITH order_features AS (
         COALESCE(gt.is_fraud, FALSE) AS is_fraud,
         COALESCE(gt.is_fraud, FALSE) AS gt_is_fraud,
         COALESCE(CAST(gt.fraud_category AS VARCHAR), 'LEGIT') AS fraud_category
-    FROM orders o
+    FROM all_orders o
     LEFT JOIN simulator_ground_truth gt ON gt.order_id = o.order_id
 )
 SELECT *
