@@ -27,7 +27,11 @@ from shared.money import VATLineItem, calculate_total, calculate_vat
 from simulator.cart_builder import Cart, UserProfile, build_realistic_cart
 from simulator.fraud_patterns import GroundTruth, generate_fraud_order
 from simulator.fraud_patterns.account_takeover import _IP_COUNTRY_RESOLUTION, _OTHER_ISO2_POOL
+from simulator.fraud_patterns.collusive_merchant import init_collusive_stores
+from simulator.fraud_patterns.promo_abuse import init_rings as init_promo_abuse_rings
+from simulator.fraud_patterns.reseller import init_reseller_accounts
 from simulator.fraud_patterns.stolen_card import FraudPatternContext
+from simulator.fraud_patterns.triangulation import init_accounts as init_triangulation_accounts
 from simulator.user_picker import WeightedUserPicker
 
 logger = logging.getLogger(__name__)
@@ -79,7 +83,13 @@ _UK_ISP_PREFIXES: list[str] = [
 ]
 
 
-def _resolve_card_country(raw: str) -> str:
+def _resolve_card_country(raw: str | None) -> str:
+    if not raw:
+        return "GB"
+
+    if len(raw) == 2 and raw.isalpha():
+        return raw.upper()
+
     if raw in _IP_COUNTRY_RESOLUTION:
         resolved = _IP_COUNTRY_RESOLUTION[raw] or _FALLBACK_OTHER_CARD_COUNTRY
     elif raw == "foreign_other":
@@ -1211,7 +1221,11 @@ def _apply_fraud_order_attrs(
     is_high_end_cart, avs_result, cvv_result, is_new_device, and totals.
     """
     if "card_country" in fraud_dict:
-        snapshot["card_issuer_country"] = _resolve_card_country(str(fraud_dict["card_country"]))
+        raw_card_country = fraud_dict["card_country"]
+        # Fraud patterns may emit ISO-2 codes or long-form sentinels; persist ISO-2 only.
+        snapshot["card_issuer_country"] = _resolve_card_country(
+            None if raw_card_country is None else str(raw_card_country)
+        )
     if "card_funding_type" in fraud_dict:
         snapshot["card_funding_type"] = fraud_dict["card_funding_type"]
     if "is_digital_native_bank" in fraud_dict:
@@ -1407,6 +1421,11 @@ async def main() -> None:
 
         semaphore = asyncio.Semaphore(100)
         rng = random.Random(42)
+        # Initialize fraud-pattern state (callers-must-init per CLAUDE.md).
+        init_collusive_stores(rng)
+        init_promo_abuse_rings(rng)
+        init_reseller_accounts(rng)
+        init_triangulation_accounts(rng)
         rng_lock = asyncio.Lock()
         stats_lock = asyncio.Lock()
 
