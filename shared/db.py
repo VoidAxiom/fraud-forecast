@@ -6,13 +6,14 @@ from sqlalchemy import create_engine  # type: ignore  # SQLAlchemy 1.4 has no ty
 from sqlalchemy.engine import Engine  # type: ignore  # SQLAlchemy 1.4 has no type stubs
 from sqlalchemy.orm import sessionmaker, Session  # type: ignore  # SQLAlchemy 1.4 has no type stubs
 
-Role = Literal["app", "scoring", "simulator", "analyst"]
+Role = Literal["app", "scoring", "simulator", "analyst", "training"]
 
 _DEFAULT_URLS: dict[Role, str] = {
     "app": "postgresql://app:app_dev_password@postgres:5432/fraud_platform",
     "scoring": "postgresql://scoring_user:scoring_dev_password@postgres:5432/fraud_platform",
     "simulator": "postgresql://simulator_user:simulator_dev_password@postgres:5432/fraud_platform",
     "analyst": "postgresql://analyst_user:analyst_dev_password@postgres:5432/fraud_platform",
+    "training": "postgresql://training_user:training_dev_password@postgres:5432/fraud_platform",
 }
 
 

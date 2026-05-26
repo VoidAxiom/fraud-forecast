@@ -80,6 +80,7 @@ services:
         condition: service_healthy
     environment:
       DATABASE_URL: postgresql://app:${POSTGRES_PASSWORD:-app_dev_password}@postgres:5432/fraud_platform
+      DATABASE_URL_TRAINING: postgresql://training_user:training_dev_password@postgres:5432/fraud_platform
     command: ["python", "-c", "print('app image OK')"]
     networks:
       - fraud_net
