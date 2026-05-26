@@ -42,7 +42,15 @@ seed:
 seed-small:
 	bash scripts/seed.sh 0.1 4 42
 
+TRAIN_RUN_ID ?= run_$(shell date +%Y%m%d_%H%M%S)
+TRAIN_INPUT_PARQUET ?= ml/data/training/latest.parquet
+TRAIN_OUTPUT_DIR ?= ml/data/transformed
+
 # Requires data from P5-B.
 .PHONY: train
 train:
-	docker compose --profile tools run --rm app python -m ml.transform.run_transform $(TRAIN_ARGS)
+	docker compose --profile tools run --rm app python -m ml.transform.run_transform \
+		--input-parquet $(TRAIN_INPUT_PARQUET) \
+		--output-dir $(TRAIN_OUTPUT_DIR) \
+		--run-id $(TRAIN_RUN_ID) \
+		$(TRAIN_ARGS)

@@ -114,14 +114,21 @@ FEATURE_SPEC["fraud_outcome"] = tf.io.FixedLenFeature([], tf.string)
 
 
 def row_to_dict(row: Mapping[str, object]) -> dict[str, object]:
-    converted = dict(row)
-    for feature_name in STRING_FEATURES:
-        value = converted.get(feature_name)
-        if isinstance(value, str):
-            converted[feature_name] = value.encode("utf-8")
-    for feature_name in NULLABLE_CATEGORICALS:
-        if converted.get(feature_name) is None:
-            converted[feature_name] = b""
+    converted: dict[str, object] = {}
+    for feature_name, spec in FEATURE_SPEC.items():
+        value = row.get(feature_name)
+        if spec.dtype == tf.string:
+            converted[feature_name] = (
+                b"" if value is None else value.encode("utf-8") if isinstance(value, str) else value
+            )
+        elif spec.dtype == tf.bool:
+            converted[feature_name] = False if value is None else bool(value)
+        elif spec.dtype == tf.int64:
+            converted[feature_name] = 0 if value is None else int(value)
+        elif spec.dtype == tf.float32:
+            converted[feature_name] = 0.0 if value is None else float(value)
+        else:
+            converted[feature_name] = value
     return converted
 
 
