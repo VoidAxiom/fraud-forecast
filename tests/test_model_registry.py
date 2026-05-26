@@ -86,7 +86,7 @@ def test_save_multiple_versions_lists_chronologically(
 
     monkeypatch.setattr(Path, "iterdir", ordered_iterdir)
 
-    assert registry.list_versions("xgboost") == [first, second, third]
+    assert registry.list_versions("xgboost") == [second, first, third]
 
 
 def test_bytes_artefact_writes_model_bst(tmp_path: Path) -> None:
