@@ -547,6 +547,24 @@ def test_apply_fraud_order_attrs_propagates_identity_ids() -> None:
     assert snapshot["cvv_result"] == "NO_MATCH"
 
 
+def test_apply_fraud_order_attrs_uses_victim_user_id() -> None:
+    victim_user_id = uuid.UUID(int=600)
+    snapshot = {
+        "user_id": uuid.UUID(int=1),
+        "total_pence": 1000,
+        "order_type": "DELIVERY",
+    }
+    fraud_dict = {
+        "victim_user_id": str(victim_user_id),
+        "order_total_pence": 8500,
+    }
+
+    _apply_fraud_order_attrs(snapshot, fraud_dict)
+
+    assert snapshot["user_id"] == victim_user_id
+    assert snapshot["total_pence"] == 8500
+
+
 def test_apply_fraud_identity_overrides_synthesizes_missing_user_row() -> None:
     async def _run() -> None:
         class _MissingUserConn:
@@ -581,6 +599,84 @@ def test_apply_fraud_identity_overrides_synthesizes_missing_user_row() -> None:
         assert snapshot["user_total_orders_30d"] == 0
         assert snapshot["user_total_spend_lifetime_pence"] == 0
         assert snapshot["is_first_order_for_user"] is True
+
+    asyncio.run(_run())
+
+
+def test_apply_fraud_identity_overrides_synthesizes_missing_victim_user_row() -> None:
+    async def _run() -> None:
+        class _MissingVictimUserConn:
+            def __init__(self) -> None:
+                self.requested_user_id: uuid.UUID | None = None
+
+            async def fetchrow(self, _query: str, user_id: uuid.UUID) -> None:
+                self.requested_user_id = user_id
+                return None
+
+        victim_user_id = uuid.UUID(int=1001)
+        snapshot = {
+            "user_id": uuid.UUID(int=1),
+            "user_email": "legit@example.com",
+            "user_email_domain": "example.com",
+            "user_phone": "07123456789",
+            "user_risk_tier_at_order": "LOW",
+            "user_account_age_days": 365,
+            "user_total_orders_lifetime": 42,
+            "user_total_orders_30d": 8,
+            "user_total_spend_lifetime_pence": 123456,
+            "is_first_order_for_user": False,
+        }
+        fraud_dict = {"victim_user_id": victim_user_id}
+        conn = _MissingVictimUserConn()
+
+        _apply_fraud_order_attrs(snapshot, fraud_dict)
+        await _apply_fraud_identity_overrides(conn, snapshot, fraud_dict)
+
+        assert conn.requested_user_id == victim_user_id
+        assert snapshot["user_id"] == victim_user_id
+        assert snapshot["user_email"] == f"{victim_user_id}@fraud.test"
+        assert snapshot["user_email_domain"] == "fraud.test"
+        assert snapshot["user_account_age_days"] == 0
+        assert snapshot["user_total_orders_lifetime"] == 0
+        assert snapshot["user_total_orders_30d"] == 0
+        assert snapshot["user_total_spend_lifetime_pence"] == 0
+        assert snapshot["is_first_order_for_user"] is True
+
+    asyncio.run(_run())
+
+
+def test_apply_fraud_identity_overrides_synthesizes_missing_store_required_snapshot() -> None:
+    async def _run() -> None:
+        class _MissingStoreConn:
+            def __init__(self) -> None:
+                self.requested_store_id: uuid.UUID | None = None
+
+            async def fetchrow(self, _query: str, store_id: uuid.UUID) -> None:
+                self.requested_store_id = store_id
+                return None
+
+        fraud_store_id = uuid.UUID(int=2001)
+        snapshot = {
+            "store_id": uuid.UUID(int=2),
+            "merchant_id": uuid.UUID(int=3),
+            "store_city": "London",
+            "store_country": "GB",
+            "store_latitude": 51.5,
+            "store_longitude": -0.1,
+        }
+        fraud_dict = {"store_id": str(fraud_store_id)}
+        conn = _MissingStoreConn()
+
+        _apply_fraud_order_attrs(snapshot, fraud_dict)
+        await _apply_fraud_identity_overrides(conn, snapshot, fraud_dict)
+
+        assert conn.requested_store_id == fraud_store_id
+        assert snapshot["store_id"] == fraud_store_id
+        assert snapshot["merchant_id"] == uuid.UUID("ffffffff-ffff-ffff-ffff-ffffffffffff")
+        assert snapshot["store_city"] == "FRAUD_RING"
+        assert snapshot["store_country"] == "GB"
+        assert snapshot["store_latitude"] == 0.0
+        assert snapshot["store_longitude"] == 0.0
 
     asyncio.run(_run())
 

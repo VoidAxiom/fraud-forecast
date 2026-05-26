@@ -63,6 +63,12 @@ FRAUD_INJECTION_RATE = _parse_fraud_rate(os.getenv("FRAUD_INJECTION_RATE"))
 
 LONDON_TZ = ZoneInfo("Europe/London")
 _FALLBACK_OTHER_CARD_COUNTRY = _OTHER_ISO2_POOL[0]
+_FRAUD_FK_SENTINELS = {"VICTIM_SAVED", "ABUSER_SAVED"}
+_SYNTHETIC_FRAUD_RING_MERCHANT_ID = uuid.UUID("ffffffff-ffff-ffff-ffff-ffffffffffff")
+_SYNTHETIC_FRAUD_RING_STORE_CITY = "FRAUD_RING"
+_SYNTHETIC_FRAUD_RING_STORE_COUNTRY = "GB"
+_SYNTHETIC_FRAUD_RING_STORE_LATITUDE = 0.0
+_SYNTHETIC_FRAUD_RING_STORE_LONGITUDE = 0.0
 
 _UK_ISP_PREFIXES: list[str] = [
     "80.0",
@@ -106,6 +112,19 @@ def _resolve_card_country(raw: str | None) -> str:
         raw,
     )
     return "GB"
+
+
+def _fraud_uuid_override(value: Any) -> uuid.UUID | None:
+    if value is None:
+        return None
+    if isinstance(value, str) and value in _FRAUD_FK_SENTINELS:
+        return None
+    return value if isinstance(value, uuid.UUID) else uuid.UUID(str(value))
+
+
+def _fraud_user_id_override(fraud_dict: dict[str, Any]) -> uuid.UUID | None:
+    user_id_override = fraud_dict.get("user_id") or fraud_dict.get("victim_user_id")
+    return _fraud_uuid_override(user_id_override)
 
 
 @dataclass(frozen=True)
@@ -1222,9 +1241,10 @@ def _apply_fraud_order_attrs(
 
     Fields propagated:
     - order_total_pence -> total_pence
-    - user_id, store_id, device_id, payment_method_id, delivery_address_id
-      (FK columns only; sentinel values "VICTIM_SAVED"/"ABUSER_SAVED" are
-      skipped - the legit-path value is retained)
+    - user_id/victim_user_id, store_id, device_id, payment_method_id,
+      delivery_address_id (FK columns only; sentinel values
+      "VICTIM_SAVED"/"ABUSER_SAVED" are skipped - the legit-path value is
+      retained)
       FK values are coerced to uuid.UUID regardless of source type.
     - card_country -> card_issuer_country (ISO-2 normalised)
     - card_funding_type, is_digital_native_bank
@@ -1246,17 +1266,14 @@ def _apply_fraud_order_attrs(
         # ML reads top-line total_pence + per-entity features, not arithmetic identity.
         snapshot["total_pence"] = int(fraud_dict["order_total_pence"])
 
-    for key in (
-        "user_id",
-        "store_id",
-        "device_id",
-        "payment_method_id",
-        "delivery_address_id",
-    ):
-        if key in fraud_dict:
-            val = fraud_dict[key]
-            if val not in ("VICTIM_SAVED", "ABUSER_SAVED") and val is not None:
-                snapshot[key] = uuid.UUID(str(val)) if not isinstance(val, uuid.UUID) else val
+    user_id_override = _fraud_user_id_override(fraud_dict)
+    if user_id_override is not None:
+        snapshot["user_id"] = user_id_override
+
+    for key in ("store_id", "device_id", "payment_method_id", "delivery_address_id"):
+        override = _fraud_uuid_override(fraud_dict.get(key))
+        if override is not None:
+            snapshot[key] = override
 
     if "avs_result" in fraud_dict:
         snapshot["avs_result"] = fraud_dict["avs_result"]
@@ -1313,12 +1330,8 @@ async def _apply_fraud_identity_overrides(
     exist in the DB (synthetic fraud UUIDs) receive explicit synthetic/null
     derived values so the fraud FK is not mixed with legit-path attributes.
     """
-    if "user_id" in fraud_dict and fraud_dict.get("user_id") not in (
-        None,
-        "VICTIM_SAVED",
-        "ABUSER_SAVED",
-    ):
-        user_id = fraud_dict["user_id"]
+    user_id = _fraud_user_id_override(fraud_dict)
+    if user_id is not None:
         row = await conn.fetchrow(
             "SELECT email, phone, risk_tier, created_at FROM users WHERE user_id = $1",
             user_id,
@@ -1341,8 +1354,8 @@ async def _apply_fraud_identity_overrides(
             snapshot["user_total_spend_lifetime_pence"] = 0
             snapshot["is_first_order_for_user"] = True
 
-    if "store_id" in fraud_dict and fraud_dict.get("store_id") not in (None,):
-        store_id = fraud_dict["store_id"]
+    store_id = _fraud_uuid_override(fraud_dict.get("store_id"))
+    if store_id is not None:
         row = await conn.fetchrow(
             "SELECT merchant_id, city, country, latitude, longitude "
             "FROM stores WHERE store_id = $1",
@@ -1355,13 +1368,14 @@ async def _apply_fraud_identity_overrides(
             snapshot["store_latitude"] = float(row["latitude"])
             snapshot["store_longitude"] = float(row["longitude"])
         else:
-            snapshot["merchant_id"] = None
-            snapshot["store_city"] = "FRAUD_RING"
-            snapshot["store_latitude"] = None
-            snapshot["store_longitude"] = None
+            snapshot["merchant_id"] = _SYNTHETIC_FRAUD_RING_MERCHANT_ID
+            snapshot["store_city"] = _SYNTHETIC_FRAUD_RING_STORE_CITY
+            snapshot["store_country"] = _SYNTHETIC_FRAUD_RING_STORE_COUNTRY
+            snapshot["store_latitude"] = _SYNTHETIC_FRAUD_RING_STORE_LATITUDE
+            snapshot["store_longitude"] = _SYNTHETIC_FRAUD_RING_STORE_LONGITUDE
 
-    if "device_id" in fraud_dict and fraud_dict.get("device_id") not in (None,):
-        device_id = fraud_dict["device_id"]
+    device_id = _fraud_uuid_override(fraud_dict.get("device_id"))
+    if device_id is not None:
         row = await conn.fetchrow(
             "SELECT device_type, platform, os_version, app_version, browser_name, browser_version "
             "FROM devices WHERE device_id = $1",
@@ -1382,12 +1396,8 @@ async def _apply_fraud_identity_overrides(
             snapshot["browser_name"] = None
             snapshot["browser_version"] = None
 
-    if "payment_method_id" in fraud_dict and fraud_dict.get("payment_method_id") not in (
-        None,
-        "VICTIM_SAVED",
-        "ABUSER_SAVED",
-    ):
-        pm_id = fraud_dict["payment_method_id"]
+    pm_id = _fraud_uuid_override(fraud_dict.get("payment_method_id"))
+    if pm_id is not None:
         row = await conn.fetchrow(
             """SELECT payment_type, card_bin, card_last_four, card_brand,
                       card_funding_type, card_issuer_country, is_digital_native_bank
@@ -1409,15 +1419,12 @@ async def _apply_fraud_identity_overrides(
             snapshot["card_bin"] = None
             snapshot["card_last_four"] = None
             snapshot["card_brand"] = None
+            snapshot["payment_type"] = snapshot.get("payment_type") or "ACCOUNT_CREDIT"
             snapshot["card_issuer_country"] = card_issuer_country
             snapshot["card_issuer_bank"] = None
 
-    if "delivery_address_id" in fraud_dict and fraud_dict.get("delivery_address_id") not in (
-        None,
-        "VICTIM_SAVED",
-        "ABUSER_SAVED",
-    ):
-        addr_id = fraud_dict["delivery_address_id"]
+    addr_id = _fraud_uuid_override(fraud_dict.get("delivery_address_id"))
+    if addr_id is not None:
         row = await conn.fetchrow(
             "SELECT latitude, longitude, address_type FROM user_addresses WHERE address_id = $1",
             addr_id,
