@@ -41,3 +41,8 @@ seed:
 
 seed-small:
 	bash scripts/seed.sh 0.1 4 42
+
+# Requires data from P5-B.
+.PHONY: train
+train:
+	docker compose --profile tools run --rm app python -m ml.transform.run_transform $(TRAIN_ARGS)
