@@ -125,7 +125,10 @@ class ModelRegistry:
         saved_at = metadata.get("saved_at")
         if isinstance(saved_at, str):
             try:
-                return stdlib_datetime.fromisoformat(saved_at).astimezone(timezone.utc).isoformat()
+                dt = stdlib_datetime.fromisoformat(saved_at)
+                if dt.tzinfo is None:
+                    return ""
+                return dt.astimezone(timezone.utc).isoformat()
             except Exception:
                 return ""
         return ""
