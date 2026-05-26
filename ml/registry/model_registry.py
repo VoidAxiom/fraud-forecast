@@ -7,6 +7,7 @@ import os
 import re
 import shutil
 import sys
+import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Pattern, Union
@@ -34,7 +35,7 @@ class ModelRegistry:
         model_artefact: Union[bytes, Path],  # noqa: UP007 - packet requires Python 3.8 syntax.
         metadata: Dict[str, object],  # noqa: UP006 - packet requires Python 3.8 syntax.
     ) -> str:
-        """Save a new version. Returns the version dir name."""
+        """Save bytes, a file Path, or a directory Path as a new version."""
         now = datetime.now(tz=LONDON_TZ)
         version = now.strftime("v_%Y%m%d_%H%M%S")
         model_type_dir = self._model_type_dir(model_type)
@@ -46,7 +47,11 @@ class ModelRegistry:
             version_dir.mkdir()
             created = True
 
-            self._write_model_artefact(model_artefact, version_dir / MODEL_FILENAME)
+            model_path = version_dir / MODEL_FILENAME
+            if isinstance(model_artefact, Path) and model_artefact.is_dir():
+                model_path = version_dir / "saved_model"
+
+            self._write_model_artefact(model_artefact, model_path)
             self._write_metadata(metadata, version, now, version_dir / "metadata.json")
         except BaseException:
             if created:
@@ -66,7 +71,10 @@ class ModelRegistry:
             raise FileNotFoundError(f"Model version does not exist: {version}")
 
         prod_symlink = model_type_dir / PRODUCTION_LINK
-        tmp_symlink = model_type_dir / f".{PRODUCTION_LINK}.tmp.{os.getpid()}"
+        tmp_symlink = (
+            model_type_dir
+            / f".{PRODUCTION_LINK}.tmp.{os.getpid()}.{uuid.uuid4().hex}"
+        )
 
         if tmp_symlink.exists() or tmp_symlink.is_symlink():
             tmp_symlink.unlink()
@@ -123,11 +131,16 @@ class ModelRegistry:
         model_artefact: Union[bytes, Path],  # noqa: UP007 - packet requires Python 3.8 syntax.
         model_path: Path,
     ) -> None:
+        """Write bytes or copy a file/directory Path model artefact."""
         if isinstance(model_artefact, bytes):
             model_path.write_bytes(model_artefact)
             return
 
         if isinstance(model_artefact, Path):
+            if model_artefact.is_dir():
+                shutil.copytree(str(model_artefact), str(model_path))
+                return
+
             shutil.copyfile(str(model_artefact), str(model_path))
             return
 

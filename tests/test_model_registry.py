@@ -74,6 +74,31 @@ def test_path_artefact_writes_model_bst(tmp_path: Path) -> None:
     assert (tmp_path / "xgboost" / version / "model.bst").read_bytes() == content
 
 
+def test_directory_artefact_copies_saved_model_dir(tmp_path: Path) -> None:
+    source_dir = tmp_path / "source_saved_model"
+    variables_dir = source_dir / "variables"
+    graph_content = b"saved-model-graph"
+    weights_content = b"saved-model-weights"
+    index_content = "saved-model-index"
+    variables_dir.mkdir(parents=True)
+    (source_dir / "saved_model.pb").write_bytes(graph_content)
+    (variables_dir / "variables.data-00000-of-00001").write_bytes(weights_content)
+    (variables_dir / "variables.index").write_text(index_content, encoding="utf-8")
+    registry = ModelRegistry(tmp_path)
+
+    version = registry.save("dnn", source_dir, {})
+
+    saved_model_dir = tmp_path / "dnn" / version / "saved_model"
+    assert saved_model_dir.is_dir()
+    assert (saved_model_dir / "saved_model.pb").read_bytes() == graph_content
+    assert (
+        saved_model_dir / "variables" / "variables.data-00000-of-00001"
+    ).read_bytes() == weights_content
+    assert (
+        saved_model_dir / "variables" / "variables.index"
+    ).read_text(encoding="utf-8") == index_content
+
+
 def test_save_cleans_up_on_failed_artefact(tmp_path: Path) -> None:
     registry = ModelRegistry(tmp_path)
     missing_source_path = tmp_path / "does_not_exist.bst"
