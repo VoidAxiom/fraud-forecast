@@ -11,7 +11,10 @@ from uuid import UUID, uuid4
 import pytest
 
 _RedisValue = Union[bytes, float, int, str]
-_RedisMapping = Mapping[Union[str, bytes], _RedisValue]
+if TYPE_CHECKING:
+    _RedisMapping = Mapping[Union[str, bytes], _RedisValue]
+else:
+    _RedisMapping = Mapping
 
 
 class _AsyncPgModule(Protocol):
