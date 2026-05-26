@@ -40,6 +40,9 @@ class _AsyncRedis(Protocol):
     async def zscore(self, name: str, value: str) -> Union[float, None]:  # noqa: UP007 - packet requires Python 3.8 syntax.
         ...
 
+    async def zrange(self, name: str, start: int, end: int) -> list[Union[bytes, str]]:  # noqa: UP007 - packet requires Python 3.8 syntax.
+        ...
+
     async def close(self) -> None: ...
 
 
@@ -829,6 +832,13 @@ def _restore_hashes(
 
 @pytest.mark.asyncio
 async def test_streaming_features_update_on_order() -> None:
+    """Unit-level test: streaming feature update logic given an order row.
+
+    Direct call to update_features_for_order covers the aggregation/HSET
+    code path. The full NOTIFY -> callback -> update path is tested in
+    test_stream_throughput, which uses asyncpg.add_listener with the real
+    _on_order_placed callback.
+    """
     user_id = uuid4()
     store_id = uuid4()
     merchant_id = uuid4()
@@ -1218,35 +1228,32 @@ async def test_aggregator_recovers_from_dropped_notify() -> None:
 async def test_no_unbounded_redis_growth() -> None:
     user_id = uuid4()
     now_ts = int(_now_london().timestamp())
-    old_ts = now_ts - (25 * 3600)
-    recent_ts = now_ts - 3600
     orders_zset_key = f"fs:user:{user_id}:orders_zset"
     metrics = aggregator.Metrics(errors=[0])
     redis_async: _AsyncRedis = aioredis.from_url(REDIS_URL, decode_responses=True)
 
     try:
         try:
-            mapping: dict[str, int] = {}
-            for index in range(50):
-                mapping[f"old-{index}"] = old_ts
-                mapping[f"recent-{index}"] = recent_ts
+            old_entries = {f"order_{index}": now_ts - 86400 - index for index in range(2500)}
+            recent_entries = {f"order_{index}": now_ts - index for index in range(2500, 5000)}
             await redis_async.zadd(
                 orders_zset_key,
                 cast(
                     "Mapping[str | bytes, bytes | float | int | str]",
-                    mapping,
+                    {**old_entries, **recent_entries},
                 ),
             )
 
             await aggregator.trim_order_zsets_once(redis_conn=redis_async, metrics=metrics)
 
-            assert int(await redis_async.zcard(orders_zset_key)) == 50
-            # Verify the retained entries are the recent ones, not the old ones.
-            recent_score = await redis_async.zscore(orders_zset_key, "recent-0")
-            old_score = await redis_async.zscore(orders_zset_key, "old-0")
-            assert recent_score is not None, "recent-0 was incorrectly trimmed"
-            assert old_score is None, "old-0 was not trimmed (outside 24h window)"
-            assert int(float(recent_score)) == recent_ts
+            assert int(await redis_async.zcard(orders_zset_key)) == 2500
+            remaining = await redis_async.zrange(orders_zset_key, 0, -1)
+            remaining_indices = [
+                int((member.decode("utf-8") if isinstance(member, bytes) else member).split("_")[1])
+                for member in remaining
+            ]
+            assert len(remaining_indices) == 2500
+            assert all(index >= 2500 for index in remaining_indices)
         finally:
             await _delete_redis_keys(redis_async, _user_stream_keys(user_id))
     finally:
