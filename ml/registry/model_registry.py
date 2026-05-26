@@ -20,7 +20,7 @@ else:
 LONDON_TZ = ZoneInfo("Europe/London")
 MODEL_FILENAME = "model.bst"
 PRODUCTION_LINK = "production"
-VERSION_RE: Pattern[str] = re.compile(r"^v_\d{8}_\d{6}$")
+VERSION_RE: Pattern[str] = re.compile(r"^v_\d{8}_\d{6}_[0-9a-f]{8}$")
 
 
 class ModelRegistry:
@@ -40,7 +40,7 @@ class ModelRegistry:
     ) -> str:
         """Save bytes, a file Path, or a directory Path as a new version."""
         now = datetime.now(tz=LONDON_TZ)
-        version = now.strftime("v_%Y%m%d_%H%M%S")
+        version = now.strftime("v_%Y%m%d_%H%M%S") + "_" + uuid.uuid4().hex[:8]
         model_type_dir = self._model_type_dir(model_type)
         version_dir = model_type_dir / version
 

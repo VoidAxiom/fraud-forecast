@@ -1,13 +1,18 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime
+import uuid
+from datetime import datetime, tzinfo
 from pathlib import Path
 
 import pytest
 
 from ml.registry import ModelRegistry
 from ml.registry import model_registry
+
+
+def _uuid_with_prefix(prefix: str) -> uuid.UUID:
+    return uuid.UUID(prefix + ("0" * 24))
 
 
 def test_save_bytes_lists_version_and_current_is_none_before_promote(tmp_path: Path) -> None:
@@ -41,18 +46,24 @@ def test_save_multiple_versions_lists_chronologically(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     versions_to_save = [
-        "v_20260308_120000",
-        "v_20260301_120000",
-        "v_20260315_120000",
+        "v_20260308_120000_bbbbbbbb",
+        "v_20260301_120000_aaaaaaaa",
+        "v_20260315_120000_cccccccc",
     ]
+    uuid_suffixes = [version.rsplit("_", 1)[1] for version in versions_to_save]
 
     class Clock:
         @classmethod
-        def now(cls, tz: object) -> object:
+        def now(cls, tz: tzinfo) -> datetime:
             version = versions_to_save.pop(0)
-            return datetime.strptime(version, "v_%Y%m%d_%H%M%S").replace(tzinfo=tz)
+            timestamp = version.rsplit("_", 1)[0]
+            return datetime.strptime(timestamp, "v_%Y%m%d_%H%M%S").replace(tzinfo=tz)
+
+    def next_uuid() -> uuid.UUID:
+        return _uuid_with_prefix(uuid_suffixes.pop(0))
 
     monkeypatch.setattr(model_registry, "datetime", Clock)
+    monkeypatch.setattr(uuid, "uuid4", next_uuid)
     registry = ModelRegistry(tmp_path)
 
     first = registry.save("xgboost", b"first", {})
@@ -122,13 +133,15 @@ def test_save_collision_does_not_delete_existing_version(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     fixed_time = datetime(2026, 3, 8, 12, 0, 0, tzinfo=model_registry.LONDON_TZ)
+    fixed_uuid = _uuid_with_prefix("abcdef12")
 
     class Clock:
         @classmethod
-        def now(cls, tz: object) -> datetime:
+        def now(cls, tz: tzinfo) -> datetime:
             return fixed_time
 
     monkeypatch.setattr(model_registry, "datetime", Clock)
+    monkeypatch.setattr(uuid, "uuid4", lambda: fixed_uuid)
     registry = ModelRegistry(tmp_path)
     content = b"original-model-content"
 
@@ -165,15 +178,23 @@ def test_atomic_promote_replaces_existing_production_symlink(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    versions_to_save = ["v_20260301_120000", "v_20260308_120000"]
+    versions_to_save = ["v_20260301_120000_aaaaaaaa", "v_20260308_120000_bbbbbbbb"]
+    uuid_suffixes = [version.rsplit("_", 1)[1] for version in versions_to_save]
 
     class Clock:
         @classmethod
-        def now(cls, tz: object) -> object:
+        def now(cls, tz: tzinfo) -> datetime:
             version = versions_to_save.pop(0)
-            return datetime.strptime(version, "v_%Y%m%d_%H%M%S").replace(tzinfo=tz)
+            timestamp = version.rsplit("_", 1)[0]
+            return datetime.strptime(timestamp, "v_%Y%m%d_%H%M%S").replace(tzinfo=tz)
+
+    def next_uuid() -> uuid.UUID:
+        if uuid_suffixes:
+            return _uuid_with_prefix(uuid_suffixes.pop(0))
+        return _uuid_with_prefix("cccccccc")
 
     monkeypatch.setattr(model_registry, "datetime", Clock)
+    monkeypatch.setattr(uuid, "uuid4", next_uuid)
     registry = ModelRegistry(tmp_path)
     first = registry.save("xgboost", b"first", {})
     second = registry.save("xgboost", b"second", {})
@@ -189,15 +210,15 @@ def test_atomic_promote_replaces_existing_production_symlink(
 def test_promote_nonexistent_version_raises_error(tmp_path: Path) -> None:
     registry = ModelRegistry(tmp_path)
 
-    with pytest.raises((FileNotFoundError, ValueError)):
-        registry.promote("xgboost", "v_20260301_120000")
+    with pytest.raises(FileNotFoundError, match="Model version does not exist"):
+        registry.promote("xgboost", "v_20260301_120000_abcdef12")
 
 
 def test_promote_rejects_symlink_version_dir(tmp_path: Path) -> None:
     registry = ModelRegistry(tmp_path)
     model_type_dir = tmp_path / "xgboost"
     target_dir = tmp_path / "outside_registry"
-    version = "v_20260301_120000"
+    version = "v_20260301_120000_abcdef12"
     model_type_dir.mkdir()
     target_dir.mkdir()
     (model_type_dir / version).symlink_to(target_dir, target_is_directory=True)
