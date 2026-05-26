@@ -542,7 +542,10 @@ async def test_throughput() -> None:
             INSERT INTO store_hours (store_id, day_of_week, open_time, close_time)
             VALUES ($1, $2, $3, $4)
             """,
-            [(store_id, day_of_week, dt.time(0, 0), dt.time(23, 59, 59)) for day_of_week in range(7)],
+            [
+                (store_id, day_of_week, dt.time(0, 0), dt.time(23, 59, 59))
+                for day_of_week in range(7)
+            ],
         )
         await setup_conn.executemany(
             """
