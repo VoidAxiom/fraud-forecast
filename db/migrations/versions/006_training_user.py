@@ -1,4 +1,14 @@
-"""Create training_user role with SELECT grants for Phase 5 ML training."""
+"""Create training_user with grants for Phase 5 ML training.
+
+This deliberately deviates from spec/PHASE_5.md: the spec lists only static
+GRANT SELECT statements on named tables and omits ALTER DEFAULT PRIVILEGES.
+The orders table is weekly-partitioned through ensure_future_partitions(), so
+partition children created after this migration will not inherit the static
+GRANT. The ALTER DEFAULT PRIVILEGES statement keeps SELECT grants automatic for
+future partition children, matching the 003_create_roles.py pattern for
+scoring_user, simulator_user, and analyst_user. This is a director-confirmed
+deliberate deviation.
+"""
 
 from alembic import op
 
@@ -29,6 +39,10 @@ END $$;
         "simulator_ground_truth, users, devices, payment_methods, stores, "
         "merchants, user_addresses TO training_user;"
     )
+    op.execute(
+        "ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON TABLES TO training_user;"
+    )
+
 
 def downgrade() -> None:
     # Forward-only; training_user role removal not automated.
