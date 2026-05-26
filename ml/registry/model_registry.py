@@ -115,23 +115,31 @@ class ModelRegistry:
 
     def _read_saved_at_utc_isoformat(self, model_type_dir: Path, version: str) -> str:
         """Read metadata.json saved_at as UTC ISO for sorting; fallback to version timestamp prefix."""
+        def _fallback_saved_at_from_version() -> str:
+            try:
+                timestamp = version[1:16]
+                dt = stdlib_datetime.strptime(timestamp, "%Y%m%d_%H%M%S").replace(tzinfo=LONDON_TZ)
+                return dt.astimezone(timezone.utc).isoformat()
+            except Exception:
+                return ""
+
         metadata_path = model_type_dir / version / "metadata.json"
         try:
             with metadata_path.open("r", encoding="utf-8") as metadata_file:
                 metadata = json.load(metadata_file)
         except Exception:
-            return version[:16]
+            return _fallback_saved_at_from_version()
 
         saved_at = metadata.get("saved_at")
         if isinstance(saved_at, str):
             try:
                 dt = stdlib_datetime.fromisoformat(saved_at)
                 if dt.tzinfo is None:
-                    return version[:16]
+                    return _fallback_saved_at_from_version()
                 return dt.astimezone(timezone.utc).isoformat()
             except Exception:
-                return version[:16]
-        return version[:16]
+                return _fallback_saved_at_from_version()
+        return _fallback_saved_at_from_version()
 
     def get_current(self, model_type: str) -> Optional[str]:  # noqa: UP045 - packet requires Python 3.8 syntax.
         """Return the version the production symlink currently points to, or None."""
