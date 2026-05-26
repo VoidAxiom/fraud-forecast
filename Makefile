@@ -49,7 +49,7 @@ TRAIN_OUTPUT_DIR ?= ml/data/transformed
 # Requires data from P5-B.
 .PHONY: train
 train:
-	docker compose --profile tools run --rm app python -m ml.transform.run_transform \
+	docker compose --profile tools run --rm --build app python -m ml.transform.run_transform \
 		--input-parquet $(TRAIN_INPUT_PARQUET) \
 		--output-dir $(TRAIN_OUTPUT_DIR) \
 		--run-id $(TRAIN_RUN_ID) \

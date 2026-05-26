@@ -110,7 +110,6 @@ def preprocessing_fn(inputs: dict) -> dict:
         / (tf.cast(inputs["user_lifetime_order_count"], tf.float32) + 1.0)
     )
 
-    # fraud_outcome: "LEGIT" -> 0, anything else -> 1 (binary classification)
-    fraud_outcome_str = inputs["fraud_outcome"]
-    outputs["label"] = tf.cast(tf.not_equal(fraud_outcome_str, b"LEGIT"), tf.int64)
+    # gt_is_fraud: simulator ground truth (bool) -> binary label
+    outputs["label"] = tf.cast(inputs["gt_is_fraud"], tf.int64)
     return outputs
