@@ -17,6 +17,7 @@ import redis.asyncio as aioredis
 from simulator.cart_builder import Cart
 from simulator.fraud_patterns import GroundTruth
 from simulator.generator import (
+    _apply_fraud_identity_overrides,
     _apply_fraud_order_attrs,
     _parse_fraud_rate,
     _read_runtime_rate,
@@ -496,14 +497,74 @@ def test_apply_fraud_order_attrs_maps_fields() -> None:
     assert snapshot["ip_is_tor"] is False
     assert snapshot["ip_is_hosting"] is False
     assert snapshot["delivery_address_type"] == "HOTEL"
-    assert snapshot["total_pence"] == 2500
+    assert snapshot["total_pence"] == 9999
     assert snapshot["is_new_payment_method"] is False
     assert "order_id" not in snapshot
     assert "placed_at" not in snapshot
     assert "variant" not in snapshot
-    assert "avs_result" not in snapshot
-    assert "cvv_result" not in snapshot
+    assert snapshot["avs_result"] == "NO_MATCH"
+    assert snapshot["cvv_result"] == "MATCH"
     assert "is_new_device" not in snapshot
+
+
+def test_apply_fraud_order_attrs_propagates_identity_ids() -> None:
+    """FK id overrides and total_pence override are applied; sentinel strings are skipped."""
+    fraud_user_id = uuid.UUID(int=100)
+    fraud_store_id = uuid.UUID(int=200)
+    fraud_device_id = uuid.UUID(int=300)
+    fraud_pm_id = uuid.UUID(int=400)
+    fraud_addr_id = uuid.UUID(int=500)
+
+    snapshot = {
+        "user_id": uuid.UUID(int=1),
+        "store_id": uuid.UUID(int=2),
+        "device_id": uuid.UUID(int=3),
+        "payment_method_id": uuid.UUID(int=4),
+        "delivery_address_id": uuid.UUID(int=5),
+        "total_pence": 1000,
+        "order_type": "DELIVERY",
+    }
+    fraud_dict = {
+        "user_id": fraud_user_id,
+        "store_id": fraud_store_id,
+        "device_id": fraud_device_id,
+        "payment_method_id": fraud_pm_id,
+        "delivery_address_id": fraud_addr_id,
+        "order_total_pence": 8500,
+        "avs_result": "NO_MATCH",
+        "cvv_result": "NO_MATCH",
+    }
+
+    _apply_fraud_order_attrs(snapshot, fraud_dict)
+
+    assert snapshot["user_id"] == fraud_user_id
+    assert snapshot["store_id"] == fraud_store_id
+    assert snapshot["device_id"] == fraud_device_id
+    assert snapshot["payment_method_id"] == fraud_pm_id
+    assert snapshot["delivery_address_id"] == fraud_addr_id
+    assert snapshot["total_pence"] == 8500
+    assert snapshot["avs_result"] == "NO_MATCH"
+    assert snapshot["cvv_result"] == "NO_MATCH"
+
+
+def test_apply_fraud_order_attrs_skips_sentinel_ids() -> None:
+    """Sentinel strings VICTIM_SAVED / ABUSER_SAVED are not written to snapshot."""
+    legit_pm_id = uuid.UUID(int=4)
+    legit_addr_id = uuid.UUID(int=5)
+
+    snapshot = {
+        "payment_method_id": legit_pm_id,
+        "delivery_address_id": legit_addr_id,
+    }
+    fraud_dict = {
+        "payment_method_id": "VICTIM_SAVED",
+        "delivery_address_id": "ABUSER_SAVED",
+    }
+
+    _apply_fraud_order_attrs(snapshot, fraud_dict)
+
+    assert snapshot["payment_method_id"] == legit_pm_id
+    assert snapshot["delivery_address_id"] == legit_addr_id
 
 
 def test_apply_fraud_order_attrs_uses_explicit_ip_country() -> None:
@@ -738,6 +799,180 @@ def test_fraud_injection_rate_over_500_orders() -> None:
         assert len(inserted_fraud_flags) == sample_size
         assert abs(injection_rate - fraud_rate) <= tolerance
         assert fraud_dispatcher.await_count == fraud_count
+
+    asyncio.run(_run())
+
+
+def test_fraud_order_propagates_avs_cvv_to_insert_order() -> None:
+    """avs_result and cvv_result from fraud_dict reach the snapshot passed to insert_order."""
+
+    async def _run() -> None:
+        import uuid as _uuid
+
+        user_id = _uuid.UUID(int=1)
+        store_id = _uuid.UUID(int=2)
+        payment_method_id = _uuid.UUID(int=3)
+        device_id = _uuid.UUID(int=4)
+        ring_id = _uuid.UUID(int=5)
+        user_data: dict[str, object] = {
+            "user": {"user_id": user_id},
+            "addresses": [],
+            "default_address": {"city": "London"},
+            "devices": [{"device_id": device_id}],
+            "payment_methods": [{"payment_method_id": payment_method_id}],
+        }
+        store: dict[str, object] = {
+            "store_id": store_id,
+            "accepts_in_store": False,
+        }
+        cart = Cart(store_id=store_id, items=[])
+
+        captured_snapshots: list[dict[str, object]] = []
+
+        class _FakeAcquire:
+            async def __aenter__(self) -> object:
+                return object()
+
+            async def __aexit__(self, *_args: object) -> None:
+                return None
+
+        class _FakePool:
+            def acquire(self) -> _FakeAcquire:
+                return _FakeAcquire()
+
+        async def fake_load_user_data(_conn: object, _uid: uuid.UUID) -> dict[str, object]:
+            return user_data
+
+        async def fake_is_new_payment_method(
+            _conn: object, _uid: uuid.UUID, _pmid: uuid.UUID
+        ) -> bool:
+            return False
+
+        async def fake_load_menu_items(_conn: object, _sid: uuid.UUID) -> list[object]:
+            return [object()]
+
+        async def fake_read_user_order_metrics(
+            _conn: object, _uid: uuid.UUID
+        ) -> tuple[int, int, int]:
+            return 0, 0, 0
+
+        async def fake_apply_promo(
+            _conn: object,
+            _uid: uuid.UUID,
+            _rng: random.Random,
+            _first: bool,
+            _promos: list[dict[str, object]],
+            _sub: int,
+        ) -> None:
+            return None
+
+        async def fake_insert_order(
+            _conn: object,
+            snapshot: dict[str, object],
+            _cart: Cart,
+            _placed_at: datetime,
+            *,
+            is_fraud: bool = False,
+            fraud_category: str | None = None,
+            pattern_notes: str | None = None,
+            ring_id: uuid.UUID | None = None,
+        ) -> tuple[uuid.UUID, datetime]:
+            captured_snapshots.append(dict(snapshot))
+            return uuid.UUID(int=99), datetime.now(tz=timezone.utc)
+
+        async def fake_notify_order_placed(_conn: object, _oid: uuid.UUID) -> None:
+            return None
+
+        async def fake_identity_overrides(
+            _conn: object,
+            _snapshot: dict[str, object],
+            _fraud_dict: dict[str, object],
+        ) -> None:
+            return None
+
+        fraud_dict: dict[str, object] = {
+            "avs_result": "NO_MATCH",
+            "cvv_result": "NO_MATCH",
+            "order_total_pence": 7500,
+        }
+        fraud_dispatcher = AsyncMock(
+            return_value=(
+                fraud_dict,
+                GroundTruth(
+                    order_id=uuid.UUID(int=9),
+                    is_fraud=True,
+                    fraud_category="stolen_card",
+                    pattern_notes="stubbed",
+                    ring_id=ring_id,
+                ),
+            )
+        )
+        rng = random.Random(123)
+        identity_overrides_target = (
+            f"{_apply_fraud_identity_overrides.__module__}._apply_fraud_identity_overrides"
+        )
+
+        with ExitStack() as stack:
+            stack.enter_context(patch.dict(os.environ, {"FRAUD_INJECTION_RATE": "1.0"}))
+            stack.enter_context(patch("simulator.generator.load_user_data", fake_load_user_data))
+            stack.enter_context(
+                patch("simulator.generator.pick_store_for_user", return_value=store)
+            )
+            stack.enter_context(
+                patch("simulator.generator._select_order_type", return_value="PICKUP")
+            )
+            stack.enter_context(
+                patch("simulator.generator.pick_channel_for_user", return_value="WEB")
+            )
+            stack.enter_context(
+                patch(
+                    "simulator.generator.pick_device_and_ip",
+                    return_value=({"device_id": device_id}, "81.2.3.4"),
+                )
+            )
+            stack.enter_context(
+                patch("simulator.generator._is_new_payment_method", fake_is_new_payment_method)
+            )
+            stack.enter_context(patch("simulator.generator._load_menu_items", fake_load_menu_items))
+            stack.enter_context(
+                patch("simulator.generator.build_realistic_cart", return_value=cart)
+            )
+            stack.enter_context(
+                patch("simulator.generator._read_user_order_metrics", fake_read_user_order_metrics)
+            )
+            stack.enter_context(patch("simulator.generator.apply_promo", fake_apply_promo))
+            stack.enter_context(
+                patch("simulator.generator.compute_pricing", return_value=(0, 0, 0, 0))
+            )
+            stack.enter_context(patch("simulator.generator._build_snapshot", return_value={}))
+            stack.enter_context(
+                patch(
+                    "simulator.generator.generate_order_number",
+                    return_value="JE-0000-AAAAAAAAAA",
+                )
+            )
+            stack.enter_context(patch("simulator.generator.generate_fraud_order", fraud_dispatcher))
+            stack.enter_context(patch(identity_overrides_target, fake_identity_overrides))
+            stack.enter_context(patch("simulator.generator.insert_order", fake_insert_order))
+            stack.enter_context(
+                patch("simulator.generator.notify_order_placed", fake_notify_order_placed)
+            )
+
+            await create_one_order(
+                pool=_FakePool(),
+                user_picker=_FixedUserPicker(user_id),
+                stores_by_city={"London": [store]},
+                store_hours_by_store_id={store_id: []},
+                promos=[],
+                rng=rng,
+                scoring_enabled=False,
+            )
+
+        assert len(captured_snapshots) == 1
+        snap = captured_snapshots[0]
+        assert snap.get("avs_result") == "NO_MATCH", f"avs_result missing from snapshot: {snap}"
+        assert snap.get("cvv_result") == "NO_MATCH", f"cvv_result missing from snapshot: {snap}"
+        assert snap.get("total_pence") == 7500, f"total_pence not overridden: {snap}"
 
     asyncio.run(_run())
 

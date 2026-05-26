@@ -1016,6 +1016,8 @@ async def insert_order(
         "card_issuer_country",
         "is_digital_native_bank",
         "is_new_payment_method",
+        "avs_result",
+        "cvv_result",
         "session_id",
         "device_id",
         "device_type",
@@ -1093,6 +1095,8 @@ async def insert_order(
         order_row["card_issuer_country"],
         order_row["is_digital_native_bank"],
         order_row["is_new_payment_method"],
+        order_row.get("avs_result"),
+        order_row.get("cvv_result"),
         order_row["session_id"],
         order_row["device_id"],
         order_row["device_type"],
@@ -1214,12 +1218,46 @@ def _apply_fraud_order_attrs(
     snapshot: dict[str, Any],
     fraud_dict: dict[str, Any],
 ) -> None:
-    """Apply fraud-pattern attributes with direct orders-table columns.
+    """Propagate fraud-pattern overrides onto the order snapshot (synchronous).
 
-    Omits fields without direct order columns and fields owned by the
-    legit-path snapshot: order_id, placed_at, is_night_order, variant,
-    is_high_end_cart, avs_result, cvv_result, is_new_device, and totals.
+    Fields propagated:
+    - order_total_pence -> total_pence
+    - user_id, store_id, device_id, payment_method_id, delivery_address_id
+      (FK columns only; sentinel values "VICTIM_SAVED"/"ABUSER_SAVED" are
+      skipped - the legit-path value is retained)
+    - card_country -> card_issuer_country (ISO-2 normalised)
+    - card_funding_type, is_digital_native_bank
+    - ip_country (explicit), ip_type (vpn/foreign -> ip_is_* flags)
+    - address_type -> delivery_address_type (DELIVERY orders only)
+    - avs_result, cvv_result (orders table columns)
+
+    Fields intentionally NOT propagated here (generator-owned):
+    - order_id, placed_at, order_number: generator-owned identity/time fields
+    - is_night_order, variant, is_high_end_cart, is_new_device: control-plane
+      fields consumed upstream by generate_fraud_order, not stored on orders
+    - Denormalized FK-derived fields (user email/city/platform/card fields):
+      handled by _apply_fraud_identity_overrides (async, DB-backed).
     """
+    if "order_total_pence" in fraud_dict:
+        snapshot["total_pence"] = int(fraud_dict["order_total_pence"])
+
+    for key in (
+        "user_id",
+        "store_id",
+        "device_id",
+        "payment_method_id",
+        "delivery_address_id",
+    ):
+        if key in fraud_dict:
+            val = fraud_dict[key]
+            if val not in ("VICTIM_SAVED", "ABUSER_SAVED") and val is not None:
+                snapshot[key] = val
+
+    if "avs_result" in fraud_dict:
+        snapshot["avs_result"] = fraud_dict["avs_result"]
+    if "cvv_result" in fraud_dict:
+        snapshot["cvv_result"] = fraud_dict["cvv_result"]
+
     if "card_country" in fraud_dict:
         raw_card_country = fraud_dict["card_country"]
         # Fraud patterns may emit ISO-2 codes or long-form sentinels; persist ISO-2 only.
@@ -1255,6 +1293,105 @@ def _apply_fraud_order_attrs(
 
     if "address_type" in fraud_dict and snapshot.get("order_type") == "DELIVERY":
         snapshot["delivery_address_type"] = fraud_dict["address_type"]
+
+
+async def _apply_fraud_identity_overrides(
+    conn: asyncpg.Connection,
+    snapshot: dict[str, Any],
+    fraud_dict: dict[str, Any],
+) -> None:
+    """Fetch denormalized fields for any identity FKs the fraud pattern overrides.
+
+    Called after _apply_fraud_order_attrs has stamped the FK columns.  Looks
+    up the row for each FK that was actually overridden and back-fills the
+    denormalized snapshot columns that insert_order writes.  Rows that do not
+    exist in the DB (synthetic fraud UUIDs) are silently skipped - the FK
+    column is already set; derived columns stay at their legit-path values.
+    """
+    if "user_id" in fraud_dict and fraud_dict.get("user_id") not in (
+        None,
+        "VICTIM_SAVED",
+        "ABUSER_SAVED",
+    ):
+        user_id = fraud_dict["user_id"]
+        row = await conn.fetchrow(
+            "SELECT email, phone, risk_tier, created_at FROM users WHERE user_id = $1",
+            user_id,
+        )
+        if row is not None:
+            email = str(row["email"])
+            snapshot["user_email"] = email
+            snapshot["user_email_domain"] = email.split("@", 1)[1] if "@" in email else "unknown"
+            snapshot["user_phone"] = row["phone"]
+            snapshot["user_risk_tier_at_order"] = row["risk_tier"]
+
+    if "store_id" in fraud_dict and fraud_dict.get("store_id") not in (None,):
+        store_id = fraud_dict["store_id"]
+        row = await conn.fetchrow(
+            "SELECT merchant_id, city, country, latitude, longitude "
+            "FROM stores WHERE store_id = $1",
+            store_id,
+        )
+        if row is not None:
+            snapshot["merchant_id"] = row["merchant_id"]
+            snapshot["store_city"] = row["city"]
+            snapshot["store_country"] = row["country"] if row["country"] is not None else "GB"
+            snapshot["store_latitude"] = float(row["latitude"])
+            snapshot["store_longitude"] = float(row["longitude"])
+
+    if "device_id" in fraud_dict and fraud_dict.get("device_id") not in (None,):
+        device_id = fraud_dict["device_id"]
+        row = await conn.fetchrow(
+            "SELECT device_type, platform, os_version, app_version, browser_name, browser_version "
+            "FROM devices WHERE device_id = $1",
+            device_id,
+        )
+        if row is not None:
+            snapshot["device_type"] = row["device_type"]
+            snapshot["platform"] = row["platform"]
+            snapshot["os_version"] = row["os_version"]
+            snapshot["app_version"] = row["app_version"]
+            snapshot["browser_name"] = row["browser_name"]
+            snapshot["browser_version"] = row["browser_version"]
+
+    if "payment_method_id" in fraud_dict and fraud_dict.get("payment_method_id") not in (
+        None,
+        "VICTIM_SAVED",
+        "ABUSER_SAVED",
+    ):
+        pm_id = fraud_dict["payment_method_id"]
+        row = await conn.fetchrow(
+            """SELECT payment_type, card_bin, card_last_four, card_brand,
+                      card_funding_type, card_issuer_country, is_digital_native_bank
+               FROM payment_methods WHERE payment_method_id = $1""",
+            pm_id,
+        )
+        if row is not None:
+            snapshot["payment_type"] = row["payment_type"]
+            snapshot["card_bin"] = row["card_bin"]
+            snapshot["card_last_four"] = row["card_last_four"]
+            snapshot["card_brand"] = row["card_brand"]
+            snapshot["card_funding_type"] = row["card_funding_type"]
+            snapshot["card_issuer_country"] = row["card_issuer_country"]
+            snapshot["is_digital_native_bank"] = row["is_digital_native_bank"]
+
+    if "delivery_address_id" in fraud_dict and fraud_dict.get("delivery_address_id") not in (
+        None,
+        "VICTIM_SAVED",
+        "ABUSER_SAVED",
+    ):
+        addr_id = fraud_dict["delivery_address_id"]
+        row = await conn.fetchrow(
+            "SELECT latitude, longitude, address_type FROM user_addresses WHERE address_id = $1",
+            addr_id,
+        )
+        if row is not None:
+            if row["latitude"] is not None:
+                snapshot["delivery_latitude"] = float(row["latitude"])
+            if row["longitude"] is not None:
+                snapshot["delivery_longitude"] = float(row["longitude"])
+            if row["address_type"] is not None:
+                snapshot["delivery_address_type"] = row["address_type"]
 
 
 async def create_one_order(
@@ -1382,6 +1519,7 @@ async def create_one_order(
 
         if is_fraud_order and fraud_order_dict is not None:
             _apply_fraud_order_attrs(snapshot, fraud_order_dict)
+            await _apply_fraud_identity_overrides(conn, snapshot, fraud_order_dict)
 
         while True:
             try:
