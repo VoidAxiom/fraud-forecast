@@ -42,6 +42,14 @@ def test_promote_sets_current_version(tmp_path: Path) -> None:
     assert registry.get_current("xgboost") == version
 
 
+def test_promote_accepts_base_format_version(tmp_path: Path) -> None:
+    registry = ModelRegistry(tmp_path)
+    model_type_dir = tmp_path / "xgboost"
+    (model_type_dir / "v20260301_120000").mkdir(parents=True)
+
+    registry.promote("xgboost", "v20260301_120000")
+
+
 def test_get_current_returns_none_for_broken_symlink(tmp_path: Path) -> None:
     registry = ModelRegistry(tmp_path)
     model_type_dir = tmp_path / "xgboost"

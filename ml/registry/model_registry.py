@@ -21,7 +21,7 @@ else:
 LONDON_TZ = ZoneInfo("Europe/London")
 MODEL_FILENAME = "model.bst"
 PRODUCTION_LINK = "production"
-VERSION_RE: Pattern[str] = re.compile(r"^v\d{8}_\d{6}_[0-9a-f]{8}$")
+VERSION_RE: Pattern[str] = re.compile(r"^v\d{8}_\d{6}(_[0-9a-f]{8})?$")
 
 
 class ModelRegistry:
@@ -114,24 +114,24 @@ class ModelRegistry:
         )
 
     def _read_saved_at_utc_isoformat(self, model_type_dir: Path, version: str) -> str:
-        """Read metadata.json saved_at as UTC ISO for sorting; return "" if unavailable."""
+        """Read metadata.json saved_at as UTC ISO for sorting; fallback to version timestamp prefix."""
         metadata_path = model_type_dir / version / "metadata.json"
         try:
             with metadata_path.open("r", encoding="utf-8") as metadata_file:
                 metadata = json.load(metadata_file)
         except Exception:
-            return ""
+            return version[:16]
 
         saved_at = metadata.get("saved_at")
         if isinstance(saved_at, str):
             try:
                 dt = stdlib_datetime.fromisoformat(saved_at)
                 if dt.tzinfo is None:
-                    return ""
+                    return version[:16]
                 return dt.astimezone(timezone.utc).isoformat()
             except Exception:
-                return ""
-        return ""
+                return version[:16]
+        return version[:16]
 
     def get_current(self, model_type: str) -> Optional[str]:  # noqa: UP045 - packet requires Python 3.8 syntax.
         """Return the version the production symlink currently points to, or None."""
