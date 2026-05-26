@@ -10,4 +10,5 @@ redis~=4.5
 asyncpg~=0.28.0  # last release with Python 3.8 support
 tensorflow-transform==0.24.1
 tensorflow==2.3.0
+xgboost==1.2.0
 apache-beam[gcp]==2.24.0
