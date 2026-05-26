@@ -74,6 +74,7 @@ services:
       - fraud_net
 
   app:
+    platform: linux/amd64
     build: ./
     depends_on:
       postgres:
