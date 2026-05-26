@@ -92,9 +92,9 @@ class ModelRegistry:
     def list_versions(self, model_type: str) -> List[str]:  # noqa: UP006 - packet requires Python 3.8 syntax.
         """Return all versions for a model_type in chronological order.
 
-        This uses the local wall-clock timestamp embedded in the version name;
-        use metadata.json saved_at for exact UTC ordering when multiple
-        versions share the same wall-clock second.
+        Returns versions in UTC chronological order based on metadata.json
+        saved_at. Falls back to version name order for entries without
+        metadata.
         """
         model_type_dir = self._model_type_dir(model_type)
         if not model_type_dir.exists():
@@ -108,7 +108,6 @@ class ModelRegistry:
         return sorted(
             versions,
             key=lambda version: (
-                version[:16],
                 self._read_saved_at_utc_isoformat(model_type_dir, version),
                 version,
             ),
