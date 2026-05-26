@@ -36,6 +36,9 @@ class _AsyncRedis(Protocol):
 
     async def zcard(self, name: str) -> int: ...
 
+    async def zscore(self, name: str, value: str) -> Union[float, None]:  # noqa: UP007 - packet requires Python 3.8 syntax.
+        ...
+
     async def close(self) -> None: ...
 
 
@@ -1237,6 +1240,12 @@ async def test_no_unbounded_redis_growth() -> None:
             await aggregator.trim_order_zsets_once(redis_conn=redis_async, metrics=metrics)
 
             assert int(await redis_async.zcard(orders_zset_key)) == 50
+            # Verify the retained entries are the recent ones, not the old ones.
+            recent_score = await redis_async.zscore(orders_zset_key, "recent-0")
+            old_score = await redis_async.zscore(orders_zset_key, "old-0")
+            assert recent_score is not None, "recent-0 was incorrectly trimmed"
+            assert old_score is None, "old-0 was not trimmed (outside 24h window)"
+            assert int(float(recent_score)) == recent_ts
         finally:
             await _delete_redis_keys(redis_async, _user_stream_keys(user_id))
     finally:
@@ -1344,6 +1353,13 @@ async def test_stream_throughput() -> None:
                 sleep_seconds = start + target_elapsed - time.perf_counter()
                 if sleep_seconds > 0:
                     await asyncio.sleep(sleep_seconds)
+
+            insert_elapsed = time.perf_counter() - start
+            assert insert_elapsed <= duration_seconds * 1.25, (
+                f"insert loop took {insert_elapsed:.1f}s, "
+                f"expected <= {duration_seconds * 1.25:.1f}s "
+                f"(target {target_orders_per_second} ord/s not achieved)"
+            )
 
             visibility_results = await asyncio.gather(
                 *visibility_tasks,
