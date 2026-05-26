@@ -12,7 +12,8 @@ import time
 import uuid
 from dataclasses import dataclass
 from datetime import date, datetime
-from decimal import Decimal, ROUND_HALF_UP
+from decimal import ROUND_HALF_UP, Decimal
+
 if sys.version_info >= (3, 9):
     from zoneinfo import ZoneInfo
 else:
@@ -21,20 +22,53 @@ from typing import Any
 
 import asyncpg
 import redis.asyncio as aioredis
-
-from simulator.cart_builder import Cart, UserProfile, build_realistic_cart
-from simulator.user_picker import WeightedUserPicker
 from shared.money import VATLineItem, calculate_total, calculate_vat
 
+from simulator.cart_builder import Cart, UserProfile, build_realistic_cart
+from simulator.fraud_patterns import GroundTruth, generate_fraud_order
+from simulator.fraud_patterns.account_takeover import _IP_COUNTRY_RESOLUTION, _OTHER_ISO2_POOL
+from simulator.fraud_patterns.collusive_merchant import init_collusive_stores
+from simulator.fraud_patterns.promo_abuse import init_rings as init_promo_abuse_rings
+from simulator.fraud_patterns.reseller import init_reseller_accounts
+from simulator.fraud_patterns.stolen_card import FraudPatternContext
+from simulator.fraud_patterns.triangulation import init_accounts as init_triangulation_accounts
+from simulator.user_picker import WeightedUserPicker
+
 logger = logging.getLogger(__name__)
+
+
+def _parse_fraud_rate(raw: str | None, default: float = 0.02) -> float:
+    if not raw:
+        return default
+
+    try:
+        rate = float(raw)
+    except ValueError:
+        logger.warning(
+            "invalid_fraud_injection_rate raw=%r falling_back_to=%s",
+            raw,
+            default,
+        )
+        return default
+
+    return max(0.0, min(1.0, rate))
+
 
 DATABASE_URL_SIMULATOR = os.environ.get(
     "DATABASE_URL_SIMULATOR",
     "postgresql://simulator_user:simulator_dev_password@postgres:5432/fraud_platform",
 )
 REDIS_URL = os.environ.get("REDIS_URL", "redis://redis:6379/0")
+FRAUD_INJECTION_RATE = _parse_fraud_rate(os.getenv("FRAUD_INJECTION_RATE"))
 
 LONDON_TZ = ZoneInfo("Europe/London")
+_FALLBACK_OTHER_CARD_COUNTRY = _OTHER_ISO2_POOL[0]
+_FRAUD_FK_SENTINELS = {"VICTIM_SAVED", "ABUSER_SAVED"}
+_SYNTHETIC_FRAUD_RING_MERCHANT_ID = uuid.UUID("ffffffff-ffff-ffff-ffff-ffffffffffff")
+_SYNTHETIC_FRAUD_RING_STORE_CITY = "FRAUD_RING"
+_SYNTHETIC_FRAUD_RING_STORE_COUNTRY = "GB"
+_SYNTHETIC_FRAUD_RING_STORE_LATITUDE = 0.0
+_SYNTHETIC_FRAUD_RING_STORE_LONGITUDE = 0.0
 
 _UK_ISP_PREFIXES: list[str] = [
     "80.0",
@@ -53,6 +87,44 @@ _UK_ISP_PREFIXES: list[str] = [
     "109.145",
     "109.146",
 ]
+
+
+def _resolve_card_country(raw: str | None) -> str:
+    if not raw:
+        return "GB"
+
+    if len(raw) == 2 and raw.isalpha():
+        return raw.upper()
+
+    if raw in _IP_COUNTRY_RESOLUTION:
+        resolved = _IP_COUNTRY_RESOLUTION[raw] or _FALLBACK_OTHER_CARD_COUNTRY
+    elif raw == "foreign_other":
+        resolved = _FALLBACK_OTHER_CARD_COUNTRY
+    else:
+        resolved = raw
+
+    normalized = resolved.upper()
+    if len(normalized) == 2:
+        return normalized
+
+    logger.warning(
+        "invalid_fraud_card_country raw=%r falling_back_to=GB",
+        raw,
+    )
+    return "GB"
+
+
+def _fraud_uuid_override(value: Any) -> uuid.UUID | None:
+    if value is None:
+        return None
+    if isinstance(value, str) and value in _FRAUD_FK_SENTINELS:
+        return None
+    return value if isinstance(value, uuid.UUID) else uuid.UUID(str(value))
+
+
+def _fraud_user_id_override(fraud_dict: dict[str, Any]) -> uuid.UUID | None:
+    user_id_override = fraud_dict.get("user_id") or fraud_dict.get("victim_user_id")
+    return _fraud_uuid_override(user_id_override)
 
 
 @dataclass(frozen=True)
@@ -284,7 +356,10 @@ def pick_store_for_user(
                 if store_lat is None or store_lon is None:
                     continue
                 distance = haversine_km(
-                    default_lat, default_lon, float(store_lat), float(store_lon),
+                    default_lat,
+                    default_lon,
+                    float(store_lat),
+                    float(store_lon),
                 )
                 if distance <= 15.0:
                     candidate_map[store["store_id"]] = store
@@ -440,9 +515,7 @@ async def apply_promo(
     subtotal_pence: int,
 ) -> dict[str, Any] | None:
     eligible_promos = [
-        promo
-        for promo in eligible_promos
-        if (promo.get("min_order_pence") or 0) <= subtotal_pence
+        promo for promo in eligible_promos if (promo.get("min_order_pence") or 0) <= subtotal_pence
     ]
 
     if not eligible_promos:
@@ -475,11 +548,7 @@ async def apply_promo(
         return None
 
     if not is_first_order:
-        eligible_promos = [
-            promo
-            for promo in eligible_promos
-            if not _is_new_user_only_promo(promo)
-        ]
+        eligible_promos = [promo for promo in eligible_promos if not _is_new_user_only_promo(promo)]
         if not eligible_promos:
             return None
 
@@ -510,10 +579,12 @@ def _promo_discount(promo: dict[str, Any] | None, subtotal_pence: int) -> int:
         return 0
 
     discount_percent_decimal = Decimal(str(discount_percent))
-    discount = int((discount_percent_decimal * Decimal(subtotal_pence) / Decimal("100")).quantize(
-        Decimal("1"),
-        rounding=ROUND_HALF_UP,
-    ))
+    discount = int(
+        (discount_percent_decimal * Decimal(subtotal_pence) / Decimal("100")).quantize(
+            Decimal("1"),
+            rounding=ROUND_HALF_UP,
+        )
+    )
     return min(discount, subtotal_pence)
 
 
@@ -677,7 +748,8 @@ def _select_delivery_address(
 
     selected_default = default_address if default_address is not None else addresses[0]
     others = [
-        address for address in addresses
+        address
+        for address in addresses
         if address.get("address_id") != selected_default.get("address_id")
     ]
 
@@ -760,10 +832,7 @@ def _build_snapshot(
         user_account_age_days = 0
 
     email = str(user["email"])
-    if "@" in email:
-        user_email_domain = email.split("@", 1)[1]
-    else:
-        user_email_domain = "unknown"
+    user_email_domain = email.split("@", 1)[1] if "@" in email else "unknown"
 
     vat_items = [
         VATLineItem(
@@ -818,18 +887,12 @@ def _build_snapshot(
         else None,
         "delivery_latitude": (
             float(delivery_address["latitude"])
-            if (
-                delivery_address is not None
-                and delivery_address.get("latitude") is not None
-            )
+            if (delivery_address is not None and delivery_address.get("latitude") is not None)
             else None
         ),
         "delivery_longitude": (
             float(delivery_address["longitude"])
-            if (
-                delivery_address is not None
-                and delivery_address.get("longitude") is not None
-            )
+            if (delivery_address is not None and delivery_address.get("longitude") is not None)
             else None
         ),
         "delivery_distance_km": delivery_distance_km,
@@ -905,6 +968,11 @@ async def insert_order(
     snapshot: dict[str, Any],
     cart: Cart,
     placed_at: datetime,
+    *,
+    is_fraud: bool = False,
+    fraud_category: str | None = None,
+    pattern_notes: str | None = None,
+    ring_id: uuid.UUID | None = None,
 ) -> tuple[uuid.UUID, datetime]:
     order_row = {
         "order_id": uuid.uuid4(),
@@ -967,6 +1035,8 @@ async def insert_order(
         "card_issuer_country",
         "is_digital_native_bank",
         "is_new_payment_method",
+        "avs_result",
+        "cvv_result",
         "session_id",
         "device_id",
         "device_type",
@@ -1044,6 +1114,8 @@ async def insert_order(
         order_row["card_issuer_country"],
         order_row["is_digital_native_bank"],
         order_row["is_new_payment_method"],
+        order_row.get("avs_result"),
+        order_row.get("cvv_result"),
         order_row["session_id"],
         order_row["device_id"],
         order_row["device_type"],
@@ -1123,10 +1195,16 @@ async def insert_order(
 
         await conn.execute(
             """
-            INSERT INTO simulator_ground_truth (order_id, is_fraud, fraud_category)
-            VALUES ($1, false, NULL)
+            INSERT INTO simulator_ground_truth (
+                order_id, is_fraud, fraud_category, pattern_notes, ring_id
+            )
+            VALUES ($1, $2, $3, $4, $5)
             """,
             order_id,
+            is_fraud,
+            fraud_category,
+            pattern_notes,
+            ring_id,
         )
 
     return order_id, placed_at
@@ -1155,6 +1233,216 @@ async def _read_runtime_rate(
     return parsed if parsed > 0 else fallback
 
 
+def _apply_fraud_order_attrs(
+    snapshot: dict[str, Any],
+    fraud_dict: dict[str, Any],
+) -> None:
+    """Propagate fraud-pattern overrides onto the order snapshot (synchronous).
+
+    Fields propagated:
+    - order_total_pence -> total_pence
+    - user_id/victim_user_id, store_id, device_id, payment_method_id,
+      delivery_address_id (FK columns only; sentinel values
+      "VICTIM_SAVED"/"ABUSER_SAVED" are skipped - the legit-path value is
+      retained)
+      FK values are coerced to uuid.UUID regardless of source type.
+    - card_country -> card_issuer_country (ISO-2 normalised)
+    - card_funding_type, is_digital_native_bank
+    - ip_country (explicit), ip_type (vpn/foreign -> ip_is_* flags)
+    - address_type -> delivery_address_type (DELIVERY orders only)
+    - avs_result, cvv_result (orders table columns)
+
+    Fields intentionally NOT propagated here (generator-owned):
+    - order_id, placed_at, order_number: generator-owned identity/time fields
+    - is_night_order, variant, is_high_end_cart, is_new_device: control-plane
+      fields consumed upstream by generate_fraud_order, not stored on orders
+    - Denormalized FK-derived fields (user email/city/platform/card fields):
+      handled by _apply_fraud_identity_overrides (async, DB-backed).
+    """
+    if "order_total_pence" in fraud_dict:
+        # DESIGN: fraud_dict.total_pence is the canonical fraud amount; subtotal/vat/fees
+        # from legit cart are kept since ML training uses total_pence directly and
+        # doesn't reconcile against components. The "inconsistency" is intentional -
+        # ML reads top-line total_pence + per-entity features, not arithmetic identity.
+        snapshot["total_pence"] = int(fraud_dict["order_total_pence"])
+
+    user_id_override = _fraud_user_id_override(fraud_dict)
+    if user_id_override is not None:
+        snapshot["user_id"] = user_id_override
+
+    for key in ("store_id", "device_id", "payment_method_id", "delivery_address_id"):
+        override = _fraud_uuid_override(fraud_dict.get(key))
+        if override is not None:
+            snapshot[key] = override
+
+    if "avs_result" in fraud_dict:
+        snapshot["avs_result"] = fraud_dict["avs_result"]
+    if "cvv_result" in fraud_dict:
+        snapshot["cvv_result"] = fraud_dict["cvv_result"]
+
+    if "card_country" in fraud_dict:
+        raw_card_country = fraud_dict["card_country"]
+        # Fraud patterns may emit ISO-2 codes or long-form sentinels; persist ISO-2 only.
+        snapshot["card_issuer_country"] = _resolve_card_country(
+            None if raw_card_country is None else str(raw_card_country)
+        )
+    if "card_funding_type" in fraud_dict:
+        snapshot["card_funding_type"] = fraud_dict["card_funding_type"]
+    if "is_digital_native_bank" in fraud_dict:
+        snapshot["is_digital_native_bank"] = fraud_dict["is_digital_native_bank"]
+
+    has_explicit_ip_country = "ip_country" in fraud_dict
+    if has_explicit_ip_country:
+        raw_ip_country = fraud_dict["ip_country"]
+        ip_country = "" if raw_ip_country is None else str(raw_ip_country)
+        snapshot["ip_country"] = (
+            ip_country.upper() if len(ip_country) == 2 and ip_country.isalpha() else "GB"
+        )
+
+    ip_type = fraud_dict.get("ip_type")
+    if ip_type == "vpn":
+        if not has_explicit_ip_country:
+            snapshot["ip_country"] = "GB"
+        snapshot["ip_is_vpn"] = True
+        snapshot["ip_is_proxy"] = False
+        snapshot["ip_is_tor"] = False
+        snapshot["ip_is_hosting"] = False
+    elif ip_type == "foreign":
+        if not has_explicit_ip_country:
+            snapshot["ip_country"] = "XX"
+        snapshot["ip_is_vpn"] = False
+        snapshot["ip_is_proxy"] = False
+
+    if "address_type" in fraud_dict and snapshot.get("order_type") == "DELIVERY":
+        snapshot["delivery_address_type"] = fraud_dict["address_type"]
+
+
+async def _apply_fraud_identity_overrides(
+    conn: asyncpg.Connection,
+    snapshot: dict[str, Any],
+    fraud_dict: dict[str, Any],
+) -> None:
+    """Fetch denormalized fields for any identity FKs the fraud pattern overrides.
+
+    Called after _apply_fraud_order_attrs has stamped the FK columns.  Looks
+    up the row for each FK that was actually overridden and back-fills the
+    denormalized snapshot columns that insert_order writes. Rows that do not
+    exist in the DB (synthetic fraud UUIDs) receive explicit synthetic/null
+    derived values so the fraud FK is not mixed with legit-path attributes.
+    """
+    user_id = _fraud_user_id_override(fraud_dict)
+    if user_id is not None:
+        row = await conn.fetchrow(
+            "SELECT email, phone, risk_tier, created_at FROM users WHERE user_id = $1",
+            user_id,
+        )
+        if row is not None:
+            email = str(row["email"])
+            snapshot["user_email"] = email
+            snapshot["user_email_domain"] = email.split("@", 1)[1] if "@" in email else "unknown"
+            snapshot["user_phone"] = row["phone"]
+            snapshot["user_risk_tier_at_order"] = row["risk_tier"]
+        else:
+            synthetic_email = f"{snapshot['user_id']}@fraud.test"
+            snapshot["user_email"] = synthetic_email
+            snapshot["user_email_domain"] = "fraud.test"
+            snapshot["user_phone"] = None
+            snapshot["user_risk_tier_at_order"] = None
+            snapshot["user_account_age_days"] = 0
+            snapshot["user_total_orders_lifetime"] = 0
+            snapshot["user_total_orders_30d"] = 0
+            snapshot["user_total_spend_lifetime_pence"] = 0
+            snapshot["is_first_order_for_user"] = True
+
+    store_id = _fraud_uuid_override(fraud_dict.get("store_id"))
+    if store_id is not None:
+        row = await conn.fetchrow(
+            "SELECT merchant_id, city, country, latitude, longitude "
+            "FROM stores WHERE store_id = $1",
+            store_id,
+        )
+        if row is not None:
+            snapshot["merchant_id"] = row["merchant_id"]
+            snapshot["store_city"] = row["city"]
+            snapshot["store_country"] = row["country"] if row["country"] is not None else "GB"
+            snapshot["store_latitude"] = float(row["latitude"])
+            snapshot["store_longitude"] = float(row["longitude"])
+        else:
+            snapshot["merchant_id"] = _SYNTHETIC_FRAUD_RING_MERCHANT_ID
+            snapshot["store_city"] = _SYNTHETIC_FRAUD_RING_STORE_CITY
+            snapshot["store_country"] = _SYNTHETIC_FRAUD_RING_STORE_COUNTRY
+            snapshot["store_latitude"] = _SYNTHETIC_FRAUD_RING_STORE_LATITUDE
+            snapshot["store_longitude"] = _SYNTHETIC_FRAUD_RING_STORE_LONGITUDE
+
+    device_id = _fraud_uuid_override(fraud_dict.get("device_id"))
+    if device_id is not None:
+        row = await conn.fetchrow(
+            "SELECT device_type, platform, os_version, app_version, browser_name, browser_version "
+            "FROM devices WHERE device_id = $1",
+            device_id,
+        )
+        if row is not None:
+            snapshot["device_type"] = row["device_type"]
+            snapshot["platform"] = row["platform"]
+            snapshot["os_version"] = row["os_version"]
+            snapshot["app_version"] = row["app_version"]
+            snapshot["browser_name"] = row["browser_name"]
+            snapshot["browser_version"] = row["browser_version"]
+        else:
+            snapshot["device_type"] = None
+            snapshot["platform"] = None
+            snapshot["os_version"] = None
+            snapshot["app_version"] = None
+            snapshot["browser_name"] = None
+            snapshot["browser_version"] = None
+
+    pm_id = _fraud_uuid_override(fraud_dict.get("payment_method_id"))
+    if pm_id is not None:
+        row = await conn.fetchrow(
+            """SELECT payment_type, card_bin, card_last_four, card_brand,
+                      card_funding_type, card_issuer_country, is_digital_native_bank
+               FROM payment_methods WHERE payment_method_id = $1""",
+            pm_id,
+        )
+        if row is not None:
+            snapshot["payment_type"] = row["payment_type"]
+            snapshot["card_bin"] = row["card_bin"]
+            snapshot["card_last_four"] = row["card_last_four"]
+            snapshot["card_brand"] = row["card_brand"]
+            snapshot["card_funding_type"] = row["card_funding_type"]
+            snapshot["card_issuer_country"] = row["card_issuer_country"]
+            snapshot["is_digital_native_bank"] = row["is_digital_native_bank"]
+        else:
+            card_issuer_country = (
+                snapshot.get("card_issuer_country") if "card_country" in fraud_dict else None
+            )
+            snapshot["card_bin"] = None
+            snapshot["card_last_four"] = None
+            snapshot["card_brand"] = None
+            snapshot["payment_type"] = snapshot.get("payment_type") or "ACCOUNT_CREDIT"
+            snapshot["card_issuer_country"] = card_issuer_country
+            snapshot["card_issuer_bank"] = None
+
+    addr_id = _fraud_uuid_override(fraud_dict.get("delivery_address_id"))
+    if addr_id is not None:
+        row = await conn.fetchrow(
+            "SELECT latitude, longitude, address_type FROM user_addresses WHERE address_id = $1",
+            addr_id,
+        )
+        if row is not None:
+            if row["latitude"] is not None:
+                snapshot["delivery_latitude"] = float(row["latitude"])
+            if row["longitude"] is not None:
+                snapshot["delivery_longitude"] = float(row["longitude"])
+            if row["address_type"] is not None:
+                snapshot["delivery_address_type"] = row["address_type"]
+        else:
+            snapshot["delivery_latitude"] = None
+            snapshot["delivery_longitude"] = None
+            snapshot["delivery_address_snapshot"] = json.dumps({"city": "FRAUD_RING"})
+            snapshot["delivery_city"] = "FRAUD_RING"
+
+
 async def create_one_order(
     pool: asyncpg.Pool,
     user_picker: WeightedUserPicker,
@@ -1166,6 +1454,9 @@ async def create_one_order(
 ) -> None:
     async with pool.acquire() as conn:
         user_id = user_picker.pick(rng)
+        fraud_roll = rng.random()
+        fraud_rate = _parse_fraud_rate(os.getenv("FRAUD_INJECTION_RATE"), FRAUD_INJECTION_RATE)
+        is_fraud_order = fraud_roll < fraud_rate
         user_data = await load_user_data(conn, user_id)
         user = user_data["user"]
 
@@ -1216,9 +1507,11 @@ async def create_one_order(
         )
         cart = build_realistic_cart(store["store_id"], user_profile, menu_items, rng=rng)
 
-        user_total_orders_lifetime, user_total_orders_30d, user_total_spend_lifetime_pence = (
-            await _read_user_order_metrics(conn, user_id)
-        )
+        (
+            user_total_orders_lifetime,
+            user_total_orders_30d,
+            user_total_spend_lifetime_pence,
+        ) = await _read_user_order_metrics(conn, user_id)
         is_first_order_for_user = user_total_orders_lifetime == 0
 
         promo = await apply_promo(
@@ -1267,10 +1560,37 @@ async def create_one_order(
 
         attempts = 0
         placed_at = datetime.now(tz=LONDON_TZ)
+        # DESIGN: placed_at stays wall-clock (generator-owned). Patterns like stolen_card
+        # that set 2-5am timestamps for time-of-day fraud signal are ignored - real-time
+        # simulator pacing conflict (overriding to past timestamps breaks partition window,
+        # aggregator NOTIFY consistency, and lifecycle daemon assumptions). v1 limitation;
+        # see <P3-K1 follow-up issue> for the future fraud-time-shift mode.
+        fraud_order_dict: dict[str, Any] | None = None
+        fraud_ground_truth: GroundTruth | None = None
+        if is_fraud_order:
+            ctx = FraudPatternContext(now=placed_at, rng=rng)
+            fraud_order_dict, fraud_ground_truth = await generate_fraud_order(ctx)
+
+        if is_fraud_order and fraud_order_dict is not None:
+            _apply_fraud_order_attrs(snapshot, fraud_order_dict)
+            await _apply_fraud_identity_overrides(conn, snapshot, fraud_order_dict)
+
         while True:
             try:
                 snapshot["order_number"] = generate_order_number(rng)
-                order_id, _ = await insert_order(conn, snapshot, cart, placed_at)
+                if fraud_ground_truth is None:
+                    order_id, _ = await insert_order(conn, snapshot, cart, placed_at)
+                else:
+                    order_id, _ = await insert_order(
+                        conn,
+                        snapshot,
+                        cart,
+                        placed_at,
+                        is_fraud=True,
+                        fraud_category=fraud_ground_truth.fraud_category,
+                        pattern_notes=fraud_ground_truth.pattern_notes,
+                        ring_id=fraud_ground_truth.ring_id,
+                    )
                 break
             except asyncpg.UniqueViolationError:
                 attempts += 1
@@ -1303,6 +1623,11 @@ async def main() -> None:
 
         semaphore = asyncio.Semaphore(100)
         rng = random.Random(42)
+        # Initialize fraud-pattern state (callers-must-init per CLAUDE.md).
+        init_collusive_stores(rng)
+        init_promo_abuse_rings(rng)
+        init_reseller_accounts(rng)
+        init_triangulation_accounts(rng)
         rng_lock = asyncio.Lock()
         stats_lock = asyncio.Lock()
 
@@ -1322,7 +1647,7 @@ async def main() -> None:
 
             try:
                 async with rng_lock:
-                    order_rng = random.Random(rng.randint(0, 2 ** 63 - 1))
+                    order_rng = random.Random(rng.randint(0, 2**63 - 1))
 
                 try:
                     await create_one_order(
@@ -1356,8 +1681,9 @@ async def main() -> None:
                                     "orders_1min": window_orders,
                                     "errors_1min": window_errors,
                                     "avg_create_ms": (
-                                        0.0 if window_orders == 0 else
-                                        round(window_create_ms / max(window_orders, 1), 3)
+                                        0.0
+                                        if window_orders == 0
+                                        else round(window_create_ms / max(window_orders, 1), 3)
                                     ),
                                 }
                             )
