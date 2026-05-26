@@ -47,7 +47,7 @@ def test_get_current_returns_none_for_broken_symlink(tmp_path: Path) -> None:
     model_type_dir = tmp_path / "xgboost"
     model_type_dir.mkdir()
     (model_type_dir / "production").symlink_to(
-        "v_20260301_120000_abcdef12",
+        "v20260301_120000_abcdef12",
         target_is_directory=True,
     )
 
@@ -59,9 +59,9 @@ def test_save_multiple_versions_lists_chronologically(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     versions_to_save = [
-        "v_20260301_120000_ffffffff",
-        "v_20260301_120000_aaaaaaaa",
-        "v_20260308_120000_88888888",
+        "v20260301_120000_ffffffff",
+        "v20260301_120000_aaaaaaaa",
+        "v20260308_120000_88888888",
     ]
     uuid_suffixes = [version.rsplit("_", 1)[1] for version in versions_to_save]
 
@@ -70,7 +70,7 @@ def test_save_multiple_versions_lists_chronologically(
         def now(cls, tz: tzinfo) -> datetime:
             version = versions_to_save.pop(0)
             timestamp = version.rsplit("_", 1)[0]
-            return datetime.strptime(timestamp, "v_%Y%m%d_%H%M%S").replace(tzinfo=tz)
+            return datetime.strptime(timestamp, "v%Y%m%d_%H%M%S").replace(tzinfo=tz)
 
     def next_uuid() -> uuid.UUID:
         return _uuid_with_prefix(uuid_suffixes.pop(0))
@@ -141,9 +141,9 @@ def test_directory_artefact_copies_saved_model_dir(tmp_path: Path) -> None:
     assert (
         saved_model_dir / "variables" / "variables.data-00000-of-00001"
     ).read_bytes() == weights_content
-    assert (
-        saved_model_dir / "variables" / "variables.index"
-    ).read_text(encoding="utf-8") == index_content
+    assert (saved_model_dir / "variables" / "variables.index").read_text(
+        encoding="utf-8"
+    ) == index_content
 
 
 def test_save_cleans_up_on_failed_artefact(tmp_path: Path) -> None:
@@ -206,7 +206,7 @@ def test_atomic_promote_replaces_existing_production_symlink(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    versions_to_save = ["v_20260301_120000_aaaaaaaa", "v_20260308_120000_bbbbbbbb"]
+    versions_to_save = ["v20260301_120000_aaaaaaaa", "v20260308_120000_bbbbbbbb"]
     uuid_suffixes = [version.rsplit("_", 1)[1] for version in versions_to_save]
 
     class Clock:
@@ -214,7 +214,7 @@ def test_atomic_promote_replaces_existing_production_symlink(
         def now(cls, tz: tzinfo) -> datetime:
             version = versions_to_save.pop(0)
             timestamp = version.rsplit("_", 1)[0]
-            return datetime.strptime(timestamp, "v_%Y%m%d_%H%M%S").replace(tzinfo=tz)
+            return datetime.strptime(timestamp, "v%Y%m%d_%H%M%S").replace(tzinfo=tz)
 
     def next_uuid() -> uuid.UUID:
         if uuid_suffixes:
@@ -239,14 +239,14 @@ def test_promote_nonexistent_version_raises_error(tmp_path: Path) -> None:
     registry = ModelRegistry(tmp_path)
 
     with pytest.raises(FileNotFoundError, match="Model version does not exist"):
-        registry.promote("xgboost", "v_20260301_120000_abcdef12")
+        registry.promote("xgboost", "v20260301_120000_abcdef12")
 
 
 def test_promote_rejects_symlink_version_dir(tmp_path: Path) -> None:
     registry = ModelRegistry(tmp_path)
     model_type_dir = tmp_path / "xgboost"
     target_dir = tmp_path / "outside_registry"
-    version = "v_20260301_120000_abcdef12"
+    version = "v20260301_120000_abcdef12"
     model_type_dir.mkdir()
     target_dir.mkdir()
     (model_type_dir / version).symlink_to(target_dir, target_is_directory=True)

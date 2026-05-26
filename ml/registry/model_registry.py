@@ -20,7 +20,7 @@ else:
 LONDON_TZ = ZoneInfo("Europe/London")
 MODEL_FILENAME = "model.bst"
 PRODUCTION_LINK = "production"
-VERSION_RE: Pattern[str] = re.compile(r"^v_\d{8}_\d{6}_[0-9a-f]{8}$")
+VERSION_RE: Pattern[str] = re.compile(r"^v\d{8}_\d{6}_[0-9a-f]{8}$")
 
 
 class ModelRegistry:
@@ -40,7 +40,7 @@ class ModelRegistry:
     ) -> str:
         """Save bytes, a file Path, or a directory Path as a new version."""
         now = datetime.now(tz=LONDON_TZ)
-        version = now.strftime("v_%Y%m%d_%H%M%S") + "_" + uuid.uuid4().hex[:8]
+        version = now.strftime("v%Y%m%d_%H%M%S") + "_" + uuid.uuid4().hex[:8]
         model_type_dir = self._model_type_dir(model_type)
         version_dir = model_type_dir / version
 
@@ -73,15 +73,10 @@ class ModelRegistry:
         if not version_dir.is_dir():
             raise FileNotFoundError(f"Model version does not exist: {version}")
         if version_dir.is_symlink():
-            raise ValueError(
-                f"Version dir is a symlink, not a real directory: {version}"
-            )
+            raise ValueError(f"Version dir is a symlink, not a real directory: {version}")
 
         prod_symlink = model_type_dir / PRODUCTION_LINK
-        tmp_symlink = (
-            model_type_dir
-            / f".{PRODUCTION_LINK}.tmp.{os.getpid()}.{uuid.uuid4().hex}"
-        )
+        tmp_symlink = model_type_dir / f".{PRODUCTION_LINK}.tmp.{os.getpid()}.{uuid.uuid4().hex}"
 
         if tmp_symlink.exists() or tmp_symlink.is_symlink():
             tmp_symlink.unlink()
@@ -109,13 +104,13 @@ class ModelRegistry:
             for entry in model_type_dir.iterdir()
             if entry.is_dir() and not entry.is_symlink() and VERSION_RE.fullmatch(entry.name)
         ]
-        # Sort key: primary = wall-clock timestamp prefix (v_YYYYMMDD_HHMMSS in
+        # Sort key: primary = wall-clock timestamp prefix (vYYYYMMDD_HHMMSS in
         # Europe/London); secondary = full version name for deterministic tiebreaking.
         # Known limitation: during the autumn DST clock-back hour, the timestamp prefix
         # can repeat, so two versions saved within that ambiguous hour may not be
         # sorted strictly by UTC creation time. For this local-dev registry this is
         # acceptable; use stored metadata.json saved_at for exact ordering if needed.
-        return sorted(versions, key=lambda version: (version[:18], version))
+        return sorted(versions, key=lambda version: (version[:16], version))
 
     def get_current(self, model_type: str) -> Optional[str]:  # noqa: UP045 - packet requires Python 3.8 syntax.
         """Return the version the production symlink currently points to, or None."""
@@ -130,16 +125,19 @@ class ModelRegistry:
         return target.name
 
     def _model_type_dir(self, model_type: str) -> Path:
-        if not model_type or os.sep in model_type or "\\" in model_type or model_type.startswith("."):
+        if (
+            not model_type
+            or os.sep in model_type
+            or "\\" in model_type
+            or model_type.startswith(".")
+        ):
             raise ValueError(f"Invalid model_type: {model_type!r}")
 
         model_type_dir = self.root / model_type
         resolved_root = self.root.resolve(strict=False)
         resolved_model_type_dir = model_type_dir.resolve(strict=False)
         try:
-            common_path = os.path.commonpath(
-                [str(resolved_root), str(resolved_model_type_dir)]
-            )
+            common_path = os.path.commonpath([str(resolved_root), str(resolved_model_type_dir)])
         except ValueError:
             raise ValueError(f"Invalid model_type: {model_type!r}") from None
 
