@@ -90,14 +90,13 @@ BOOLEAN_FEATURES = [
 ]
 
 STRING_FEATURES = (
-    tuple(LOW_CARD_CATEGORICAL)
-    + tuple(HIGH_CARD_HASH_FEATURES.keys())
-    + ("card_issuer_country",)
+    tuple(LOW_CARD_CATEGORICAL) + tuple(HIGH_CARD_HASH_FEATURES.keys()) + ("card_issuer_country",)
 )
 
+NULLABLE_CATEGORICALS = {"delivery_address_type", "cancellation_reason"}
+
 FEATURE_SPEC = {
-    feature_name: tf.io.FixedLenFeature([], tf.int64)
-    for feature_name in INTEGER_NUMERICAL_FEATURES
+    feature_name: tf.io.FixedLenFeature([], tf.int64) for feature_name in INTEGER_NUMERICAL_FEATURES
 }
 FEATURE_SPEC.update(
     {
@@ -106,18 +105,12 @@ FEATURE_SPEC.update(
     }
 )
 FEATURE_SPEC.update(
-    {
-        feature_name: tf.io.FixedLenFeature([], tf.string)
-        for feature_name in STRING_FEATURES
-    }
+    {feature_name: tf.io.FixedLenFeature([], tf.string) for feature_name in STRING_FEATURES}
 )
 FEATURE_SPEC.update(
-    {
-        feature_name: tf.io.FixedLenFeature([], tf.bool)
-        for feature_name in BOOLEAN_FEATURES
-    }
+    {feature_name: tf.io.FixedLenFeature([], tf.bool) for feature_name in BOOLEAN_FEATURES}
 )
-FEATURE_SPEC["fraud_outcome"] = tf.io.FixedLenFeature([], tf.int64)
+FEATURE_SPEC["fraud_outcome"] = tf.io.FixedLenFeature([], tf.string)
 
 
 def row_to_dict(row: Mapping[str, object]) -> dict[str, object]:
@@ -126,6 +119,9 @@ def row_to_dict(row: Mapping[str, object]) -> dict[str, object]:
         value = converted.get(feature_name)
         if isinstance(value, str):
             converted[feature_name] = value.encode("utf-8")
+    for feature_name in NULLABLE_CATEGORICALS:
+        if converted.get(feature_name) is None:
+            converted[feature_name] = b""
     return converted
 
 
@@ -148,9 +144,9 @@ def run_pipeline(
 
         with tft_beam.Context(temp_dir=temp_dir):
             transformed_dataset, transform_fn = (
-                (raw_data, raw_metadata)
-                | tft_beam.AnalyzeAndTransformDataset(preprocessing_fn)
-            )
+                raw_data,
+                raw_metadata,
+            ) | tft_beam.AnalyzeAndTransformDataset(preprocessing_fn)
 
             transformed_data, transformed_metadata = transformed_dataset
 
