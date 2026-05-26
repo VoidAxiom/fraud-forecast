@@ -42,6 +42,18 @@ def test_promote_sets_current_version(tmp_path: Path) -> None:
     assert registry.get_current("xgboost") == version
 
 
+def test_get_current_returns_none_for_broken_symlink(tmp_path: Path) -> None:
+    registry = ModelRegistry(tmp_path)
+    model_type_dir = tmp_path / "xgboost"
+    model_type_dir.mkdir()
+    (model_type_dir / "production").symlink_to(
+        "v_20260301_120000_abcdef12",
+        target_is_directory=True,
+    )
+
+    assert registry.get_current("xgboost") is None
+
+
 def test_save_multiple_versions_lists_chronologically(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

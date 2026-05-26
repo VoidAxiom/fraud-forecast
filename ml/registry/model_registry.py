@@ -94,7 +94,12 @@ class ModelRegistry:
                 tmp_symlink.unlink()
 
     def list_versions(self, model_type: str) -> List[str]:  # noqa: UP006 - packet requires Python 3.8 syntax.
-        """Return all versions for a model_type in chronological order."""
+        """Return all versions for a model_type in chronological order.
+
+        This uses the local wall-clock timestamp embedded in the version name;
+        use metadata.json saved_at for exact UTC ordering during ambiguous DST
+        hours.
+        """
         model_type_dir = self._model_type_dir(model_type)
         if not model_type_dir.exists():
             return []
@@ -104,6 +109,12 @@ class ModelRegistry:
             for entry in model_type_dir.iterdir()
             if entry.is_dir() and not entry.is_symlink() and VERSION_RE.fullmatch(entry.name)
         ]
+        # Sort key: primary = wall-clock timestamp prefix (v_YYYYMMDD_HHMMSS in
+        # Europe/London); secondary = full version name for deterministic tiebreaking.
+        # Known limitation: during the autumn DST clock-back hour, the timestamp prefix
+        # can repeat, so two versions saved within that ambiguous hour may not be
+        # sorted strictly by UTC creation time. For this local-dev registry this is
+        # acceptable; use stored metadata.json saved_at for exact ordering if needed.
         return sorted(versions, key=lambda version: (version[:18], version))
 
     def get_current(self, model_type: str) -> Optional[str]:  # noqa: UP045 - packet requires Python 3.8 syntax.
@@ -112,7 +123,11 @@ class ModelRegistry:
         if not prod_symlink.is_symlink():
             return None
 
-        return prod_symlink.resolve(strict=False).name
+        target = prod_symlink.resolve(strict=False)
+        if not target.is_dir():
+            return None
+
+        return target.name
 
     def _model_type_dir(self, model_type: str) -> Path:
         if not model_type or os.sep in model_type or "\\" in model_type or model_type.startswith("."):
