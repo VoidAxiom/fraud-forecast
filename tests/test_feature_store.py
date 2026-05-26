@@ -1176,7 +1176,7 @@ async def test_aggregator_recovers_from_dropped_notify() -> None:
         store_id=store_id,
         merchant_id=merchant_id,
         order_id=order_id,
-        placed_at=_now_london(),
+        placed_at=_now_london().replace(microsecond=0) - dt.timedelta(seconds=1),
         order_number=f"FS-{order_id.hex[:12]}",
     )
     ip_address = str(order_row["ip_address"])
