@@ -8,7 +8,8 @@ import re
 import shutil
 import sys
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
+from datetime import datetime as stdlib_datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Pattern, Union
 
@@ -108,13 +109,13 @@ class ModelRegistry:
             versions,
             key=lambda version: (
                 version[:16],
-                self._read_saved_at(model_type_dir, version),
+                self._read_saved_at_utc_isoformat(model_type_dir, version),
                 version,
             ),
         )
 
-    def _read_saved_at(self, model_type_dir: Path, version: str) -> str:
-        """Read metadata.json saved_at for sorting; return "" if unavailable."""
+    def _read_saved_at_utc_isoformat(self, model_type_dir: Path, version: str) -> str:
+        """Read metadata.json saved_at as UTC ISO for sorting; return "" if unavailable."""
         metadata_path = model_type_dir / version / "metadata.json"
         try:
             with metadata_path.open("r", encoding="utf-8") as metadata_file:
@@ -124,7 +125,10 @@ class ModelRegistry:
 
         saved_at = metadata.get("saved_at")
         if isinstance(saved_at, str):
-            return saved_at
+            try:
+                return stdlib_datetime.fromisoformat(saved_at).astimezone(timezone.utc).isoformat()
+            except Exception:
+                return ""
         return ""
 
     def get_current(self, model_type: str) -> Optional[str]:  # noqa: UP045 - packet requires Python 3.8 syntax.
