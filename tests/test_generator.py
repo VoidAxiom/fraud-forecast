@@ -17,17 +17,18 @@ import redis.asyncio as aioredis
 from simulator.cart_builder import Cart
 from simulator.fraud_patterns import GroundTruth
 from simulator.generator import (
+    _apply_fraud_order_attrs,
     _read_runtime_rate,
-    create_one_order,
-    apply_promo,
-    load_active_promos,
-    load_store_hours,
-    load_config_from_env,
     _select_order_type,
-    load_stores_by_city,
+    apply_promo,
+    create_one_order,
     insert_order,
-    pick_store_for_user,
+    load_active_promos,
+    load_config_from_env,
+    load_store_hours,
+    load_stores_by_city,
     main,
+    pick_store_for_user,
 )
 
 
@@ -440,6 +441,59 @@ def test_insert_order_builds_item_rows_with_cartitem_name() -> None:
     source = inspect.getsource(insert_order)
     assert "item.item_name" not in source
     assert "item.name" in source
+
+
+def test_apply_fraud_order_attrs_maps_fields() -> None:
+    snapshot = {
+        "order_type": "DELIVERY",
+        "card_issuer_country": "GB",
+        "card_funding_type": "DEBIT",
+        "is_digital_native_bank": False,
+        "ip_country": "GB",
+        "ip_is_proxy": True,
+        "ip_is_vpn": False,
+        "ip_is_tor": True,
+        "ip_is_hosting": True,
+        "delivery_address_type": "HOME",
+        "is_new_payment_method": False,
+        "total_pence": 2500,
+    }
+    fraud_dict = {
+        "order_id": uuid.UUID(int=10),
+        "order_total_pence": 9999,
+        "card_country": "US",
+        "card_funding_type": "CREDIT",
+        "avs_result": "NO_MATCH",
+        "cvv_result": "MATCH",
+        "address_type": "HOTEL",
+        "is_new_device": True,
+        "ip_type": "vpn",
+        "is_high_end_cart": True,
+        "variant": "foreign_card",
+        "is_digital_native_bank": True,
+        "placed_at": datetime(2026, 1, 1, tzinfo=timezone.utc),
+        "is_night_order": True,
+    }
+
+    _apply_fraud_order_attrs(snapshot, fraud_dict)
+
+    assert snapshot["card_issuer_country"] == "US"
+    assert snapshot["card_funding_type"] == "CREDIT"
+    assert snapshot["is_digital_native_bank"] is True
+    assert snapshot["ip_country"] == "GB"
+    assert snapshot["ip_is_vpn"] is True
+    assert snapshot["ip_is_proxy"] is False
+    assert snapshot["ip_is_tor"] is False
+    assert snapshot["ip_is_hosting"] is False
+    assert snapshot["delivery_address_type"] == "HOTEL"
+    assert snapshot["total_pence"] == 2500
+    assert snapshot["is_new_payment_method"] is False
+    assert "order_id" not in snapshot
+    assert "placed_at" not in snapshot
+    assert "variant" not in snapshot
+    assert "avs_result" not in snapshot
+    assert "cvv_result" not in snapshot
+    assert "is_new_device" not in snapshot
 
 
 def test_fraud_injection_rate_over_500_orders() -> None:

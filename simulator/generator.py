@@ -1169,6 +1169,39 @@ async def _read_runtime_rate(
     return parsed if parsed > 0 else fallback
 
 
+def _apply_fraud_order_attrs(
+    snapshot: dict[str, Any],
+    fraud_dict: dict[str, Any],
+) -> None:
+    """Apply fraud-pattern attributes with direct orders-table columns.
+
+    Omits fields without direct order columns and fields owned by the
+    legit-path snapshot: order_id, placed_at, is_night_order, variant,
+    is_high_end_cart, avs_result, cvv_result, is_new_device, and totals.
+    """
+    if "card_country" in fraud_dict:
+        snapshot["card_issuer_country"] = fraud_dict["card_country"]
+    if "card_funding_type" in fraud_dict:
+        snapshot["card_funding_type"] = fraud_dict["card_funding_type"]
+    if "is_digital_native_bank" in fraud_dict:
+        snapshot["is_digital_native_bank"] = fraud_dict["is_digital_native_bank"]
+
+    ip_type = fraud_dict.get("ip_type")
+    if ip_type == "vpn":
+        snapshot["ip_country"] = "GB"
+        snapshot["ip_is_vpn"] = True
+        snapshot["ip_is_proxy"] = False
+        snapshot["ip_is_tor"] = False
+        snapshot["ip_is_hosting"] = False
+    elif ip_type == "foreign":
+        snapshot["ip_country"] = "XX"
+        snapshot["ip_is_vpn"] = False
+        snapshot["ip_is_proxy"] = False
+
+    if "address_type" in fraud_dict and snapshot.get("order_type") == "DELIVERY":
+        snapshot["delivery_address_type"] = fraud_dict["address_type"]
+
+
 async def create_one_order(
     pool: asyncpg.Pool,
     user_picker: WeightedUserPicker,
@@ -1283,10 +1316,14 @@ async def create_one_order(
 
         attempts = 0
         placed_at = datetime.now(tz=LONDON_TZ)
+        fraud_order_dict: dict[str, Any] | None = None
         fraud_ground_truth: GroundTruth | None = None
         if is_fraud_order:
             ctx = FraudPatternContext(now=placed_at, rng=rng)
-            _, fraud_ground_truth = await generate_fraud_order(ctx)
+            fraud_order_dict, fraud_ground_truth = await generate_fraud_order(ctx)
+
+        if is_fraud_order and fraud_order_dict is not None:
+            _apply_fraud_order_attrs(snapshot, fraud_order_dict)
 
         while True:
             try:
