@@ -372,10 +372,17 @@ def pick_store_for_user(
                 candidate_map[store["store_id"]] = store
 
     stores = list(candidate_map.values())
-    now = datetime.now(tz=LONDON_TZ)
-    weekday = now.isoweekday() % 7
-    prev_weekday = (weekday - 1) % 7
-    current_time = now.time()
+    if FORCE_PEAK:
+        weekday = 5
+        prev_weekday = 4
+        current_time = (
+            datetime.now(tz=LONDON_TZ).replace(hour=19, minute=0, second=0, microsecond=0).time()
+        )
+    else:
+        now = datetime.now(tz=LONDON_TZ)
+        weekday = now.isoweekday() % 7
+        prev_weekday = (weekday - 1) % 7
+        current_time = now.time()
     open_stores = []
     for store in stores:
         store_id = store["store_id"]
@@ -399,10 +406,7 @@ def pick_store_for_user(
     elif not stores:
         raise RuntimeError("no active stores available")
     else:
-        if FORCE_PEAK:
-            pass  # bypass open-hours filter; use all candidate stores
-        else:
-            raise RuntimeError("no stores in current open-hours window")
+        raise RuntimeError("no stores in current open-hours window")
 
     weights: list[float] = []
     for store in stores:
