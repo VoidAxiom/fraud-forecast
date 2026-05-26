@@ -18,7 +18,9 @@ from simulator.cart_builder import Cart
 from simulator.fraud_patterns import GroundTruth
 from simulator.generator import (
     _apply_fraud_order_attrs,
+    _parse_fraud_rate,
     _read_runtime_rate,
+    _resolve_card_country,
     _select_order_type,
     apply_promo,
     create_one_order,
@@ -198,9 +200,11 @@ def test_select_order_type_requires_pickup_for_fallback() -> None:
         "accepts_pickup": False,
         "accepts_in_store": False,
     }
-    with patch.object(rng, "random", return_value=0.99):
-        with pytest.raises(RuntimeError, match="no eligible order type for store"):
-            _select_order_type(rng, store)
+    with patch.object(rng, "random", return_value=0.99), pytest.raises(
+        RuntimeError,
+        match="no eligible order type for store",
+    ):
+        _select_order_type(rng, store)
 
 
 def test_pick_store_for_user_raises_when_no_store_open_now() -> None:
@@ -236,9 +240,11 @@ def test_pick_store_for_user_raises_when_no_store_open_now() -> None:
     }
 
     mock_now = datetime(2026, 1, 1, 12, 30, tzinfo=timezone.utc)
-    with patch("simulator.generator.datetime.now", return_value=mock_now):
-        with pytest.raises(RuntimeError, match="no stores in current open-hours window"):
-            pick_store_for_user(rng, user_data, stores_by_city, store_hours_by_store_id)
+    with patch("simulator.generator.datetime.now", return_value=mock_now), pytest.raises(
+        RuntimeError,
+        match="no stores in current open-hours window",
+    ):
+        pick_store_for_user(rng, user_data, stores_by_city, store_hours_by_store_id)
 
 
 def test_select_order_type_falls_back_to_pickup_when_only_pickup_enabled() -> None:
@@ -379,13 +385,17 @@ def test_select_order_type_raises_when_no_dine_in_is_eligible() -> None:
         "accepts_in_store": False,
     }
 
-    with patch.object(rng, "random", return_value=0.74):
-        with pytest.raises(RuntimeError, match="no eligible order type for store"):
-            _select_order_type(rng, store)
+    with patch.object(rng, "random", return_value=0.74), pytest.raises(
+        RuntimeError,
+        match="no eligible order type for store",
+    ):
+        _select_order_type(rng, store)
 
-    with patch.object(rng, "random", return_value=0.94):
-        with pytest.raises(RuntimeError, match="no eligible order type for store"):
-            _select_order_type(rng, store)
+    with patch.object(rng, "random", return_value=0.94), pytest.raises(
+        RuntimeError,
+        match="no eligible order type for store",
+    ):
+        _select_order_type(rng, store)
 
 
 def test_generator_creates_valid_order() -> None:
@@ -494,6 +504,29 @@ def test_apply_fraud_order_attrs_maps_fields() -> None:
     assert "avs_result" not in snapshot
     assert "cvv_result" not in snapshot
     assert "is_new_device" not in snapshot
+
+
+def test_apply_fraud_order_attrs_resolves_card_country_descriptors() -> None:
+    snapshot = {"card_issuer_country": "GB"}
+
+    _apply_fraud_order_attrs(snapshot, {"card_country": "GB_different_city"})
+    assert snapshot["card_issuer_country"] == "GB"
+
+    _apply_fraud_order_attrs(snapshot, {"card_country": "foreign_other"})
+    assert snapshot["card_issuer_country"] == "BR"
+
+
+def test_resolve_card_country_normalizes_iso2_case() -> None:
+    assert _resolve_card_country("us") == "US"
+
+
+def test_parse_fraud_rate_defaults_and_clamps() -> None:
+    assert _parse_fraud_rate(None) == 0.02
+    assert _parse_fraud_rate("") == 0.02
+    assert _parse_fraud_rate("2%") == 0.02
+    assert _parse_fraud_rate("-0.5") == 0.0
+    assert _parse_fraud_rate("1.5") == 1.0
+    assert _parse_fraud_rate("0.25") == 0.25
 
 
 def test_fraud_injection_rate_over_500_orders() -> None:
@@ -691,8 +724,7 @@ def test_generator_order_number_unique() -> None:
             assert len(order_numbers) == 100
             assert len(set(order_numbers)) == 100
             assert all(
-                ORDER_NUMBER_RE.match(order_number) is not None
-                for order_number in order_numbers
+                ORDER_NUMBER_RE.match(order_number) is not None for order_number in order_numbers
             )
         finally:
             await redis.close()
@@ -805,7 +837,9 @@ def test_generator_notify_fires() -> None:
             event = asyncio.Event()
             received: list[str] = []
 
-            def on_notify(_conn: asyncpg.Connection, _pid: int, _channel: str, payload: str) -> None:
+            def on_notify(
+                _conn: asyncpg.Connection, _pid: int, _channel: str, payload: str
+            ) -> None:
                 received.append(payload)
                 event.set()
 
@@ -848,7 +882,10 @@ def test_generator_rate_runtime_override() -> None:
             await redis_conn.set("simulator:rate_per_second", "5")
             assert await _read_runtime_rate(redis_conn, fallback=1) == 5
             await redis_conn.delete("simulator:rate_per_second")
-            assert await _read_runtime_rate(redis_conn, fallback=config.orders_per_second) == config.orders_per_second
+            assert (
+                await _read_runtime_rate(redis_conn, fallback=config.orders_per_second)
+                == config.orders_per_second
+            )
         finally:
             if previous_rate is None:
                 await redis_conn.delete("simulator:rate_per_second")

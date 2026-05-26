@@ -327,7 +327,10 @@ def pick_store_for_user(
                 if store_lat is None or store_lon is None:
                     continue
                 distance = haversine_km(
-                    default_lat, default_lon, float(store_lat), float(store_lon),
+                    default_lat,
+                    default_lon,
+                    float(store_lat),
+                    float(store_lon),
                 )
                 if distance <= 15.0:
                     candidate_map[store["store_id"]] = store
@@ -483,9 +486,7 @@ async def apply_promo(
     subtotal_pence: int,
 ) -> dict[str, Any] | None:
     eligible_promos = [
-        promo
-        for promo in eligible_promos
-        if (promo.get("min_order_pence") or 0) <= subtotal_pence
+        promo for promo in eligible_promos if (promo.get("min_order_pence") or 0) <= subtotal_pence
     ]
 
     if not eligible_promos:
@@ -518,11 +519,7 @@ async def apply_promo(
         return None
 
     if not is_first_order:
-        eligible_promos = [
-            promo
-            for promo in eligible_promos
-            if not _is_new_user_only_promo(promo)
-        ]
+        eligible_promos = [promo for promo in eligible_promos if not _is_new_user_only_promo(promo)]
         if not eligible_promos:
             return None
 
@@ -553,10 +550,12 @@ def _promo_discount(promo: dict[str, Any] | None, subtotal_pence: int) -> int:
         return 0
 
     discount_percent_decimal = Decimal(str(discount_percent))
-    discount = int((discount_percent_decimal * Decimal(subtotal_pence) / Decimal("100")).quantize(
-        Decimal("1"),
-        rounding=ROUND_HALF_UP,
-    ))
+    discount = int(
+        (discount_percent_decimal * Decimal(subtotal_pence) / Decimal("100")).quantize(
+            Decimal("1"),
+            rounding=ROUND_HALF_UP,
+        )
+    )
     return min(discount, subtotal_pence)
 
 
@@ -720,7 +719,8 @@ def _select_delivery_address(
 
     selected_default = default_address if default_address is not None else addresses[0]
     others = [
-        address for address in addresses
+        address
+        for address in addresses
         if address.get("address_id") != selected_default.get("address_id")
     ]
 
@@ -803,10 +803,7 @@ def _build_snapshot(
         user_account_age_days = 0
 
     email = str(user["email"])
-    if "@" in email:
-        user_email_domain = email.split("@", 1)[1]
-    else:
-        user_email_domain = "unknown"
+    user_email_domain = email.split("@", 1)[1] if "@" in email else "unknown"
 
     vat_items = [
         VATLineItem(
@@ -861,18 +858,12 @@ def _build_snapshot(
         else None,
         "delivery_latitude": (
             float(delivery_address["latitude"])
-            if (
-                delivery_address is not None
-                and delivery_address.get("latitude") is not None
-            )
+            if (delivery_address is not None and delivery_address.get("latitude") is not None)
             else None
         ),
         "delivery_longitude": (
             float(delivery_address["longitude"])
-            if (
-                delivery_address is not None
-                and delivery_address.get("longitude") is not None
-            )
+            if (delivery_address is not None and delivery_address.get("longitude") is not None)
             else None
         ),
         "delivery_distance_km": delivery_distance_km,
@@ -1220,7 +1211,7 @@ def _apply_fraud_order_attrs(
     is_high_end_cart, avs_result, cvv_result, is_new_device, and totals.
     """
     if "card_country" in fraud_dict:
-        snapshot["card_issuer_country"] = fraud_dict["card_country"]
+        snapshot["card_issuer_country"] = _resolve_card_country(str(fraud_dict["card_country"]))
     if "card_funding_type" in fraud_dict:
         snapshot["card_funding_type"] = fraud_dict["card_funding_type"]
     if "is_digital_native_bank" in fraud_dict:
@@ -1254,7 +1245,8 @@ async def create_one_order(
     async with pool.acquire() as conn:
         user_id = user_picker.pick(rng)
         fraud_roll = rng.random()
-        is_fraud_order = fraud_roll < float(os.getenv("FRAUD_INJECTION_RATE", "0.02"))
+        fraud_rate = _parse_fraud_rate(os.getenv("FRAUD_INJECTION_RATE"), FRAUD_INJECTION_RATE)
+        is_fraud_order = fraud_roll < fraud_rate
         user_data = await load_user_data(conn, user_id)
         user = user_data["user"]
 
@@ -1305,9 +1297,11 @@ async def create_one_order(
         )
         cart = build_realistic_cart(store["store_id"], user_profile, menu_items, rng=rng)
 
-        user_total_orders_lifetime, user_total_orders_30d, user_total_spend_lifetime_pence = (
-            await _read_user_order_metrics(conn, user_id)
-        )
+        (
+            user_total_orders_lifetime,
+            user_total_orders_30d,
+            user_total_spend_lifetime_pence,
+        ) = await _read_user_order_metrics(conn, user_id)
         is_first_order_for_user = user_total_orders_lifetime == 0
 
         promo = await apply_promo(
@@ -1432,7 +1426,7 @@ async def main() -> None:
 
             try:
                 async with rng_lock:
-                    order_rng = random.Random(rng.randint(0, 2 ** 63 - 1))
+                    order_rng = random.Random(rng.randint(0, 2**63 - 1))
 
                 try:
                     await create_one_order(
@@ -1466,8 +1460,9 @@ async def main() -> None:
                                     "orders_1min": window_orders,
                                     "errors_1min": window_errors,
                                     "avg_create_ms": (
-                                        0.0 if window_orders == 0 else
-                                        round(window_create_ms / max(window_orders, 1), 3)
+                                        0.0
+                                        if window_orders == 0
+                                        else round(window_create_ms / max(window_orders, 1), 3)
                                     ),
                                 }
                             )
