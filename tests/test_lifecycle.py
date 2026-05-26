@@ -579,6 +579,7 @@ async def test_lifecycle_bulk_orders_reach_terminal_state() -> None:
 
         assert delivered_count >= 90
         assert 1 <= cancelled_count <= 8
+        assert int(terminal_count) == len(order_ids)
         assert terminal_with_ts == terminal_count
     finally:
         if order_ids:
