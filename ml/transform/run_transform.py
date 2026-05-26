@@ -162,9 +162,7 @@ def run_pipeline(
                 transformed_metadata.schema,
             )
 
-            _ = transform_fn | "WriteTransformFn" >> tft_beam.WriteTransformFn(
-                os.path.join(output_dir, "transform_fn")
-            )
+            _ = transform_fn | "WriteTransformFn" >> tft_beam.WriteTransformFn(output_dir)
 
 
 def main() -> None:
