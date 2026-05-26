@@ -1231,15 +1231,25 @@ def _apply_fraud_order_attrs(
     if "is_digital_native_bank" in fraud_dict:
         snapshot["is_digital_native_bank"] = fraud_dict["is_digital_native_bank"]
 
+    has_explicit_ip_country = "ip_country" in fraud_dict
+    if has_explicit_ip_country:
+        raw_ip_country = fraud_dict["ip_country"]
+        ip_country = "" if raw_ip_country is None else str(raw_ip_country)
+        snapshot["ip_country"] = (
+            ip_country.upper() if len(ip_country) == 2 and ip_country.isalpha() else "GB"
+        )
+
     ip_type = fraud_dict.get("ip_type")
     if ip_type == "vpn":
-        snapshot["ip_country"] = "GB"
+        if not has_explicit_ip_country:
+            snapshot["ip_country"] = "GB"
         snapshot["ip_is_vpn"] = True
         snapshot["ip_is_proxy"] = False
         snapshot["ip_is_tor"] = False
         snapshot["ip_is_hosting"] = False
     elif ip_type == "foreign":
-        snapshot["ip_country"] = "XX"
+        if not has_explicit_ip_country:
+            snapshot["ip_country"] = "XX"
         snapshot["ip_is_vpn"] = False
         snapshot["ip_is_proxy"] = False
 

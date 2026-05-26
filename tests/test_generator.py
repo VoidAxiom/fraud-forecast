@@ -506,6 +506,40 @@ def test_apply_fraud_order_attrs_maps_fields() -> None:
     assert "is_new_device" not in snapshot
 
 
+def test_apply_fraud_order_attrs_uses_explicit_ip_country() -> None:
+    snapshot = {"ip_country": "GB"}
+
+    _apply_fraud_order_attrs(snapshot, {"ip_country": "NG"})
+
+    assert snapshot["ip_country"] == "NG"
+
+
+def test_apply_fraud_order_attrs_prefers_explicit_ip_country_over_ip_type() -> None:
+    snapshot = {
+        "ip_country": "GB",
+        "ip_is_proxy": True,
+        "ip_is_vpn": False,
+        "ip_is_tor": True,
+        "ip_is_hosting": True,
+    }
+
+    _apply_fraud_order_attrs(snapshot, {"ip_country": "RU", "ip_type": "vpn"})
+
+    assert snapshot["ip_country"] == "RU"
+    assert snapshot["ip_is_vpn"] is True
+    assert snapshot["ip_is_proxy"] is False
+    assert snapshot["ip_is_tor"] is False
+    assert snapshot["ip_is_hosting"] is False
+
+
+def test_apply_fraud_order_attrs_invalid_explicit_ip_country_falls_back_to_gb() -> None:
+    snapshot = {"ip_country": "NG"}
+
+    _apply_fraud_order_attrs(snapshot, {"ip_country": "unknown"})
+
+    assert snapshot["ip_country"] == "GB"
+
+
 def test_apply_fraud_order_attrs_resolves_card_country_descriptors() -> None:
     snapshot = {"card_issuer_country": "GB"}
 
