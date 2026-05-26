@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib
 import json
 import os
+import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
@@ -185,9 +186,9 @@ def _save_training_artifacts(
     num_val_rows: int,
 ) -> None:
     trained_at = _london_now()
-    version = trained_at.strftime("v%Y%m%d_%H%M%S")
+    version = f"{trained_at.strftime('v%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
     model_dir = Path("models") / "xgboost" / version
-    model_dir.mkdir(parents=True, exist_ok=True)
+    model_dir.mkdir(parents=True)
 
     model.save_model(str(model_dir / "model.bin"))
     (model_dir / "feature_names.json").write_text(
@@ -225,7 +226,14 @@ def train_xgboost(
     X_val, y_val = tfrecords_to_numpy(val_data)
 
     # Class imbalance: ~2% positives. Use scale_pos_weight.
-    scale_pos_weight = (y_train == 0).sum() / (y_train == 1).sum()
+    pos_count = int((y_train == 1).sum())
+    if pos_count == 0:
+        raise ValueError(
+            "Training data contains zero fraud labels; cannot compute "
+            "scale_pos_weight. Widen the training window or check the "
+            "ground-truth join."
+        )
+    scale_pos_weight = float((y_train == 0).sum()) / float(pos_count)
 
     params: Dict[str, Any] = {
         "objective": "binary:logistic",
