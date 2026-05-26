@@ -4,6 +4,7 @@ import json
 import uuid
 from datetime import datetime, tzinfo
 from pathlib import Path
+from typing import Iterator
 
 import pytest
 
@@ -46,9 +47,9 @@ def test_save_multiple_versions_lists_chronologically(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     versions_to_save = [
-        "v_20260308_120000_bbbbbbbb",
+        "v_20260301_120000_ffffffff",
         "v_20260301_120000_aaaaaaaa",
-        "v_20260315_120000_cccccccc",
+        "v_20260308_120000_88888888",
     ]
     uuid_suffixes = [version.rsplit("_", 1)[1] for version in versions_to_save]
 
@@ -70,7 +71,22 @@ def test_save_multiple_versions_lists_chronologically(
     second = registry.save("xgboost", b"second", {})
     third = registry.save("xgboost", b"third", {})
 
-    assert registry.list_versions("xgboost") == sorted([first, second, third])
+    model_type_dir = tmp_path / "xgboost"
+    listing_order = [
+        model_type_dir / first,
+        model_type_dir / second,
+        model_type_dir / third,
+    ]
+    original_iterdir = Path.iterdir
+
+    def ordered_iterdir(path: Path) -> Iterator[Path]:
+        if path == model_type_dir:
+            return iter(listing_order)
+        return original_iterdir(path)
+
+    monkeypatch.setattr(Path, "iterdir", ordered_iterdir)
+
+    assert registry.list_versions("xgboost") == [first, second, third]
 
 
 def test_bytes_artefact_writes_model_bst(tmp_path: Path) -> None:

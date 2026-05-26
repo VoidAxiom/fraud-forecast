@@ -104,7 +104,7 @@ class ModelRegistry:
             for entry in model_type_dir.iterdir()
             if entry.is_dir() and not entry.is_symlink() and VERSION_RE.fullmatch(entry.name)
         ]
-        return sorted(versions)
+        return sorted(versions, key=lambda version: version[:18])
 
     def get_current(self, model_type: str) -> Optional[str]:  # noqa: UP045 - packet requires Python 3.8 syntax.
         """Return the version the production symlink currently points to, or None."""
