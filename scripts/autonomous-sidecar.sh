@@ -79,12 +79,13 @@ if [ -n "$prev_main_sha" ] && [ "$prev_main_sha" != "$cur_main_sha" ]; then
     done <<< "$new_merges"
   fi
 fi
-# Update marker for next tick (even if unchanged, so first-run captures).
-# mkdir -p the parent first — on fresh checkouts or after local cleanup
-# of .codex-runs/, the redirect would otherwise fail silently (no set -e)
-# and prev_main_sha stays empty forever, defeating merged-PR detection.
-mkdir -p "$(dirname "$LAST_MAIN_MARKER")"
-echo "$cur_main_sha" > "$LAST_MAIN_MARKER"
+# NOTE: the sidecar does NOT write $LAST_MAIN_MARKER itself. Claude
+# advances it at end-of-turn (alongside the success marker) ONLY AFTER
+# the dispatched "newly merged" work has actually been kicked off. If the
+# sidecar wrote it here, a Claude turn that died between this survey and
+# the dispatch would suppress the alert on the next tick (next prev_main
+# == cur_main → no print). Tying the marker advance to Claude's success
+# means the next tick re-announces the merge if Claude died mid-turn.
 echo
 
 # ── packets (per-worktree + per-PR, condensed) ──
@@ -370,5 +371,9 @@ if [ "$actions_now" = "0" ] && [ "$verify_owed" = "0" ]; then
   echo "→ end turn cleanly; next tick in ~20min"
 fi
 echo
-echo "→ Claude: write the success marker as your LAST action so backup ticks skip:"
+echo "→ Claude: write BOTH markers as your LAST actions so backup ticks skip"
+echo "  AND the merged-PR alert doesn't get falsely suppressed if you died mid-turn:"
 echo "    echo $(date +%s) > $MARKER"
+if [ -n "$merged_voi_list" ] || [ -n "${cur_main_sha:-}" ]; then
+  echo "    echo $cur_main_sha > $LAST_MAIN_MARKER  # advance ONLY after dispatching the merged-PR work above"
+fi
