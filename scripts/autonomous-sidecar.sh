@@ -356,10 +356,13 @@ fi
 
 echo
 # Bump ACT-NOW if anything merged this tick — director should enumerate
-# downstream-unblocked issues and spin up impls.
-if [ -n "$merged_voi_list" ]; then
+# downstream-unblocked issues and spin up impls. Gate on new_merges (raw),
+# NOT merged_voi_list, because many squash subjects carry the conventional
+# `(#N)` PR suffix but no `VOI-N` (e.g. "docs+rails: ... (#40)") and we
+# must NOT silently suppress those merges.
+if [ -n "${new_merges:-}" ]; then
   actions_now=$((actions_now+1))
-  echo "→ ACT-NOW (newly merged):${merged_voi_list}"
+  echo "→ ACT-NOW (newly merged):${merged_voi_list:-  (no VOI-N in subjects — read \"merged since last tick\" above for SHA + PR# instead)}"
   echo "  - Live-verify each on primary per packet acceptance (Outcome over output)."
   echo "  - Read VOI-139 Phase queue + spec/PHASE_*.md DAG; any issue whose deps just"
   echo "    closed is now unblocked — dispatch impl(s) immediately, in parallel where"
