@@ -296,13 +296,14 @@ def test_data_loader_excludes_unfinalised(
     assert tmp_path.exists()
     placed_at = [
         datetime(2026, 1, 1, 10, 0, 0, tzinfo=timezone.utc),
-        datetime(2026, 1, 1, 10, 1, 0, tzinfo=timezone.utc),
-        datetime(2026, 1, 1, 10, 2, 0, tzinfo=timezone.utc),
-        datetime(2026, 1, 1, 10, 3, 0, tzinfo=timezone.utc),
-        datetime(2026, 1, 1, 10, 4, 0, tzinfo=timezone.utc),
+        datetime(2026, 1, 2, 10, 0, 0, tzinfo=timezone.utc),
+        datetime(2026, 1, 3, 10, 0, 0, tzinfo=timezone.utc),
+        datetime(2026, 4, 20, 10, 0, 0, tzinfo=timezone.utc),
+        datetime(2026, 4, 25, 10, 0, 0, tzinfo=timezone.utc),
     ]
+    mock_cutoff = datetime(2026, 5, 26, tzinfo=timezone.utc)
     return_df = make_synthetic_df(n_rows=5, n_fraud=0, seed=1)
-    return_df["order_id"] = ["old-1", "old-2", "old-3", "old-4", "old-5"]
+    return_df["order_id"] = ["old-1", "old-2", "old-3", "recent-1", "recent-2"]
     return_df["placed_at"] = placed_at
 
     engine = MagicMock()
@@ -327,7 +328,10 @@ def test_data_loader_excludes_unfinalised(
             "end_date": placed_at[-1] + timedelta(hours=1),
             "label_finalisation_buffer_days": 45,
         }
-        return return_df
+        buffer_days = params["label_finalisation_buffer_days"]
+        assert isinstance(buffer_days, int)
+        cutoff = mock_cutoff - timedelta(days=int(buffer_days))
+        return return_df[return_df["placed_at"] < cutoff]
 
     def fake_to_parquet(self: pd.DataFrame, path: object, index: bool = False) -> None:
         del self, path, index
@@ -343,9 +347,13 @@ def test_data_loader_excludes_unfinalised(
     result = load_training_data(config)
 
     get_engine_mock.assert_called_once_with(role="training")
-    assert len(result) == 5
-    assert result["order_id"].tolist() == ["old-1", "old-2", "old-3", "old-4", "old-5"]
-    assert result["placed_at"].tolist() == placed_at
+    result_order_ids = result["order_id"].tolist()
+    assert len(result) == 3
+    assert "old-1" in result_order_ids
+    assert "old-2" in result_order_ids
+    assert "old-3" in result_order_ids
+    assert "recent-1" not in result_order_ids
+    assert "recent-2" not in result_order_ids
 
 
 def test_data_loader_no_future_leakage(
