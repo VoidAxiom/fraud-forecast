@@ -372,8 +372,9 @@ if [ "$actions_now" = "0" ] && [ "$verify_owed" = "0" ]; then
 fi
 echo
 echo "→ Claude: write BOTH markers as your LAST actions so backup ticks skip"
-echo "  AND the merged-PR alert doesn't get falsely suppressed if you died mid-turn:"
-echo "    echo $(date +%s) > $MARKER"
+echo "  AND the merged-PR alert doesn't get falsely suppressed if you died mid-turn."
+echo "  Prefix with mkdir -p in case .codex-runs/ doesn't exist yet (fresh checkout):"
+echo "    mkdir -p $(dirname "$MARKER") && echo $(date +%s) > $MARKER"
 if [ -n "$merged_voi_list" ] || [ -n "${cur_main_sha:-}" ]; then
-  echo "    echo $cur_main_sha > $LAST_MAIN_MARKER  # advance ONLY after dispatching the merged-PR work above"
+  echo "    mkdir -p $(dirname "$LAST_MAIN_MARKER") && echo $cur_main_sha > $LAST_MAIN_MARKER  # advance ONLY after dispatching the merged-PR work above"
 fi
