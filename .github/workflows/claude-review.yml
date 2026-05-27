@@ -1,13 +1,18 @@
-name: Claude Review (on demand)
+name: Claude Review (manual one-off)
 
 on:
   workflow_dispatch:
-# Disabled auto-trigger: replaced "issue_comment" with "workflow_dispatch" so this
-# workflow never fires on PR comments. We pivoted to local /code-review (run by
-# the implementer subagent in step 4 of the Impl Contract) for cross-family
-# review alongside /codex:review. This file is retained for the prompt design
-# and can still be triggered manually from the Actions UI if a one-off cloud
-# Claude review is ever wanted.
+    inputs:
+      pr_number:
+        description: PR number to review
+        required: true
+        type: number
+
+# Disabled auto-trigger: we pivoted from PR-level Claude review to local
+# /code-review (run by the implementer subagent in step 4 of the Impl
+# Contract). This workflow is retained as a manual one-off escape hatch
+# for cases where a cloud-side Claude review of an existing PR is wanted
+# — trigger from the Actions UI with the PR number as input.
 
 permissions:
   contents: read
@@ -16,18 +21,11 @@ permissions:
   id-token: write
 
 concurrency:
-  group: claude-review-${{ github.event.issue.number }}
+  group: claude-review-${{ inputs.pr_number }}
   cancel-in-progress: false
 
 jobs:
   review:
-    if: |
-      github.event.issue.pull_request &&
-      github.event.issue.state == 'open' &&
-      contains(github.event.comment.body, '@claude review') &&
-      github.event.comment.user.type != 'Bot' &&
-      contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association) &&
-      contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.issue.author_association)
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -35,22 +33,22 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          head_repo=$(gh api repos/${{ github.repository }}/pulls/${{ github.event.issue.number }} --jq '.head.repo.full_name')
+          head_repo=$(gh api repos/${{ github.repository }}/pulls/${{ inputs.pr_number }} --jq '.head.repo.full_name')
           if [ "$head_repo" != "${{ github.repository }}" ]; then
-            echo "::error::PR head is in fork ($head_repo); refusing to expose OAuth + GITHUB_TOKEN to fork-authored code."
+            echo "::error::PR #${{ inputs.pr_number }} head is in fork ($head_repo); refusing to expose OAuth + GITHUB_TOKEN to fork-authored code."
             exit 1
           fi
 
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          ref: refs/pull/${{ github.event.issue.number }}/head
+          ref: refs/pull/${{ inputs.pr_number }}/head
 
       - uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           prompt: |
-            Review pull request #${{ github.event.issue.number }}.
+            Review pull request #${{ inputs.pr_number }}.
 
             ## Severity scheme (mirror Codex's P0–P3)
 
