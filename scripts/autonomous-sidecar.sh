@@ -80,6 +80,10 @@ if [ -n "$prev_main_sha" ] && [ "$prev_main_sha" != "$cur_main_sha" ]; then
   fi
 fi
 # Update marker for next tick (even if unchanged, so first-run captures).
+# mkdir -p the parent first — on fresh checkouts or after local cleanup
+# of .codex-runs/, the redirect would otherwise fail silently (no set -e)
+# and prev_main_sha stays empty forever, defeating merged-PR detection.
+mkdir -p "$(dirname "$LAST_MAIN_MARKER")"
 echo "$cur_main_sha" > "$LAST_MAIN_MARKER"
 echo
 
