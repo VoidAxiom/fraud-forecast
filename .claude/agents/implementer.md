@@ -388,24 +388,22 @@ e. Post a **new** review-request comment that LEADS with `@codex review` and the
 
    Why this matters: a bare `@codex review` after a fix iteration makes the reviewer re-derive what changed from the diff alone, often re-raising the same architectural finding for the third time. A short "what changed / what didn't and why" block lets the reviewer focus on whether the NEW diff introduced regressions and skip the deliberately-accepted findings.
 
-   **👍 skip rule (don't re-trigger codex when it already approved the CURRENT head).** Before posting another `@codex review`, check whether codex's latest clean verdict — in EITHER an issue-comment OR a head-pinned review — was posted AFTER the current PR head's commit time. A clean verdict against an older head is STALE and must be re-validated by a fresh `@codex review`. Canonical check:
+   **👍 skip rule (don't re-trigger codex when it already approved the CURRENT head).** Before posting another `@codex review`, check whether codex has a head-pinned clean REVIEW whose `commit_id` equals the current PR head SHA. Anchor by SHA, not timestamp — commit `committer.date` is the local commit-creation time and can predate a clean verdict even when the commit was pushed AFTER that clean, so a timestamp comparison treats stale cleans as fresh. Issue-comments don't carry a `commit_id` so they can never be a reliable skip signal — only head-pinned reviews count. Canonical check:
    ```bash
-   PR_HEAD_AT=$(gh api repos/$OWNER/$REPO/pulls/$PR --jq '.head.sha' \
-     | xargs -I{} gh api repos/$OWNER/$REPO/commits/{} --jq '.commit.committer.date')
-   # Latest codex CLEAN signal (issue-comment OR head-pinned review):
-   latest_clean_at=$(
-     {
-       gh api repos/$OWNER/$REPO/issues/$PR/comments \
-         --jq '.[] | select(.user.login=="chatgpt-codex-connector[bot]") | select(.body | test(":\\+1:|👍|did(.|n.?t)? find any major issues")) | .created_at'
-       gh api repos/$OWNER/$REPO/pulls/$PR/reviews \
-         --jq '.[] | select(.user.login=="chatgpt-codex-connector[bot]") | select(.body // "" | test(":\\+1:|👍|did(.|n.?t)? find any major issues")) | .submitted_at'
-     } | sort | tail -1
+   HEAD_SHA=$(gh api repos/$OWNER/$REPO/pulls/$PR --jq '.head.sha')
+   head_pinned_clean=$(
+     gh api repos/$OWNER/$REPO/pulls/$PR/reviews \
+       --jq --arg sha "$HEAD_SHA" '
+         [.[] | select(.user.login=="chatgpt-codex-connector[bot]")
+              | select(.commit_id == $sha)
+              | select(.body // "" | test(":\\+1:|👍|did(.|n.?t)? find any major issues"))]
+         | length'
    )
-   if [ -n "$latest_clean_at" ] && [[ "$latest_clean_at" > "$PR_HEAD_AT" ]]; then
-     echo "skip @codex review re-trigger — codex clean verdict at $latest_clean_at is fresher than head pushed at $PR_HEAD_AT"
+   if [ "${head_pinned_clean:-0}" -gt 0 ]; then
+     echo "skip @codex review re-trigger — codex posted a head-pinned clean review on $HEAD_SHA"
    fi
    ```
-   Two safeguards: (1) the pull-reviews query catches clean verdicts codex posts as reviews, not just issue-comments. (2) The timestamp comparison invalidates stale cleans — a new commit pushed after a 👍 means the 👍 no longer applies and re-trigger MUST proceed.
+   `commit_id == HEAD_SHA` is the same head-pin check `review-gate.sh` uses for the merge gate (`review.commit.oid == headRefOid`). A new push moves `HEAD_SHA`; the prior clean's `commit_id` no longer matches; re-trigger proceeds.
 
 f. Re-run the eye-emoji loop on the new comment: `bash scripts/review-gate.sh wait <PR#>`.
 
