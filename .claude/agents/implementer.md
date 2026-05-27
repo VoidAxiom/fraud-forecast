@@ -208,11 +208,13 @@ TODO
 
 Any failure → write a fix task.md describing the failing gate output, re-dispatch codex-run (new `$RUN_ID`), re-verify. Loop until all gates pass.
 
-### 4. Self-run /codex:review (local cross-family gate)
+### 4. Self-run BOTH local reviewers (cross-family adversarial gate)
 
 **SAME HARD RULE: every `codex exec`-backed dispatch goes through the Bash tool with `run_in_background: true`.** `/codex:review` invokes a codex worker under the hood — running it synchronously in foreground burns your 600s watchdog the same way step 3 would.
 
-`/codex:review` is the cross-family reviewer (default `gpt-5.5`, different family from the `gpt-5.3-codex-spark` worker — so its findings catch what the worker missed). Run it against the working-tree diff:
+Run BOTH local reviewers per commit, in background. Both are subscription-covered (Codex plugin + Claude OAuth), not metered API spend. Cross-family coverage is preserved locally — codex (`gpt-5.5`) catches what Claude misses; Claude (Opus 4.7) catches what codex misses.
+
+**Reviewer 1 — `/codex:review` (codex cross-family).** Run against the working-tree diff:
 
 ```bash
 # Bash tool call with run_in_background: true:
@@ -227,14 +229,21 @@ If the Codex Code plugin is not installed, fall back to the in-repo script (also
 bash scripts/codex-review.sh "$RUN_ID"
 ```
 
-Read the verdict. Two outcomes:
-- **VERDICT: correct** (or `NO BLOCKING ISSUES`) → proceed to step 5.
-- **Findings** (`[P0..P3]` entries with file:line refs) → write a fix `task.md` that quotes the findings verbatim, dispatch a new codex-run worker on it, then re-run gates (step 3) and re-run `/codex:review` (step 4). Loop until clean.
+**Reviewer 2 — `/code-review --effort high` (built-in Claude Code reviewer).** Runs locally against the working-tree diff. Same severity scheme as `/codex:review` (`[P0]`/`[P1]`/`[P2]`/`[P3]`). Both reviewers read project conventions from `CLAUDE.md` and `REVIEW.md` if present.
 
-Anti-gate-gaming rules (YOUR responsibility — codex will not enforce them):
+**Optional auto-running — `/security-review`.** Install via `claude plugin install security-guidance@claude-plugins-official`. Once installed, runs silently per-edit / per-commit and auto-fixes flagged vulnerabilities in the same session. No explicit invocation needed.
+
+Read BOTH verdicts. Block iteration on any `[P0]` or `[P1]` from either reviewer until clean.
+
+- **Both clean** (VERDICT: correct / `NO BLOCKING ISSUES` from both) → proceed to step 5.
+- **Findings** (`[P0..P3]` entries with file:line refs from either reviewer) → write a fix `task.md` that quotes the findings verbatim, dispatch a new codex-run worker on it, then re-run gates (step 3) and re-run BOTH local reviewers (step 4). Loop until both clean.
+
+In the pre-PR hand-off to the director Claude (step 5), include the final verdict from BOTH reviewers — Claude reads them as the audit trail. Claude's review feedback enters via local `/code-review`, NOT via PR comments. The PR thread carries only `@codex review` findings going forward.
+
+Anti-gate-gaming rules (YOUR responsibility — neither reviewer will enforce them):
 - **Tests you cannot weaken.** If a fix task makes codex delete, skip, `xfail`, or shrink a test to pass a gate, REJECT codex's output and notify Claude. The bytes of tracked test files (`**/*.test.*`, `**/*.spec.*`) must not shrink across iterations.
-- **Review tooling you cannot touch.** If `/codex:review` flags something and the proposed fix edits `scripts/codex-{review,run}.sh`, `hooks/write-scope-guard.mjs`, or `scripts/impl-precommit-scope.sh`, REJECT and notify Claude. The gate cannot be self-modified.
-- **Out-of-scope classes you cannot fix.** If `/codex:review` raises taste / architecture / domain / redesign / product-decision: STOP, notify Claude. Don't ask codex to guess.
+- **Review tooling you cannot touch.** If either reviewer flags something and the proposed fix edits `scripts/codex-{review,run}.sh`, `hooks/write-scope-guard.mjs`, `scripts/impl-precommit-scope.sh`, or `scripts/review-gate.sh`, REJECT and notify Claude. The gate cannot be self-modified.
+- **Out-of-scope classes you cannot fix.** If either reviewer raises taste / architecture / domain / redesign / product-decision: STOP, notify Claude. Don't ask codex to guess.
 
 ### 5. Commit + notify Claude (pre-PR review loop, your side)
 
@@ -305,24 +314,15 @@ When Claude approves:
 
 **No `Co-Authored-By`, no "🤖", no "Generated with Claude Code", no Claude/Anthropic credit footer anywhere** in commit messages, PR title, or PR body.
 
-### 7. Request initial dual review + run the eye-emoji loop
+### 7. Request initial codex review + run the eye-emoji loop
 
-Post a single comment that triggers both Codex and the GH Actions Claude
-reviewer in parallel. First two lines must be `@codex review` then
-`@claude review`, each on its own line:
+Post a bare `@codex review` comment. Claude's review feedback enters
+locally via `/code-review` in step 4, NOT via PR comments — the PR
+thread carries only codex findings.
 
 ```bash
-gh pr comment <PR#> --body "$(cat <<'EOF'
-@codex review
-@claude review
-EOF
-)"
+gh pr comment <PR#> --body "@codex review"
 ```
-
-Codex parses the leading `@codex review` (case-insensitive, on its own
-line); the `@claude review` workflow scans the body for its trigger.
-Two bots, one comment, no phantom Codex cloud task (because there's no
-non-`@codex review` `@codex` mention).
 
 Then drive the eye-emoji loop. `scripts/review-gate.sh wait` polls codex state every ~15s, detects codex's 👀 acknowledgement on the latest `@codex review` request comment, and uses a two-tier timeout so you don't re-trigger while the bot is actively processing. The helper does NOT post `@codex review` itself — you do that, but ONLY when the helper tells you it's safe to.
 
@@ -376,13 +376,12 @@ d. **Resolve the prior codex review threads** that you just addressed. The merge
    bash scripts/review-gate.sh resolve <thread_id>
    ```
 
-e. Post a **new** dual-trigger review-request comment that LEADS with `@codex review` then `@claude review` (each on its own line) and then briefly tells the reviewers what changed and what was deliberately not changed. Codex parses the leading `@codex review` as the trigger; the GH Actions Claude workflow scans the body for `@claude review`; the rationale that follows is read by BOTH reviewers as context for the re-review. This is the only `@codex` mention pattern allowed — `@claude` is unrelated to Codex's phantom-task trigger.
+e. Post a **new** review-request comment that LEADS with `@codex review` and then briefly tells the reviewer what changed and what was deliberately not changed. Codex parses the leading `@codex review` (case-insensitive, on its own line) as the trigger; the rationale that follows is read by the reviewer as context for the re-review. This is the only `@codex` mention pattern allowed — ANY other `@codex` mention spawns a phantom Codex cloud task.
 
    Format (in this exact order; use a HEREDOC with quoted `'EOF'` to preserve newlines and Markdown):
    ```bash
    gh pr comment <PR#> --body "$(cat <<'EOF'
    @codex review
-   @claude review
 
    **Changes since the last review (head <new-SHA-short>):**
 
@@ -402,7 +401,19 @@ e. Post a **new** dual-trigger review-request comment that LEADS with `@codex re
    )"
    ```
 
-   Why this matters: a bare re-trigger after a fix iteration makes the reviewer re-derive what changed from the diff alone, often re-raising the same architectural finding for the third time. A short "what changed / what didn't and why" block lets both reviewers focus on whether the NEW diff introduced regressions and skip the deliberately-accepted findings.
+   Why this matters: a bare `@codex review` after a fix iteration makes the reviewer re-derive what changed from the diff alone, often re-raising the same architectural finding for the third time. A short "what changed / what didn't and why" block lets the reviewer focus on whether the NEW diff introduced regressions and skip the deliberately-accepted findings.
+
+   **👍 skip rule (don't re-trigger codex when it already approved).** Before posting another `@codex review`, check whether codex's latest verdict — in EITHER an issue-comment OR a head-pinned review — already contains a `:+1:` / 👍 / "Didn't find any major issues" marker. If yes, skip the re-trigger; a new commit pushed after the 👍 invalidates it and the next re-trigger is allowed. Canonical check:
+   ```bash
+   issue_body=$(gh api repos/$OWNER/$REPO/issues/$PR/comments \
+     --jq '[.[] | select(.user.login=="chatgpt-codex-connector[bot]")] | last | .body // ""')
+   review_body=$(gh api repos/$OWNER/$REPO/pulls/$PR/reviews \
+     --jq '[.[] | select(.user.login=="chatgpt-codex-connector[bot]")] | last | .body // ""')
+   if printf '%s\n%s' "$issue_body" "$review_body" | grep -qE ':\+1:|👍|did(.|n.?t)? find any major issues'; then
+     echo "skip @codex review re-trigger — latest codex verdict is already clean"
+   fi
+   ```
+   The pull-reviews query is the new part — codex posts clean verdicts in BOTH shapes.
 
 f. Re-run the eye-emoji loop on the new comment: `bash scripts/review-gate.sh wait <PR#>`.
 

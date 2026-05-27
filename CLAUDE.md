@@ -373,7 +373,7 @@ Linear is the planning ledger. GitHub is the delivery ledger. Per packet:
 7. **APPROVE → impl owns the PR from here.** On Claude's APPROVE, the impl:
    - Pushes the committed branch to origin
    - Creates the PR with `Closes VOI-N` in the body
-   - Posts a dual-trigger review-request comment whose first two lines are `@codex review` then `@claude review` (each on its own line). This fires both bots in parallel — Codex parses the leading `@codex review`, the `@claude review` action workflow scans the body for its trigger string. See `.claude/agents/implementer.md` § 8e for the full template.
+   - Posts a bare `@codex review` comment (Claude's review feedback enters locally via `/code-review` during step 4 of the impl's inner loop, NOT via PR comments — the PR thread carries only codex findings)
    - Drives the eye-emoji loop (see `scripts/review-gate.sh wait`)
    - Resolves threads + iterates fixes on findings (back to inner-loop) until codex returns CLEAN
    - **Notifies Claude only at REVIEWED-CLEAN** (or genuine spec-blocker escalation requiring a director ruling)
@@ -551,15 +551,14 @@ phantom Codex cloud task that narrates sandbox commits/PRs which do
 - Fix-narration / acknowledgment comments → **NO** `@codex` mention
   anywhere in the body; resolve the thread separately.
 - Re-review request → comment STARTS with `@codex review` on its own
-  line, followed immediately by `@claude review` on the next line, then
-  optionally a "Changes since last review" / "Not changed (deliberate)"
-  rationale block formatted per `.claude/agents/implementer.md` § 8e.
-  The leading `@codex review` triggers the Codex bot; the
-  `@claude review` on the next line triggers the GH Actions Claude
-  reviewer (case-insensitive `contains()` match in the workflow `if`).
-  Two bots, one comment, single rationale block. The rationale gives
-  both reviewers context for the re-review (avoiding the same finding
-  being re-raised on spec-design-accepted classes).
+  line, optionally followed by a "Changes since last review" /
+  "Not changed (deliberate)" rationale block formatted per
+  `.claude/agents/implementer.md` § 8e. The leading `@codex review`
+  triggers the bot; the rationale gives the reviewer context for the
+  re-review (avoiding the same finding being re-raised on
+  spec-design-accepted classes). Claude's review feedback enters the
+  inner loop via local `/code-review`, NOT via PR comments — the PR
+  thread carries only codex findings.
 - Treat the connector as an adversarial *reader* only — act on its
   findings text; never on its self-reported commits/PRs/tests; verify repo
   state if in doubt (`gh pr list --state all`, `gh api …/commits/<sha>`).

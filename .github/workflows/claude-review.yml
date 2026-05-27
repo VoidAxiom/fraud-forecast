@@ -1,8 +1,13 @@
 name: Claude Review (on demand)
 
 on:
-  issue_comment:
-    types: [created]
+  workflow_dispatch:
+# Disabled auto-trigger: replaced "issue_comment" with "workflow_dispatch" so this
+# workflow never fires on PR comments. We pivoted to local /code-review (run by
+# the implementer subagent in step 4 of the Impl Contract) for cross-family
+# review alongside /codex:review. This file is retained for the prompt design
+# and can still be triggered manually from the Actions UI if a one-off cloud
+# Claude review is ever wanted.
 
 permissions:
   contents: read
