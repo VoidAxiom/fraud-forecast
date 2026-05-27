@@ -394,6 +394,22 @@ def main() -> None:
     )
     args = parser.parse_args()
 
+    versioned_base: Optional[str] = None
+    if args.version is not None and args.tfrecord_path == "ml/data/transformed":
+        versioned_base = str(Path(args.tfrecord_path) / args.version)
+        args.tfrecord_path = str(Path(versioned_base) / "train")
+
+    resolved_transform_fn: Optional[str] = args.transform_fn_path
+    if resolved_transform_fn is None:
+        if versioned_base is not None:
+            candidate_transform_fn = str(Path(versioned_base) / "transform_fn")
+            if os.path.isdir(candidate_transform_fn):
+                resolved_transform_fn = candidate_transform_fn
+        if resolved_transform_fn is None:
+            candidate_transform_fn = str(Path(args.tfrecord_path) / "transform_fn")
+            if os.path.isdir(candidate_transform_fn):
+                resolved_transform_fn = candidate_transform_fn
+
     full_ds = make_dataset(args.tfrecord_path)
 
     total = sum(1 for _ in full_ds)
@@ -415,12 +431,6 @@ def main() -> None:
         if key.startswith("val_")
     }
     print(f"Final validation metrics: {val_metrics}")
-
-    resolved_transform_fn: Optional[str] = args.transform_fn_path
-    if resolved_transform_fn is None:
-        candidate_transform_fn = str(Path(args.tfrecord_path) / "transform_fn")
-        if os.path.isdir(candidate_transform_fn):
-            resolved_transform_fn = candidate_transform_fn
 
     if resolved_transform_fn:
         saved_model_path = build_serving_model(
