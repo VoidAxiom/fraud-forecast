@@ -108,9 +108,9 @@ FEATURE_SPEC.update(
     {feature_name: tf.io.FixedLenFeature([], tf.string) for feature_name in STRING_FEATURES}
 )
 FEATURE_SPEC.update(
-    {feature_name: tf.io.FixedLenFeature([], tf.bool) for feature_name in BOOLEAN_FEATURES}
+    {feature_name: tf.io.FixedLenFeature([], tf.int64) for feature_name in BOOLEAN_FEATURES}
 )
-FEATURE_SPEC["gt_is_fraud"] = tf.io.FixedLenFeature([], tf.bool)
+FEATURE_SPEC["gt_is_fraud"] = tf.io.FixedLenFeature([], tf.int64)
 
 
 def row_to_dict(row: Mapping[str, object]) -> dict[str, object]:
