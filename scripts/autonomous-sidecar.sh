@@ -252,16 +252,18 @@ for p in json.load(sys.stdin):
 
     # Ownership: who's supposed to be driving this PR?
     # Claude (director) owns PRs whose ENTIRE changed-file set is in
-    # Claude's exclusive territory: .claude/**, .codex/**, hooks/**,
-    # docs/**, scripts/**, **/*.md, root .gitignore. Otherwise the PR
-    # touches production code → impl-owned.
+    # Claude's exclusive territory: .claude/**, .codex/**, .github/**
+    # (CI workflows), hooks/**, docs/**, scripts/**, **/*.md, root
+    # .gitignore. Otherwise the PR touches production code → impl-owned.
+    # .github/** counts as Claude-owned in this repo per operating
+    # precedent — CI/Actions config is director infra, not packet code.
     owner="impl"
     changed_files=$(gh pr view "$pr_num" --json files --jq '.files[].path' 2>/dev/null)
     if [ -n "$changed_files" ]; then
       owner="claude"
       while IFS= read -r f; do
         case "$f" in
-          .claude/*|.codex/*|hooks/*|docs/*|scripts/*|*.md|.gitignore) ;;
+          .claude/*|.codex/*|.github/*|hooks/*|docs/*|scripts/*|*.md|.gitignore) ;;
           *) owner="impl"; break ;;
         esac
       done <<< "$changed_files"
