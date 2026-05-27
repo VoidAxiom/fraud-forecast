@@ -21,10 +21,21 @@ jobs:
       github.event.issue.state == 'open' &&
       contains(toLower(github.event.comment.body), '@claude review') &&
       github.event.comment.user.type != 'Bot' &&
-      contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association)
+      contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association) &&
+      contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.issue.author_association)
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
+      - name: Verify PR head is in this repo (no forks)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          head_repo=$(gh api repos/${{ github.repository }}/pulls/${{ github.event.issue.number }} --jq '.head.repo.full_name')
+          if [ "$head_repo" != "${{ github.repository }}" ]; then
+            echo "::error::PR head is in fork ($head_repo); refusing to expose OAuth + GITHUB_TOKEN to fork-authored code."
+            exit 1
+          fi
+
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
