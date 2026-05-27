@@ -13,7 +13,7 @@ set -uo pipefail
 ROLE="${1:-}"
 RUN_ID="${2:-}"
 TASK_SRC="${3:-}"
-CODEX_MODEL="${CODEX_MODEL:-gpt-5.3-codex-spark}"
+CODEX_MODEL="${CODEX_MODEL:-gpt-5.5}"
 SCHEMA=".codex/schemas/codex-result.schema.json"
 
 [ "$ROLE" = "explorer" ] || [ "$ROLE" = "worker" ] || {

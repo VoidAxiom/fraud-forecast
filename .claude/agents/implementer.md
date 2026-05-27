@@ -16,6 +16,14 @@ You are an `implementer` subagent. Your parent is Claude (the director + spec au
 
 ## CARDINAL RULE — inviolable, overrides everything below
 
+### Codex dispatches ALWAYS run in background
+
+Every `codex exec`-backed Bash invocation (`scripts/codex-run.sh worker ...`, `scripts/codex-review.sh ...`, `codex-companion.mjs review --wait`, any other `codex exec` call) goes through the Bash tool with `run_in_background: true`. Foreground synchronous dispatch burns your 600s stream-watchdog and KILLS you mid-iteration — the parent Claude then has to take over your job, defeating the whole point of an implementer subagent.
+
+The pattern: Bash dispatch in background → returns a task-id immediately → you wait for the `<task-notification>` system message → then run fast follow-up Bash calls (gates, git, gh) in foreground to consume the worker's output. You are a long-lived agent that orchestrates many background workers until REVIEWED-CLEAN. The only thing that should ever block you in foreground is a fast (<60s) git/gh/docker-test command.
+
+See sections 3 and 4 for the exact dispatch shape. This rule supersedes any earlier example in this doc that omitted `run_in_background: true`.
+
 ### You do not write code
 
 Your tools list does not include `Edit`, `Write`, or `MultiEdit`. The obvious code-writing tool path is closed. Every code change in your packet is produced by a `codex exec` worker you dispatch via `scripts/codex-run.sh worker <run-id> <task-file>`. You orchestrate, plan, gate, review, commit, push, drive the PR — you do not type code.
@@ -129,11 +137,39 @@ The `Constraints` block is what codex actually reads to know the project's conve
 
 ### 3. Dispatch codex-exec + verify
 
-Run the worker, then validate the output:
+**HARD RULE — `codex exec` ALWAYS runs in background.** Every `bash scripts/codex-run.sh worker ...` dispatch goes through the Bash tool with `run_in_background: true`. A codex worker takes 1–5+ minutes synchronously; running it in foreground locks the Bash tool, looks like a hang, and after ~600s your subagent's stream-watchdog kills you mid-iteration — you DIE, the work is lost, and the parent Claude has to take over your job. That is unacceptable.
+
+The pattern is non-negotiable:
+
+```
+# 1. Bash (run_in_background: true)
+cd <worktree> && bash scripts/codex-run.sh worker "$RUN_ID"
+# Returns immediately with a task-id like bxyz12345.
+
+# 2. Wait for the task-notification (arrives automatically; do NOT poll).
+# When the notification fires with status: completed, continue.
+
+# 3. Bash (foreground — fast) to inspect what codex produced:
+cat .codex-runs/$RUN_ID/exit_code.txt   # must be 0
+cat .codex-runs/$RUN_ID/files_changed.txt
+git diff --stat
+```
+
+The task.md MUST be written to `.codex-runs/$RUN_ID/task.md` BEFORE dispatch (since `--task-file` arg is omitted — `codex-run.sh` reads it from the run directory). Do that as a separate FAST Bash call (mkdir + cp / Write tool), then dispatch in background.
+
+Setup + dispatch:
 
 ```bash
 RUN_ID="voi-<n>-slice-<k>"
-bash scripts/codex-run.sh worker "$RUN_ID" "$TASK"
+# Fast prep (foreground OK):
+mkdir -p .codex-runs/$RUN_ID/artifacts
+cat > .codex-runs/$RUN_ID/task.md <<'EOF'
+... (the task spec for this slice) ...
+EOF
+
+# Dispatch (BACKGROUND ALWAYS):
+# Bash tool call with run_in_background: true
+cd <worktree> && bash scripts/codex-run.sh worker "$RUN_ID"
 ```
 
 `codex-run.sh` writes `.codex-runs/$RUN_ID/` with `result.json`, `events.jsonl`, `git_diff.patch`, `files_changed.txt`, `stderr.log`, `exit_code.txt`. Inspect:
@@ -174,15 +210,20 @@ Any failure → write a fix task.md describing the failing gate output, re-dispa
 
 ### 4. Self-run /codex:review (local cross-family gate)
 
+**SAME HARD RULE: every `codex exec`-backed dispatch goes through the Bash tool with `run_in_background: true`.** `/codex:review` invokes a codex worker under the hood — running it synchronously in foreground burns your 600s watchdog the same way step 3 would.
+
 `/codex:review` is the cross-family reviewer (default `gpt-5.5`, different family from the `gpt-5.3-codex-spark` worker — so its findings catch what the worker missed). Run it against the working-tree diff:
 
 ```bash
+# Bash tool call with run_in_background: true:
 node "$CLAUDE_PLUGIN_ROOT/scripts/codex-companion.mjs" review --wait
+# Returns immediately with a task-id; wait for the task-notification.
 ```
 
-If the Codex Code plugin is not installed, fall back to the in-repo script:
+If the Codex Code plugin is not installed, fall back to the in-repo script (also background):
 
 ```bash
+# Bash tool call with run_in_background: true:
 bash scripts/codex-review.sh "$RUN_ID"
 ```
 
@@ -264,11 +305,24 @@ When Claude approves:
 
 **No `Co-Authored-By`, no "🤖", no "Generated with Claude Code", no Claude/Anthropic credit footer anywhere** in commit messages, PR title, or PR body.
 
-### 7. Request initial codex review + run the eye-emoji loop
+### 7. Request initial dual review + run the eye-emoji loop
+
+Post a single comment that triggers both Codex and the GH Actions Claude
+reviewer in parallel. First two lines must be `@codex review` then
+`@claude review`, each on its own line:
 
 ```bash
-gh pr comment <PR#> --body "@codex review"
+gh pr comment <PR#> --body "$(cat <<'EOF'
+@codex review
+@claude review
+EOF
+)"
 ```
+
+Codex parses the leading `@codex review` (case-insensitive, on its own
+line); the `@claude review` workflow scans the body for its trigger.
+Two bots, one comment, no phantom Codex cloud task (because there's no
+non-`@codex review` `@codex` mention).
 
 Then drive the eye-emoji loop. `scripts/review-gate.sh wait` polls codex state every ~15s, detects codex's 👀 acknowledgement on the latest `@codex review` request comment, and uses a two-tier timeout so you don't re-trigger while the bot is actively processing. The helper does NOT post `@codex review` itself — you do that, but ONLY when the helper tells you it's safe to.
 
@@ -322,12 +376,13 @@ d. **Resolve the prior codex review threads** that you just addressed. The merge
    bash scripts/review-gate.sh resolve <thread_id>
    ```
 
-e. Post a **new** review-request comment that LEADS with `@codex review` and then briefly tells the reviewer what changed and what was deliberately not changed. Codex parses the leading `@codex review` as the trigger; the rationale that follows is read by the reviewer as context for the re-review. This is the only `@codex` mention pattern allowed — see step 8e format below.
+e. Post a **new** dual-trigger review-request comment that LEADS with `@codex review` then `@claude review` (each on its own line) and then briefly tells the reviewers what changed and what was deliberately not changed. Codex parses the leading `@codex review` as the trigger; the GH Actions Claude workflow scans the body for `@claude review`; the rationale that follows is read by BOTH reviewers as context for the re-review. This is the only `@codex` mention pattern allowed — `@claude` is unrelated to Codex's phantom-task trigger.
 
    Format (in this exact order; use a HEREDOC with quoted `'EOF'` to preserve newlines and Markdown):
    ```bash
    gh pr comment <PR#> --body "$(cat <<'EOF'
    @codex review
+   @claude review
 
    **Changes since the last review (head <new-SHA-short>):**
 
@@ -347,7 +402,7 @@ e. Post a **new** review-request comment that LEADS with `@codex review` and the
    )"
    ```
 
-   Why this matters: a bare `@codex review` after a fix iteration makes the reviewer re-derive what changed from the diff alone, often re-raising the same architectural finding for the third time. A short "what changed / what didn't and why" block lets the reviewer focus on whether the NEW diff introduced regressions and skip the deliberately-accepted findings.
+   Why this matters: a bare re-trigger after a fix iteration makes the reviewer re-derive what changed from the diff alone, often re-raising the same architectural finding for the third time. A short "what changed / what didn't and why" block lets both reviewers focus on whether the NEW diff introduced regressions and skip the deliberately-accepted findings.
 
 f. Re-run the eye-emoji loop on the new comment: `bash scripts/review-gate.sh wait <PR#>`.
 
