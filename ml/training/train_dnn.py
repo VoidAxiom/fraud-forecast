@@ -272,11 +272,18 @@ def _tensor_specs_from_feature_spec(feature_spec: Dict[str, Any]) -> Dict[str, A
 class _ServingWrapper(tf.Module):  # type: ignore[misc]
     dnn_model: tf.keras.Model
     transform_layer: Any
+    _inject_gt_is_fraud: bool
 
-    def __init__(self, dnn_model: tf.keras.Model, transform_layer: Any) -> None:
+    def __init__(
+        self,
+        dnn_model: tf.keras.Model,
+        transform_layer: Any,
+        inject_gt_is_fraud: bool = False,
+    ) -> None:
         super().__init__()
         self.dnn_model = dnn_model
         self.transform_layer = transform_layer
+        self._inject_gt_is_fraud = inject_gt_is_fraud
 
     # TF 2.3 stubs leave tf.function untyped, but SavedModel needs this trace.
     @tf.function  # type: ignore[misc]
@@ -284,7 +291,17 @@ class _ServingWrapper(tf.Module):  # type: ignore[misc]
         if self.transform_layer is None:
             transformed_features = raw_features
         else:
-            transformed_features = self.transform_layer(raw_features)
+            if self._inject_gt_is_fraud:
+                # gt_is_fraud is training-only and not part of the serving signature.
+                batch_size = tf.shape(raw_features[next(iter(FEATURE_ORDER))])[0]
+                features_with_label = dict(raw_features)
+                features_with_label["gt_is_fraud"] = tf.zeros(
+                    [batch_size],
+                    dtype=tf.bool,
+                )
+                transformed_features = self.transform_layer(features_with_label)
+            else:
+                transformed_features = self.transform_layer(raw_features)
         x = _feature_matrix_from_dict(transformed_features)
         return self.dnn_model(x)
 
@@ -294,22 +311,23 @@ def build_serving_model(transform_fn_path: str, dnn_model: tf.keras.Model) -> st
 
     tft_output = tft.TFTransformOutput(transform_fn_path)
     transform_layer: Any = None
+    inject_gt_is_fraud = False
     try:
         tft_raw_spec = tft_output.raw_feature_spec()
-        has_label_inputs = bool(_LABEL_FIELD_NAMES & set(tft_raw_spec.keys()))
-        if has_label_inputs:
-            transform_layer = None
-            feature_spec = _passthrough_feature_spec()
-        else:
-            transform_layer = tft_output.transform_features_layer()
-            feature_spec = _serving_feature_spec(tft_raw_spec)
+        inject_gt_is_fraud = "gt_is_fraud" in tft_raw_spec
+        transform_layer = tft_output.transform_features_layer()
+        feature_spec = _serving_feature_spec(tft_raw_spec)
     except AttributeError:
         transform_layer = None
         feature_spec = _passthrough_feature_spec()
 
     version = _new_version()
     saved_model_path = str(Path("models") / "dnn" / version / "saved_model")
-    wrapper = _ServingWrapper(dnn_model=dnn_model, transform_layer=transform_layer)
+    wrapper = _ServingWrapper(
+        dnn_model=dnn_model,
+        transform_layer=transform_layer,
+        inject_gt_is_fraud=inject_gt_is_fraud,
+    )
     serving_signature = wrapper.serve.get_concrete_function(
         _tensor_specs_from_feature_spec(feature_spec)
     )

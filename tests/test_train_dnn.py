@@ -82,7 +82,7 @@ def test_serving_feature_spec_excludes_training_labels() -> None:
     assert set(serving_spec) == set(FEATURE_ORDER)
 
 
-def test_serving_transform_with_label_inputs_uses_passthrough() -> None:
+def test_serving_transform_with_label_inputs_injects_dummy_gt() -> None:
     tf.keras.backend.clear_session()
     model = build_dnn_model(input_dim=NUM_FEATURES)
     raw_spec = dict(_passthrough_feature_spec())
@@ -98,12 +98,17 @@ def test_serving_transform_with_label_inputs_uses_passthrough() -> None:
     with patch.dict(sys.modules, {"tensorflow_transform": mock_tft}), patch(
         "ml.training.train_dnn.tf.saved_model.save",
         side_effect=_capture_save,
-    ):
+    ), patch("ml.training.train_dnn._ServingWrapper") as MockWrapper:
+        mock_wrapper = MockWrapper.return_value
+        mock_wrapper.serve.get_concrete_function.return_value = object()
         saved_model_path = build_serving_model("unused-transform-fn", model)
 
     assert saved_model_path
-    assert saved_objects[0].transform_layer is None
-    mock_tft_output.transform_features_layer.assert_not_called()
+    assert saved_objects[0] is mock_wrapper
+    call_args = MockWrapper.call_args
+    assert call_args.kwargs.get("inject_gt_is_fraud") is True
+    assert call_args.kwargs.get("transform_layer") is not None
+    mock_tft_output.transform_features_layer.assert_called_once()
 
 
 def test_compute_class_weight_uses_training_label_ratio() -> None:
