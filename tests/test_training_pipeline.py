@@ -316,8 +316,7 @@ def test_data_loader_excludes_unfinalised(
         del conn
         query_text = str(query)
         buffer_expression = (
-            "NOW() - (CAST(:label_finalisation_buffer_days AS INTEGER) * "
-            "INTERVAL '1 day')"
+            "NOW() - (CAST(:label_finalisation_buffer_days AS INTEGER) * INTERVAL '1 day')"
         )
         assert buffer_expression in query_text
         assert "label_finalisation_buffer_days" in params
@@ -431,18 +430,21 @@ def test_preprocessing_fn_handles_oov(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Fit a real TFT vocab and verify OOV values use a distinct bucket."""
+    """Fit a real TFT vocab on known values; verify OOV maps to a different
+    index than in-vocab values, proving compute_and_apply_vocabulary bucketing."""
     del monkeypatch
 
+    import json as _json
+
     import apache_beam as beam
-    import tensorflow_transform as _tft_module
     import tensorflow_transform.beam as tft_beam
     from tensorflow_transform.tf_metadata import dataset_metadata, schema_utils
 
-    feature_spec: Dict[str, object] = {"card_brand": tf.io.FixedLenFeature([], tf.string)}
-    metadata = dataset_metadata.DatasetMetadata(
-        schema_utils.schema_from_feature_spec(feature_spec)
-    )
+    feature_spec: Dict[str, object] = {
+        "card_brand": tf.io.FixedLenFeature([], tf.string),
+        "row_id": tf.io.FixedLenFeature([], tf.int64),
+    }
+    metadata = dataset_metadata.DatasetMetadata(schema_utils.schema_from_feature_spec(feature_spec))
 
     def _card_brand_preprocessing_fn(inputs: Dict[str, object]) -> Dict[str, object]:
         import tensorflow_transform as _tft
@@ -450,41 +452,58 @@ def test_preprocessing_fn_handles_oov(
         return {
             "card_brand": _tft.compute_and_apply_vocabulary(
                 inputs["card_brand"],
-                top_k=20,
+                top_k=2,  # only top-2 in vocab; amex (1 count) is OOV
                 num_oov_buckets=1,
                 vocab_filename="vocab_card_brand",
-            )
+            ),
+            "row_id": tf.cast(inputs["row_id"], tf.int64),
         }
 
-    train_data: List[Dict[str, bytes]] = [
-        {"card_brand": b"visa"},
-        {"card_brand": b"mastercard"},
-    ]
-    transform_output_dir = str(tmp_path / "tft_output")
-    beam_temp_dir = str(tmp_path / "beam_temp")
+    # row_id semantics: 0 = vocab data (ignored), 1 = test in-vocab (visa), 2 = test OOV (amex)
+    # visa x10 + mastercard x10 = top-2; amex x1 = OOV
+    all_data: List[Dict[str, object]] = (
+        [{"card_brand": b"visa", "row_id": 0}] * 10
+        + [{"card_brand": b"mastercard", "row_id": 0}] * 10
+        + [{"card_brand": b"visa", "row_id": 1}]
+        + [{"card_brand": b"amex", "row_id": 2}]
+    )
 
-    with beam.Pipeline(runner="DirectRunner") as pipeline:
-        raw_data = pipeline | "CreateData" >> beam.Create(train_data)
-        with tft_beam.Context(temp_dir=beam_temp_dir):
-            _transformed_dataset, transform_fn = (
+    output_prefix = str(tmp_path / "output")
+
+    with tft_beam.Context(temp_dir=str(tmp_path / "beam_temp")):  # noqa: SIM117
+        with beam.Pipeline(runner="DirectRunner") as pipeline:
+            raw_data = pipeline | "CreateData" >> beam.Create(all_data)
+            (transformed_dataset, _transform_fn) = (
                 raw_data,
                 metadata,
             ) | "AnalyzeAndTransform" >> tft_beam.AnalyzeAndTransformDataset(
                 _card_brand_preprocessing_fn
             )
-            transform_fn | "WriteTransformFn" >> tft_beam.WriteTransformFn(
-                transform_output_dir
+            transformed_data, _transformed_metadata = transformed_dataset
+            (
+                transformed_data
+                | "ToJson"
+                >> beam.Map(
+                    lambda r: _json.dumps(
+                        {"card_brand": int(r["card_brand"]), "row_id": int(r["row_id"])}
+                    )
+                )
+                | "WriteOutput" >> beam.io.WriteToText(output_prefix)
             )
 
-    tft_output = _tft_module.TFTransformOutput(transform_output_dir)
+    # Read back all output shards and parse
+    import glob as _glob
 
-    def _apply(brand: bytes) -> int:
-        raw = {"card_brand": tf.constant([brand])}
-        out = tft_output.transform_raw_features(raw)
-        return int(cast(tf.Tensor, out["card_brand"]).numpy()[0])
+    rows: List[Dict[str, int]] = []
+    for shard_path in sorted(_glob.glob(output_prefix + "-*")):
+        with open(shard_path) as fh:
+            for line in fh:
+                line = line.strip()
+                if line:
+                    rows.append(_json.loads(line))
 
-    in_vocab_idx: int = _apply(b"visa")
-    oov_idx: int = _apply(b"amex")
+    in_vocab_idx: int = next(r["card_brand"] for r in rows if r["row_id"] == 1)
+    oov_idx: int = next(r["card_brand"] for r in rows if r["row_id"] == 2)
 
     assert in_vocab_idx != oov_idx, (
         f"in-vocab 'visa' ({in_vocab_idx}) and OOV 'amex' ({oov_idx}) "
