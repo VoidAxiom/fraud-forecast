@@ -400,13 +400,25 @@ def test_data_loader_no_future_leakage(
         datetime(2026, 1, 1, 13, 30, 0, tzinfo=timezone.utc),
         datetime(2026, 1, 2, 10, 0, 0, tzinfo=timezone.utc),
         datetime(2026, 1, 2, 13, 30, 0, tzinfo=timezone.utc),
+        datetime(2026, 1, 1, 13, 30, 0, tzinfo=timezone.utc),
     ]
-    expected_1h = [0, 1, 1, 0, 0]
-    expected_24h = [0, 1, 2, 3, 2]
+    # NOTE: t5 is tied in placed_at with t2 (same user, identical
+    # timestamp). This fixture documents production behavior under
+    # RANGE ... EXCLUDE CURRENT ROW: Postgres excludes only the current
+    # physical tuple; peer rows at the same placed_at ARE included.
+    # If EXCLUDE GROUP is added to prevent tied-timestamp leakage,
+    # update expected_1h, expected_24h, and count_prior_window here.
+    # 1h by row: t0=0, t1=1, t2=2 (t1 + t5), t3=0, t4=0,
+    # t5=2 (t1 + t2).
+    expected_1h = [0, 1, 2, 0, 0, 2]
+    # 24h by row: t0=0, t1=1, t2=3 (t0 + t1 + t5),
+    # t3=4 (t0 + t1 + t2 + t5), t4=3 (t2 + t3 + t5),
+    # t5=3 (t0 + t1 + t2).
+    expected_24h = [0, 1, 3, 4, 3, 3]
 
-    return_df = make_synthetic_df(n_rows=5, n_fraud=0, seed=42)
-    return_df["order_id"] = ["t0", "t1", "t2", "t3", "t4"]
-    return_df["user_id"] = ["user-1"] * 5
+    return_df = make_synthetic_df(n_rows=6, n_fraud=0, seed=42)
+    return_df["order_id"] = ["t0", "t1", "t2", "t3", "t4", "t5"]
+    return_df["user_id"] = ["user-1"] * 6
     return_df["placed_at"] = placed_at
 
     engine = MagicMock()
@@ -434,13 +446,14 @@ def test_data_loader_no_future_leakage(
         base = return_df[["order_id", "user_id", "placed_at"]].copy()
 
         def count_prior_window(row: pd.Series, window_seconds: int) -> int:
-            """Count rows in [t - window, t), strict-less-than on upper bound, no peer rows."""
+            """Count rows in [t - window, t], excluding only this physical row."""
             t = row["placed_at"]
             cutoff = t - pd.Timedelta(seconds=window_seconds)
             mask = (
                 (base["user_id"] == row["user_id"])
                 & (base["placed_at"] >= cutoff)
-                & (base["placed_at"] < t)
+                & (base["placed_at"] <= t)
+                & (base.index != row.name)
             )
             return int(mask.sum())
 
@@ -466,9 +479,12 @@ def test_data_loader_no_future_leakage(
     result = load_training_data(config)
 
     get_engine_mock.assert_called_once_with(role="training")
-    assert len(result) == 5
+    assert len(result) == 6
     assert result["user_orders_1h_at_order_time"].tolist() == expected_1h
     assert result["user_orders_24h_at_order_time"].tolist() == expected_24h
+    tied_rows = result[result["order_id"].isin(["t2", "t5"])]
+    assert tied_rows["user_orders_1h_at_order_time"].tolist() == [2, 2]
+    assert tied_rows["user_orders_24h_at_order_time"].tolist() == [3, 3]
     for column in ("order_id", "user_id", "placed_at", *_REQUIRED_COLUMNS):
         assert column in result.columns
 
