@@ -416,15 +416,29 @@ def main() -> None:
     }
     print(f"Final validation metrics: {val_metrics}")
 
-    if args.transform_fn_path:
+    resolved_transform_fn: Optional[str] = args.transform_fn_path
+    if resolved_transform_fn is None:
+        candidate_transform_fn = str(Path(args.tfrecord_path) / "transform_fn")
+        if os.path.isdir(candidate_transform_fn):
+            resolved_transform_fn = candidate_transform_fn
+
+    if resolved_transform_fn:
         saved_model_path = build_serving_model(
-            args.transform_fn_path,
+            resolved_transform_fn,
             model,
             output_dir=args.output_dir,
             version=args.version,
         )
         print(f"SavedModel exported to: {saved_model_path}")
     else:
+        import warnings
+
+        warnings.warn(
+            "No transform_fn_path provided or found; saving bare Keras model "
+            "without TFT preprocessing. "
+            "Pass --transform-fn-path to include the TF Transform layer.",
+            stacklevel=2,
+        )
         version = args.version or _new_version()
         output_path = str(Path(args.output_dir) / version / "saved_model")
         Path(output_path).mkdir(parents=True, exist_ok=True)
