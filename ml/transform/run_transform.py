@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import random
 import tempfile
 from collections.abc import Callable, Mapping
 
@@ -159,12 +160,50 @@ def run_pipeline(
             transformed_data, transformed_metadata = transformed_dataset
 
             coder = tft.coders.ExampleProtoCoder(transformed_metadata.schema)
-            _ = (
+
+            split_rng = random.Random(42)
+
+            def _split_bucket(elem: object, n_parts: int) -> int:
+                _ = elem
+                if n_parts != 3:
+                    raise ValueError(f"Expected 3 partitions, got {n_parts}")
+
+                r = split_rng.random()
+                if r < 0.8:
+                    return 0
+                if r < 0.9:
+                    return 1
+                return 2
+
+            train_pc, val_pc, test_pc = (
                 transformed_data
-                | "EncodeTFExample" >> beam.Map(coder.encode)
-                | "WriteTFRecord"
+                | "SplitTrainValTest" >> beam.Partition(_split_bucket, 3)
+            )
+
+            _ = (
+                train_pc
+                | "Encode_train" >> beam.Map(coder.encode)
+                | "Write_train"
                 >> beam.io.WriteToTFRecord(
                     os.path.join(output_dir, "train"),
+                    file_name_suffix=".tfrecord.gz",
+                )
+            )
+            _ = (
+                val_pc
+                | "Encode_val" >> beam.Map(coder.encode)
+                | "Write_val"
+                >> beam.io.WriteToTFRecord(
+                    os.path.join(output_dir, "val"),
+                    file_name_suffix=".tfrecord.gz",
+                )
+            )
+            _ = (
+                test_pc
+                | "Encode_test" >> beam.Map(coder.encode)
+                | "Write_test"
+                >> beam.io.WriteToTFRecord(
+                    os.path.join(output_dir, "test"),
                     file_name_suffix=".tfrecord.gz",
                 )
             )
