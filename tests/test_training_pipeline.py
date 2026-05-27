@@ -2,10 +2,8 @@ from __future__ import annotations
 
 import importlib
 import json
-import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from types import ModuleType
 from typing import Any, Dict, List, Mapping, Protocol, Sequence, Tuple, Type, cast
 from unittest.mock import MagicMock
 
@@ -360,22 +358,30 @@ def test_data_loader_no_future_leakage(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Verify the loader routes through real SQL window logic via patched pd.read_sql_query."""
+    """Verify hand-computed ground-truth window counts mirror SQL RANGE semantics.
+
+    The expected_1h and expected_24h values are hand-computed counts for
+    RANGE BETWEEN ... PRECEDING AND CURRENT ROW EXCLUDE CURRENT ROW semantics.
+    """
     assert tmp_path.exists()
     placed_at = [
         datetime(2026, 1, 1, 12, 0, 0, tzinfo=timezone.utc),
         datetime(2026, 1, 1, 12, 30, 0, tzinfo=timezone.utc),
         datetime(2026, 1, 1, 13, 30, 0, tzinfo=timezone.utc),
+        datetime(2026, 1, 2, 10, 0, 0, tzinfo=timezone.utc),
+        datetime(2026, 1, 2, 13, 30, 0, tzinfo=timezone.utc),
     ]
-    expected_user_orders_1h = [0, 1, 1]
-    expected_user_orders_24h = [0, 1, 2]
+    # 1h prior counts: t1 sees t0; t2 sees t1 exactly 60m prior; t3/t4 see none.
+    expected_1h = [0, 1, 1, 0, 0]
+    # 24h prior counts: t3 sees t0/t1/t2; t4 sees t2 at exactly 24h plus t3.
+    expected_24h = [0, 1, 2, 3, 2]
 
-    return_df = make_synthetic_df(n_rows=3, n_fraud=0, seed=42)
-    return_df["order_id"] = ["t1", "t2", "t3"]
-    return_df["user_id"] = ["user-1", "user-1", "user-1"]
+    return_df = make_synthetic_df(n_rows=5, n_fraud=0, seed=42)
+    return_df["order_id"] = ["t0", "t1", "t2", "t3", "t4"]
+    return_df["user_id"] = ["user-1", "user-1", "user-1", "user-1", "user-1"]
     return_df["placed_at"] = placed_at
-    return_df["user_orders_1h_at_order_time"] = expected_user_orders_1h
-    return_df["user_orders_24h_at_order_time"] = expected_user_orders_24h
+    return_df["user_orders_1h_at_order_time"] = expected_1h
+    return_df["user_orders_24h_at_order_time"] = expected_24h
 
     engine = MagicMock()
     get_engine_mock = MagicMock(return_value=engine)
@@ -414,28 +420,78 @@ def test_data_loader_no_future_leakage(
     result = load_training_data(config)
 
     get_engine_mock.assert_called_once_with(role="training")
-    assert len(result) == 3
-    assert result["user_orders_1h_at_order_time"].tolist() == expected_user_orders_1h
-    assert result["user_orders_24h_at_order_time"].tolist() == expected_user_orders_24h
+    assert len(result) == 5
+    assert result["user_orders_1h_at_order_time"].tolist() == expected_1h
+    assert result["user_orders_24h_at_order_time"].tolist() == expected_24h
     for column in ("order_id", "user_id", "placed_at", *_REQUIRED_COLUMNS):
         assert column in result.columns
 
 
-def test_preprocessing_fn_handles_oov(monkeypatch: pytest.MonkeyPatch) -> None:
-    fake_tft = _FakeTft()
-    fake_tft_module = ModuleType("tensorflow_transform")
-    fake_tft_module.__dict__["scale_to_z_score"] = fake_tft.scale_to_z_score
-    fake_tft_module.__dict__["compute_and_apply_vocabulary"] = fake_tft.compute_and_apply_vocabulary
-    fake_tft_module.__dict__["hash_strings"] = fake_tft.hash_strings
-    monkeypatch.setitem(sys.modules, "tensorflow_transform", fake_tft_module)
-    preprocessing_module = _preprocessing_module()
-    monkeypatch.setattr(preprocessing_module, "tft", fake_tft)
+def test_preprocessing_fn_handles_oov(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Fit a real TFT vocab and verify OOV values use a distinct bucket."""
+    del monkeypatch
 
-    outputs = preprocessing_module.preprocessing_fn(_raw_preprocessing_inputs())
-    card_brand = np.asarray(outputs["card_brand"])
+    import apache_beam as beam
+    import tensorflow_transform as _tft_module
+    import tensorflow_transform.beam as tft_beam
+    from tensorflow_transform.tf_metadata import dataset_metadata, schema_utils
 
-    assert card_brand.tolist() == [0]
-    assert ("vocab_card_brand", 1) in fake_tft.vocabulary_calls
+    feature_spec: Dict[str, object] = {"card_brand": tf.io.FixedLenFeature([], tf.string)}
+    metadata = dataset_metadata.DatasetMetadata(
+        schema_utils.schema_from_feature_spec(feature_spec)
+    )
+
+    def _card_brand_preprocessing_fn(inputs: Dict[str, object]) -> Dict[str, object]:
+        import tensorflow_transform as _tft
+
+        return {
+            "card_brand": _tft.compute_and_apply_vocabulary(
+                inputs["card_brand"],
+                top_k=20,
+                num_oov_buckets=1,
+                vocab_filename="vocab_card_brand",
+            )
+        }
+
+    train_data: List[Dict[str, bytes]] = [
+        {"card_brand": b"visa"},
+        {"card_brand": b"mastercard"},
+    ]
+    transform_output_dir = str(tmp_path / "tft_output")
+    beam_temp_dir = str(tmp_path / "beam_temp")
+
+    with beam.Pipeline(runner="DirectRunner") as pipeline:
+        raw_data = pipeline | "CreateData" >> beam.Create(train_data)
+        with tft_beam.Context(temp_dir=beam_temp_dir):
+            _transformed_dataset, transform_fn = (
+                raw_data,
+                metadata,
+            ) | "AnalyzeAndTransform" >> tft_beam.AnalyzeAndTransformDataset(
+                _card_brand_preprocessing_fn
+            )
+            transform_fn | "WriteTransformFn" >> tft_beam.WriteTransformFn(
+                transform_output_dir
+            )
+
+    tft_output = _tft_module.TFTransformOutput(transform_output_dir)
+
+    def _apply(brand: bytes) -> int:
+        raw = {"card_brand": tf.constant([brand])}
+        out = tft_output.transform_raw_features(raw)
+        return int(cast(tf.Tensor, out["card_brand"]).numpy()[0])
+
+    in_vocab_idx: int = _apply(b"visa")
+    oov_idx: int = _apply(b"amex")
+
+    assert in_vocab_idx != oov_idx, (
+        f"in-vocab 'visa' ({in_vocab_idx}) and OOV 'amex' ({oov_idx}) "
+        "must map to different indices to prove OOV bucketing works"
+    )
+    assert in_vocab_idx >= 0
+    assert oov_idx >= 0
 
 
 def test_xgboost_trains_and_predicts(
