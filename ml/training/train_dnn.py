@@ -295,12 +295,17 @@ def build_serving_model(transform_fn_path: str, dnn_model: tf.keras.Model) -> st
     tft_output = tft.TFTransformOutput(transform_fn_path)
     transform_layer: Any = None
     try:
-        transform_layer = tft_output.transform_features_layer()
-        feature_spec = tft_output.raw_feature_spec()
+        tft_raw_spec = tft_output.raw_feature_spec()
+        has_label_inputs = bool(_LABEL_FIELD_NAMES & set(tft_raw_spec.keys()))
+        if has_label_inputs:
+            transform_layer = None
+            feature_spec = _passthrough_feature_spec()
+        else:
+            transform_layer = tft_output.transform_features_layer()
+            feature_spec = _serving_feature_spec(tft_raw_spec)
     except AttributeError:
         transform_layer = None
         feature_spec = _passthrough_feature_spec()
-    feature_spec = _serving_feature_spec(feature_spec)
 
     version = _new_version()
     saved_model_path = str(Path("models") / "dnn" / version / "saved_model")
@@ -316,6 +321,71 @@ def build_serving_model(transform_fn_path: str, dnn_model: tf.keras.Model) -> st
     return saved_model_path
 
 
+def main() -> None:
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Train Keras DNN fraud model")
+    parser.add_argument(
+        "--tfrecord-path",
+        default="ml/data/transformed",
+        help="Path or glob to TFRecord files",
+    )
+    parser.add_argument(
+        "--transform-fn-path",
+        default=None,
+        help="Path to TFT transform_fn directory (optional)",
+    )
+    parser.add_argument(
+        "--output-dir",
+        default="models/dnn",
+        help="Base directory for model output",
+    )
+    parser.add_argument(
+        "--epochs",
+        type=int,
+        default=30,
+        help="Number of training epochs",
+    )
+    parser.add_argument(
+        "--version",
+        default=None,
+        help="Version string (default: auto-generated)",
+    )
+    args = parser.parse_args()
+
+    full_ds = make_dataset(args.tfrecord_path)
+
+    total = sum(1 for _ in full_ds)
+    train_size = int(total * 0.8)
+    val_size = int(total * 0.1)
+
+    train_ds = full_ds.take(train_size)
+    val_ds = full_ds.skip(train_size).take(val_size)
+    test_ds = full_ds.skip(train_size + val_size)
+    del test_ds
+
+    hyperparams = {"epochs": args.epochs}
+    print(f"Training DNN on {train_size} examples...")
+    model, history = train_dnn(train_ds, val_ds, hyperparams)
+
+    val_metrics = {
+        key: values[-1]
+        for key, values in history.history.items()
+        if key.startswith("val_")
+    }
+    print(f"Final validation metrics: {val_metrics}")
+
+    if args.transform_fn_path:
+        saved_model_path = build_serving_model(args.transform_fn_path, model)
+        print(f"SavedModel exported to: {saved_model_path}")
+    else:
+        version = args.version or _new_version()
+        output_path = str(Path(args.output_dir) / version / "saved_model")
+        Path(output_path).mkdir(parents=True, exist_ok=True)
+        tf.saved_model.save(model, output_path)
+        print(f"Model saved to: {output_path}")
+
+
 __all__ = [
     "FEATURE_NAMES",
     "FEATURE_ORDER",
@@ -326,6 +396,11 @@ __all__ = [
     "build_dnn_model",
     "build_serving_model",
     "compute_class_weight",
+    "main",
     "make_dataset",
     "train_dnn",
 ]
+
+
+if __name__ == "__main__":
+    main()

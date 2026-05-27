@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import os
+import sys
 from collections.abc import Sequence
 from pathlib import Path
+from typing import Any
+from unittest.mock import Mock, patch
 
 import numpy as np
 import tensorflow as tf
@@ -15,6 +18,7 @@ from ml.training.train_dnn import (
     NUM_FEATURES,
     _passthrough_feature_spec,
     _serving_feature_spec,
+    build_serving_model,
     build_dnn_model,
     compute_class_weight,
     make_dataset,
@@ -76,6 +80,30 @@ def test_serving_feature_spec_excludes_training_labels() -> None:
     assert "gt_review_reason" not in serving_spec
     assert "label_source" not in serving_spec
     assert set(serving_spec) == set(FEATURE_ORDER)
+
+
+def test_serving_transform_with_label_inputs_uses_passthrough() -> None:
+    tf.keras.backend.clear_session()
+    model = build_dnn_model(input_dim=NUM_FEATURES)
+    raw_spec = dict(_passthrough_feature_spec())
+    raw_spec["gt_is_fraud"] = tf.io.FixedLenFeature([], tf.int64)
+    mock_tft = Mock()
+    mock_tft_output = mock_tft.TFTransformOutput.return_value
+    mock_tft_output.raw_feature_spec.return_value = raw_spec
+    saved_objects: list[Any] = []
+
+    def _capture_save(obj: Any, path: str, signatures: Any = None) -> None:
+        saved_objects.append(obj)
+
+    with patch.dict(sys.modules, {"tensorflow_transform": mock_tft}), patch(
+        "ml.training.train_dnn.tf.saved_model.save",
+        side_effect=_capture_save,
+    ):
+        saved_model_path = build_serving_model("unused-transform-fn", model)
+
+    assert saved_model_path
+    assert saved_objects[0].transform_layer is None
+    mock_tft_output.transform_features_layer.assert_not_called()
 
 
 def test_compute_class_weight_uses_training_label_ratio() -> None:
