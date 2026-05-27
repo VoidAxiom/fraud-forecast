@@ -61,7 +61,9 @@ def make_synthetic_df(n_rows: int = 10000, n_fraud: int = 200, seed: int = 42) -
         ]
 
     is_fraud = np.zeros(n_rows, dtype=bool)
-    is_fraud[:n_fraud] = True
+    if n_fraud > 0:
+        fraud_indices = rng.choice(n_rows, size=n_fraud, replace=False)
+        is_fraud[fraud_indices] = True
 
     data: Dict[str, object] = {
         "placed_at": placed_at,

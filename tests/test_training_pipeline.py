@@ -7,6 +7,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import ModuleType
 from typing import Any, Dict, List, Mapping, Protocol, Sequence, Tuple, Type, cast
+from unittest.mock import MagicMock
 
 import numpy as np
 import pandas as pd
@@ -14,6 +15,7 @@ import pytest
 import tensorflow as tf
 import xgboost as xgb
 
+from ml.training.data_loader import _REQUIRED_COLUMNS, TrainingDataConfig, load_training_data
 from tests.fixtures.synthetic_training_data import make_synthetic_df
 
 # The packet requires Python 3.8-compatible typing names here.
@@ -310,27 +312,59 @@ def test_data_loader_excludes_unfinalised(tmp_path: Path) -> None:
     assert filtered["placed_at"].max() < cutoff
 
 
-def test_data_loader_no_future_leakage(tmp_path: Path) -> None:
+def test_data_loader_no_future_leakage(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verify the loader routes through real SQL window logic via patched pd.read_sql_query."""
     assert tmp_path.exists()
     t1 = datetime(2026, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
-    df = pd.DataFrame(
-        {
-            "order_id": ["t1", "t2", "t3"],
-            "user_id": ["user-1", "user-1", "user-1"],
-            "placed_at": [t1, t1 + timedelta(hours=2), t1 + timedelta(hours=4)],
-        },
+
+    fixture_df = make_synthetic_df(n_rows=3, n_fraud=0, seed=42)
+    fixture_df["order_id"] = ["t1", "t2", "t3"]
+    fixture_df["user_id"] = ["user-1", "user-1", "user-1"]
+    fixture_df["placed_at"] = [t1, t1 + timedelta(hours=2), t1 + timedelta(hours=4)]
+
+    engine = MagicMock()
+    get_engine_mock = MagicMock(return_value=engine)
+    monkeypatch.setattr("ml.training.data_loader.get_engine", get_engine_mock)
+
+    def fake_read_sql_query(
+        query: object,
+        conn: object,
+        params: Mapping[str, object],
+    ) -> pd.DataFrame:
+        del conn
+        query_text = str(query)
+        assert "COUNT(*) OVER" in query_text
+        assert "PARTITION BY o.user_id" in query_text
+        assert "RANGE BETWEEN INTERVAL '1 hour' PRECEDING AND CURRENT ROW" in query_text
+        assert "RANGE BETWEEN INTERVAL '24 hours' PRECEDING AND CURRENT ROW" in query_text
+        assert "EXCLUDE CURRENT ROW" in query_text
+        assert params == {
+            "start_date": t1 - timedelta(hours=1),
+            "end_date": t1 + timedelta(hours=5),
+            "label_finalisation_buffer_days": 0,
+        }
+        return fixture_df
+
+    def fake_to_parquet(self: pd.DataFrame, path: object, index: bool = False) -> None:
+        del self, path, index
+
+    monkeypatch.setattr("ml.training.data_loader.pd.read_sql_query", fake_read_sql_query)
+    monkeypatch.setattr("ml.training.data_loader.pd.DataFrame.to_parquet", fake_to_parquet)
+
+    config = TrainingDataConfig(
+        start_date=t1 - timedelta(hours=1),
+        end_date=t1 + timedelta(hours=5),
+        label_finalisation_buffer_days=0,
     )
+    result = load_training_data(config)
 
-    prior_order_counts: List[int] = []
-    for _index, row in df.iterrows():
-        placed_at = cast(datetime, row["placed_at"])
-        user_id = cast(str, row["user_id"])
-        prior_mask = (df["user_id"] == user_id) & (df["placed_at"] < placed_at)
-        prior_order_counts.append(int(prior_mask.sum()))
-
-    df["user_orders_before"] = prior_order_counts
-
-    assert df["user_orders_before"].tolist() == [0, 1, 2]
+    get_engine_mock.assert_called_once_with(role="training")
+    assert len(result) == 3
+    for column in ("order_id", "user_id", "placed_at", *_REQUIRED_COLUMNS):
+        assert column in result.columns
 
 
 def test_preprocessing_fn_handles_oov(monkeypatch: pytest.MonkeyPatch) -> None:
