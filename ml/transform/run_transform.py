@@ -7,6 +7,7 @@ from collections.abc import Callable, Mapping
 
 import apache_beam as beam
 import tensorflow as tf
+import tensorflow_transform as tft
 import tensorflow_transform.beam as tft_beam
 from tensorflow_transform.tf_metadata import dataset_metadata, schema_utils
 
@@ -157,9 +158,15 @@ def run_pipeline(
 
             transformed_data, transformed_metadata = transformed_dataset
 
-            _ = transformed_data | "WriteTFRecord" >> tft_beam.WriteTFExample(
-                os.path.join(output_dir, "train"),
-                transformed_metadata.schema,
+            coder = tft.coders.ExampleProtoCoder(transformed_metadata.schema)
+            _ = (
+                transformed_data
+                | "EncodeTFExample" >> beam.Map(coder.encode)
+                | "WriteTFRecord"
+                >> beam.io.WriteToTFRecord(
+                    os.path.join(output_dir, "train"),
+                    file_name_suffix=".tfrecord.gz",
+                )
             )
 
             _ = transform_fn | "WriteTransformFn" >> tft_beam.WriteTransformFn(output_dir)
