@@ -388,17 +388,24 @@ e. Post a **new** review-request comment that LEADS with `@codex review` and the
 
    Why this matters: a bare `@codex review` after a fix iteration makes the reviewer re-derive what changed from the diff alone, often re-raising the same architectural finding for the third time. A short "what changed / what didn't and why" block lets the reviewer focus on whether the NEW diff introduced regressions and skip the deliberately-accepted findings.
 
-   **👍 skip rule (don't re-trigger codex when it already approved).** Before posting another `@codex review`, check whether codex's latest verdict — in EITHER an issue-comment OR a head-pinned review — already contains a `:+1:` / 👍 / "Didn't find any major issues" marker. If yes, skip the re-trigger; a new commit pushed after the 👍 invalidates it and the next re-trigger is allowed. Canonical check:
+   **👍 skip rule (don't re-trigger codex when it already approved the CURRENT head).** Before posting another `@codex review`, check whether codex's latest clean verdict — in EITHER an issue-comment OR a head-pinned review — was posted AFTER the current PR head's commit time. A clean verdict against an older head is STALE and must be re-validated by a fresh `@codex review`. Canonical check:
    ```bash
-   issue_body=$(gh api repos/$OWNER/$REPO/issues/$PR/comments \
-     --jq '[.[] | select(.user.login=="chatgpt-codex-connector[bot]")] | last | .body // ""')
-   review_body=$(gh api repos/$OWNER/$REPO/pulls/$PR/reviews \
-     --jq '[.[] | select(.user.login=="chatgpt-codex-connector[bot]")] | last | .body // ""')
-   if printf '%s\n%s' "$issue_body" "$review_body" | grep -qE ':\+1:|👍|did(.|n.?t)? find any major issues'; then
-     echo "skip @codex review re-trigger — latest codex verdict is already clean"
+   PR_HEAD_AT=$(gh api repos/$OWNER/$REPO/pulls/$PR --jq '.head.sha' \
+     | xargs -I{} gh api repos/$OWNER/$REPO/commits/{} --jq '.commit.committer.date')
+   # Latest codex CLEAN signal (issue-comment OR head-pinned review):
+   latest_clean_at=$(
+     {
+       gh api repos/$OWNER/$REPO/issues/$PR/comments \
+         --jq '.[] | select(.user.login=="chatgpt-codex-connector[bot]") | select(.body | test(":\\+1:|👍|did(.|n.?t)? find any major issues")) | .created_at'
+       gh api repos/$OWNER/$REPO/pulls/$PR/reviews \
+         --jq '.[] | select(.user.login=="chatgpt-codex-connector[bot]") | select(.body // "" | test(":\\+1:|👍|did(.|n.?t)? find any major issues")) | .submitted_at'
+     } | sort | tail -1
+   )
+   if [ -n "$latest_clean_at" ] && [[ "$latest_clean_at" > "$PR_HEAD_AT" ]]; then
+     echo "skip @codex review re-trigger — codex clean verdict at $latest_clean_at is fresher than head pushed at $PR_HEAD_AT"
    fi
    ```
-   The pull-reviews query is the new part — codex posts clean verdicts in BOTH shapes.
+   Two safeguards: (1) the pull-reviews query catches clean verdicts codex posts as reviews, not just issue-comments. (2) The timestamp comparison invalidates stale cleans — a new commit pushed after a 👍 means the 👍 no longer applies and re-trigger MUST proceed.
 
 f. Re-run the eye-emoji loop on the new comment: `bash scripts/review-gate.sh wait <PR#>`.
 
