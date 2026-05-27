@@ -47,7 +47,10 @@ echo "  · PR clean → merge; queue has next → dispatch; nothing actionable �
 echo
 
 # ── primary (2 lines) ──
-main_head=$(git log --oneline -1 origin/main 2>/dev/null | cut -c1-72)
+# Show LOCAL main HEAD here (not origin/main) so drift between the
+# checked-out primary and the remote is visible. The newly-merged
+# detection below uses origin/main as its anchor (correctly).
+main_head=$(git log --oneline -1 main 2>/dev/null | cut -c1-72)
 containers=$(docker compose -p fraud-forecast ps --format '{{.Name}}={{.State}}' 2>/dev/null | tr '\n' ' ')
 echo "primary: $main_head"
 echo "  live: ${containers:-none}"
