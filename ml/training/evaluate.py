@@ -34,7 +34,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
 
 # The packet requires Python 3.8-compatible typing names here.
-# ruff: noqa: UP006
+# ruff: noqa: UP006, UP007, UP045
 
 FRAUD_CATEGORIES: Tuple[str, ...] = (
     "stolen_card",
