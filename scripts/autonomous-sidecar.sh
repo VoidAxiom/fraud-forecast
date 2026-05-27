@@ -245,6 +245,40 @@ for p in json.load(sys.stdin):
     case "$covered_branches" in *"|$branch|"*) continue ;; esac
     head_short=${head_sha:0:7}
 
+    # Ownership: who's supposed to be driving this PR?
+    # Claude (director) owns PRs whose ENTIRE changed-file set is in
+    # Claude's exclusive territory: .claude/**, .codex/**, hooks/**,
+    # docs/**, scripts/**, **/*.md, root .gitignore. Otherwise the PR
+    # touches production code → impl-owned.
+    owner="impl"
+    changed_files=$(gh pr view "$pr_num" --json files --jq '.files[].path' 2>/dev/null)
+    if [ -n "$changed_files" ]; then
+      owner="claude"
+      while IFS= read -r f; do
+        case "$f" in
+          .claude/*|.codex/*|hooks/*|docs/*|scripts/*|*.md|.gitignore) ;;
+          *) owner="impl"; break ;;
+        esac
+      done <<< "$changed_files"
+    fi
+
+    # Impl-presence: any IMPL worktree (under $WT_ROOT) for this branch?
+    # Excludes the primary checkout — git worktree list reports primary
+    # too, but primary on a branch ≠ impl dispatched on that branch. The
+    # convention is impl worktrees live at $WT_ROOT/<name>/. If owner=impl
+    # AND impl_present=no, impl was never dispatched OR died and the
+    # worktree was torn down — director must spawn a fresh impl.
+    impl_present="no"
+    if [ -d "$WT_ROOT" ]; then
+      while read -r wt_path; do
+        case "$wt_path" in "$WT_ROOT"/*)
+          wt_branch=$(git -C "$wt_path" rev-parse --abbrev-ref HEAD 2>/dev/null)
+          [ "$wt_branch" = "$branch" ] && impl_present="yes" && break
+          ;;
+        esac
+      done < <(git worktree list --porcelain | awk '/^worktree / {print $2}')
+    fi
+
     # PR-side state (head SHA, gate, threads, 👀, codex-clean-on-head)
     status_out=$(bash "$REPO/scripts/review-gate.sh" status "$pr_num" 2>&1)
     gate=$(echo "$status_out" | grep -oE 'GATE: [A-Z-]+( \(.*\))?' | head -1 || echo "?")
@@ -268,31 +302,44 @@ for p in json.load(sys.stdin):
       fi
     fi
 
-    # decision (orphan-PR variant; no local-side commit/codex-run signal)
+    # Decision: owner directs who does the work.
+    # - Claude-owned (doc/CI): Claude drives everything — fix findings via
+    #   Edit/Bash, post @codex review, merge.
+    # - Impl-owned: if impl_present=yes, impl is alive (or was) → check
+    #   in via TaskList, re-dispatch if dead. If impl_present=no, the PR
+    #   was opened without a worktree (e.g. you took over an impl-scope
+    #   change directly, which violates the cardinal rule) — spawn a
+    #   fresh impl for the fix and stop hand-editing impl-scope files.
     if echo "$gate" | grep -q 'CLEAN ('; then
-      decision="ACT-NOW: head-pinned CLEAN — merge"
+      decision="ACT-NOW [$owner]: head-pinned CLEAN — merge (final-head re-gate first)"
       actions_now=$((actions_now+1))
     elif echo "$gate" | grep -q 'CLEAN-COMMENT-MANUAL'; then
-      decision="ACT-NOW: CLEAN-COMMENT-MANUAL — judge timeline (push < @codex review < clean comment) + merge"
+      decision="ACT-NOW [$owner]: CLEAN-COMMENT-MANUAL — judge timeline (push < @codex review < clean comment) + merge"
       actions_now=$((actions_now+1))
     elif [ "$threads_open" -gt 0 ]; then
-      decision="ACT-NOW: $threads_open unresolved threads — read findings, fix or resolve, re-trigger"
+      if [ "$owner" = "claude" ]; then
+        decision="ACT-NOW [claude]: $threads_open unresolved threads on doc/CI PR — read findings, fix via Edit/Bash, commit/push, resolve, re-trigger"
+      elif [ "$impl_present" = "yes" ]; then
+        decision="ACT-NOW [impl]: $threads_open unresolved threads — check impl via TaskList; alive=let them iterate, dead=re-dispatch with state-aware resume"
+      else
+        decision="ACT-NOW [impl ORPHANED]: $threads_open unresolved + impl-scope files but NO worktree — spawn a fresh impl for the fix; do NOT hand-edit impl-scope yourself"
+      fi
       actions_now=$((actions_now+1))
     elif [ "$acked" = "yes" ]; then
-      decision="NO-ACTION: codex 👀'd ${rr_age}min ago — verdict in flight"
+      decision="NO-ACTION [$owner]: codex 👀'd ${rr_age}min ago — verdict in flight"
       in_flight=$((in_flight+1))
     elif [ "$rr_age" = "-" ]; then
-      decision="ACT-NOW: PR open + no @codex review yet — post bare @codex review"
+      decision="ACT-NOW [$owner]: PR open + no @codex review yet — post bare @codex review"
       actions_now=$((actions_now+1))
     elif [ "$rr_age" -gt 5 ] 2>/dev/null; then
-      decision="ACT-NOW: @codex review posted ${rr_age}min ago + no 👀 — re-trigger (codex may have missed)"
+      decision="ACT-NOW [$owner]: @codex review posted ${rr_age}min ago + no 👀 — re-trigger (codex may have missed)"
       actions_now=$((actions_now+1))
     else
-      decision="NO-ACTION: @codex review posted ${rr_age}min ago, grace window for 👀 (≤5min)"
+      decision="NO-ACTION [$owner]: @codex review posted ${rr_age}min ago, grace window for 👀 (≤5min)"
       in_flight=$((in_flight+1))
     fi
 
-    echo "  orphan-PR $branch [$head_short] PR#$pr_num $gate threads:$threads_open 👀:$acked rr:${rr_age}min"
+    echo "  orphan-PR $branch [$head_short] PR#$pr_num $gate threads:$threads_open 👀:$acked rr:${rr_age}min owner=$owner impl_present=$impl_present"
     echo "    → $decision"
   done < <(echo "$PRS_JSON" | python3 -c '
 import json, sys
