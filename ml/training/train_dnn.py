@@ -235,6 +235,27 @@ def _tensor_specs_from_feature_spec(feature_spec: Dict[str, Any]) -> Dict[str, A
     }
 
 
+# TF 2.3 stubs expose Module as Any, but runtime tracking requires tf.Module.
+class _ServingWrapper(tf.Module):  # type: ignore[misc]
+    dnn_model: tf.keras.Model
+    transform_layer: Any
+
+    def __init__(self, dnn_model: tf.keras.Model, transform_layer: Any) -> None:
+        super().__init__()
+        self.dnn_model = dnn_model
+        self.transform_layer = transform_layer
+
+    # TF 2.3 stubs leave tf.function untyped, but SavedModel needs this trace.
+    @tf.function  # type: ignore[misc]
+    def serve(self, raw_features: Dict[str, Any]) -> Any:
+        if self.transform_layer is None:
+            transformed_features = raw_features
+        else:
+            transformed_features = self.transform_layer(raw_features)
+        x = _feature_matrix_from_dict(transformed_features)
+        return self.dnn_model(x)
+
+
 def build_serving_model(transform_fn_path: str, dnn_model: tf.keras.Model) -> str:
     import tensorflow_transform as tft
 
@@ -247,22 +268,14 @@ def build_serving_model(transform_fn_path: str, dnn_model: tf.keras.Model) -> st
         transform_layer = None
         feature_spec = _passthrough_feature_spec()
 
-    def serve(raw_features: Dict[str, Any]) -> Any:
-        if transform_layer is None:
-            transformed_features = raw_features
-        else:
-            transformed_features = transform_layer(raw_features)
-        x = _feature_matrix_from_dict(transformed_features)
-        return dnn_model(x)
-
     version = _new_version()
     saved_model_path = str(Path("models") / "dnn" / version / "saved_model")
-    serving_fn = tf.function(serve)
-    serving_signature = serving_fn.get_concrete_function(
+    wrapper = _ServingWrapper(dnn_model=dnn_model, transform_layer=transform_layer)
+    serving_signature = wrapper.serve.get_concrete_function(
         _tensor_specs_from_feature_spec(feature_spec)
     )
     tf.saved_model.save(
-        dnn_model,
+        wrapper,
         saved_model_path,
         signatures={"serving_default": serving_signature},
     )
