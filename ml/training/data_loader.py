@@ -80,6 +80,305 @@ WITH all_orders AS (
     SELECT * FROM orders_archive
 ),
 -- There is no chargebacks_archive table in the schema, so use live chargebacks.
+dev_user_first_seen AS (
+    SELECT
+        device_id,
+        user_id,
+        MIN(placed_at) AS first_seen
+    FROM all_orders
+    WHERE device_id IS NOT NULL
+      AND user_id IS NOT NULL
+    GROUP BY device_id, user_id
+),
+dev_first_seen_counts AS (
+    SELECT
+        device_id,
+        first_seen,
+        COUNT(*) AS first_seen_user_count
+    FROM dev_user_first_seen
+    GROUP BY device_id, first_seen
+),
+dev_first_seen_cumulative AS (
+    SELECT
+        device_id,
+        first_seen,
+        COALESCE(
+            SUM(first_seen_user_count) OVER (
+                PARTITION BY device_id
+                ORDER BY first_seen
+                ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING
+            ),
+            0
+        ) AS cumulative_distinct_users,
+        first_seen_user_count
+    FROM dev_first_seen_counts
+),
+dev_unique_users AS (
+    SELECT
+        dfs.device_id,
+        dfs.user_id,
+        dfs.first_seen,
+        dfsc.cumulative_distinct_users
+    FROM dev_user_first_seen dfs
+    JOIN dev_first_seen_cumulative dfsc ON dfsc.device_id = dfs.device_id
+        AND dfsc.first_seen = dfs.first_seen
+),
+dev_order_unique_users AS (
+    SELECT
+        o2.order_id,
+        COALESCE(
+            MAX(dfsc.cumulative_distinct_users + dfsc.first_seen_user_count),
+            0
+        ) AS device_unique_users_lifetime
+    FROM all_orders o2
+    LEFT JOIN dev_first_seen_cumulative dfsc ON dfsc.device_id = o2.device_id
+        AND dfsc.first_seen < o2.placed_at
+    GROUP BY o2.order_id
+),
+ip_24h_distinct AS (
+    SELECT
+        anchors.ip_address,
+        anchors.placed_at AS anchor_placed_at,
+        COUNT(DISTINCT previous_orders.user_id) AS ip_unique_users_24h
+    FROM (
+        SELECT DISTINCT
+            ip_address,
+            placed_at
+        FROM all_orders
+        WHERE ip_address IS NOT NULL
+    ) anchors
+    JOIN all_orders previous_orders ON previous_orders.ip_address = anchors.ip_address
+        AND previous_orders.placed_at >= anchors.placed_at - INTERVAL '24 hours'
+        AND previous_orders.placed_at < anchors.placed_at
+    GROUP BY anchors.ip_address, anchors.placed_at
+),
+chargeback_event_times AS (
+    SELECT
+        o2.order_id,
+        o2.payment_method_id,
+        o2.store_id,
+        o2.merchant_id,
+        o2.user_email_domain,
+        GREATEST(o2.placed_at, cb.received_at) AS event_time
+    FROM all_orders o2
+    JOIN chargebacks cb ON cb.order_id = o2.order_id
+),
+payment_cb_events AS (
+    SELECT
+        payment_method_id,
+        event_time,
+        SUM(order_count) AS order_count,
+        SUM(chargeback_count) AS chargeback_count
+    FROM (
+        SELECT
+            o2.payment_method_id,
+            o2.placed_at AS event_time,
+            COUNT(*) AS order_count,
+            0 AS chargeback_count
+        FROM all_orders o2
+        WHERE o2.payment_method_id IS NOT NULL
+        GROUP BY o2.payment_method_id, o2.placed_at
+        UNION ALL
+        SELECT
+            cbe.payment_method_id,
+            cbe.event_time,
+            0 AS order_count,
+            COUNT(*) AS chargeback_count
+        FROM chargeback_event_times cbe
+        WHERE cbe.payment_method_id IS NOT NULL
+        GROUP BY cbe.payment_method_id, cbe.event_time
+    ) payment_events
+    GROUP BY payment_method_id, event_time
+),
+payment_cb_windows AS (
+    SELECT
+        payment_method_id,
+        event_time,
+        SUM(chargeback_count) OVER (
+            PARTITION BY payment_method_id
+            ORDER BY event_time
+            ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING
+        ) AS prior_chargebacks,
+        SUM(order_count) OVER (
+            PARTITION BY payment_method_id
+            ORDER BY event_time
+            ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING
+        ) AS prior_orders
+    FROM payment_cb_events
+),
+payment_cb_rates AS (
+    SELECT
+        o2.order_id,
+        CASE
+            WHEN o2.payment_method_id IS NULL THEN NULL
+            ELSE pcw.prior_chargebacks::DOUBLE PRECISION / NULLIF(pcw.prior_orders, 0)
+        END AS payment_lifetime_chargeback_rate
+    FROM all_orders o2
+    LEFT JOIN payment_cb_windows pcw ON pcw.payment_method_id = o2.payment_method_id
+        AND pcw.event_time = o2.placed_at
+),
+store_cb_events AS (
+    SELECT
+        store_id,
+        event_time,
+        SUM(order_count) AS order_count,
+        SUM(chargeback_count) AS chargeback_count
+    FROM (
+        SELECT
+            o2.store_id,
+            o2.placed_at AS event_time,
+            COUNT(*) AS order_count,
+            0 AS chargeback_count
+        FROM all_orders o2
+        WHERE o2.store_id IS NOT NULL
+        GROUP BY o2.store_id, o2.placed_at
+        UNION ALL
+        SELECT
+            cbe.store_id,
+            cbe.event_time,
+            0 AS order_count,
+            COUNT(*) AS chargeback_count
+        FROM chargeback_event_times cbe
+        WHERE cbe.store_id IS NOT NULL
+        GROUP BY cbe.store_id, cbe.event_time
+    ) store_events
+    GROUP BY store_id, event_time
+),
+store_cb_windows AS (
+    SELECT
+        store_id,
+        event_time,
+        SUM(chargeback_count) OVER (
+            PARTITION BY store_id
+            ORDER BY event_time
+            ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING
+        ) AS prior_chargebacks,
+        SUM(order_count) OVER (
+            PARTITION BY store_id
+            ORDER BY event_time
+            ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING
+        ) AS prior_orders
+    FROM store_cb_events
+),
+store_cb_rates AS (
+    SELECT
+        o2.order_id,
+        CASE
+            WHEN o2.store_id IS NULL THEN NULL
+            ELSE scw.prior_chargebacks::DOUBLE PRECISION / NULLIF(scw.prior_orders, 0)
+        END AS store_chargeback_rate
+    FROM all_orders o2
+    LEFT JOIN store_cb_windows scw ON scw.store_id = o2.store_id
+        AND scw.event_time = o2.placed_at
+),
+merchant_cb_events AS (
+    SELECT
+        merchant_id,
+        event_time,
+        SUM(order_count) AS order_count,
+        SUM(chargeback_count) AS chargeback_count
+    FROM (
+        SELECT
+            o2.merchant_id,
+            o2.placed_at AS event_time,
+            COUNT(*) AS order_count,
+            0 AS chargeback_count
+        FROM all_orders o2
+        WHERE o2.merchant_id IS NOT NULL
+        GROUP BY o2.merchant_id, o2.placed_at
+        UNION ALL
+        SELECT
+            cbe.merchant_id,
+            cbe.event_time,
+            0 AS order_count,
+            COUNT(*) AS chargeback_count
+        FROM chargeback_event_times cbe
+        WHERE cbe.merchant_id IS NOT NULL
+        GROUP BY cbe.merchant_id, cbe.event_time
+    ) merchant_events
+    GROUP BY merchant_id, event_time
+),
+merchant_cb_windows AS (
+    SELECT
+        merchant_id,
+        event_time,
+        SUM(chargeback_count) OVER (
+            PARTITION BY merchant_id
+            ORDER BY event_time
+            ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING
+        ) AS prior_chargebacks,
+        SUM(order_count) OVER (
+            PARTITION BY merchant_id
+            ORDER BY event_time
+            ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING
+        ) AS prior_orders
+    FROM merchant_cb_events
+),
+merchant_cb_rates AS (
+    SELECT
+        o2.order_id,
+        CASE
+            WHEN o2.merchant_id IS NULL THEN NULL
+            ELSE mcw.prior_chargebacks::DOUBLE PRECISION / NULLIF(mcw.prior_orders, 0)
+        END AS merchant_chargeback_rate
+    FROM all_orders o2
+    LEFT JOIN merchant_cb_windows mcw ON mcw.merchant_id = o2.merchant_id
+        AND mcw.event_time = o2.placed_at
+),
+email_domain_cb_events AS (
+    SELECT
+        user_email_domain,
+        event_time,
+        SUM(order_count) AS order_count,
+        SUM(chargeback_count) AS chargeback_count
+    FROM (
+        SELECT
+            o2.user_email_domain,
+            o2.placed_at AS event_time,
+            COUNT(*) AS order_count,
+            0 AS chargeback_count
+        FROM all_orders o2
+        WHERE o2.user_email_domain IS NOT NULL
+        GROUP BY o2.user_email_domain, o2.placed_at
+        UNION ALL
+        SELECT
+            cbe.user_email_domain,
+            cbe.event_time,
+            0 AS order_count,
+            COUNT(*) AS chargeback_count
+        FROM chargeback_event_times cbe
+        WHERE cbe.user_email_domain IS NOT NULL
+        GROUP BY cbe.user_email_domain, cbe.event_time
+    ) email_domain_events
+    GROUP BY user_email_domain, event_time
+),
+email_domain_cb_windows AS (
+    SELECT
+        user_email_domain,
+        event_time,
+        SUM(chargeback_count) OVER (
+            PARTITION BY user_email_domain
+            ORDER BY event_time
+            ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING
+        ) AS prior_chargebacks,
+        SUM(order_count) OVER (
+            PARTITION BY user_email_domain
+            ORDER BY event_time
+            ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING
+        ) AS prior_orders
+    FROM email_domain_cb_events
+),
+email_domain_cb_rates AS (
+    SELECT
+        o2.order_id,
+        CASE
+            WHEN o2.user_email_domain IS NULL THEN NULL
+            ELSE ecw.prior_chargebacks::DOUBLE PRECISION / NULLIF(ecw.prior_orders, 0)
+        END AS email_domain_chargeback_rate
+    FROM all_orders o2
+    LEFT JOIN email_domain_cb_windows ecw ON ecw.user_email_domain = o2.user_email_domain
+        AND ecw.event_time = o2.placed_at
+),
 order_features AS (
     SELECT
         o.order_id,
@@ -139,83 +438,20 @@ order_features AS (
                 EXCLUDE CURRENT ROW
             )
         END AS device_lifetime_order_count,
-        (
-            SELECT COUNT(DISTINCT o2.user_id)
-            FROM all_orders o2
-            WHERE o2.device_id = o.device_id
-              AND o2.placed_at < o.placed_at
-        ) AS device_unique_users_lifetime,
-        COALESCE(
-            CAST((
-                SELECT COUNT(*)
-                FROM chargebacks cb
-                JOIN all_orders o2 ON cb.order_id = o2.order_id
-                WHERE o2.payment_method_id = o.payment_method_id
-                  AND o2.placed_at < o.placed_at
-                  AND cb.received_at < o.placed_at
-            ) AS DOUBLE PRECISION) / NULLIF((
-                SELECT COUNT(*)
-                FROM all_orders o2
-                WHERE o2.payment_method_id = o.payment_method_id
-                  AND o2.placed_at < o.placed_at
-            ), 0),
-            0.0
-        ) AS payment_lifetime_chargeback_rate,
-        (
-            SELECT COUNT(DISTINCT o2.user_id)
-            FROM all_orders o2
-            WHERE o2.ip_address = o.ip_address
-              AND o2.placed_at >= o.placed_at - INTERVAL '24 hours'
-              AND o2.placed_at < o.placed_at
-        ) AS ip_unique_users_24h,
-        COALESCE(
-            CAST((
-                SELECT COUNT(*)
-                FROM chargebacks cb
-                JOIN all_orders o2 ON cb.order_id = o2.order_id
-                WHERE o2.store_id = o.store_id
-                  AND o2.placed_at < o.placed_at
-                  AND cb.received_at < o.placed_at
-            ) AS DOUBLE PRECISION) / NULLIF((
-                SELECT COUNT(*)
-                FROM all_orders o2
-                WHERE o2.store_id = o.store_id
-                  AND o2.placed_at < o.placed_at
-            ), 0),
-            0.0
-        ) AS store_chargeback_rate,
-        COALESCE(
-            CAST((
-                SELECT COUNT(*)
-                FROM chargebacks cb
-                JOIN all_orders o2 ON cb.order_id = o2.order_id
-                WHERE o2.merchant_id = o.merchant_id
-                  AND o2.placed_at < o.placed_at
-                  AND cb.received_at < o.placed_at
-            ) AS DOUBLE PRECISION) / NULLIF((
-                SELECT COUNT(*)
-                FROM all_orders o2
-                WHERE o2.merchant_id = o.merchant_id
-                  AND o2.placed_at < o.placed_at
-            ), 0),
-            0.0
-        ) AS merchant_chargeback_rate,
-        COALESCE(
-            CAST((
-                SELECT COUNT(*)
-                FROM chargebacks cb
-                JOIN all_orders o2 ON cb.order_id = o2.order_id
-                WHERE o2.user_email_domain = o.user_email_domain
-                  AND o2.placed_at < o.placed_at
-                  AND cb.received_at < o.placed_at
-            ) AS DOUBLE PRECISION) / NULLIF((
-                SELECT COUNT(*)
-                FROM all_orders o2
-                WHERE o2.user_email_domain = o.user_email_domain
-                  AND o2.placed_at < o.placed_at
-            ), 0),
-            0.0
-        ) AS email_domain_chargeback_rate,
+        CASE
+            WHEN o.device_id IS NULL THEN 0
+            ELSE COALESCE(dou.device_unique_users_lifetime, 0)
+        END AS device_unique_users_lifetime,
+        COALESCE(pcr.payment_lifetime_chargeback_rate, 0.0)
+            AS payment_lifetime_chargeback_rate,
+        CASE
+            WHEN o.ip_address IS NULL THEN 0
+            ELSE COALESCE(ip24.ip_unique_users_24h, 0)
+        END AS ip_unique_users_24h,
+        COALESCE(scr.store_chargeback_rate, 0.0) AS store_chargeback_rate,
+        COALESCE(mcr.merchant_chargeback_rate, 0.0) AS merchant_chargeback_rate,
+        COALESCE(ecr.email_domain_chargeback_rate, 0.0)
+            AS email_domain_chargeback_rate,
         COALESCE(o.subtotal_pence, 0) AS subtotal_pence,
         COALESCE(o.total_pence, 0) AS total_pence,
         COALESCE(o.item_count, 0) AS item_count,
@@ -258,6 +494,15 @@ order_features AS (
         COALESCE(CAST(gt.fraud_category AS VARCHAR), 'LEGIT') AS fraud_category
     FROM all_orders o
     LEFT JOIN simulator_ground_truth gt ON gt.order_id = o.order_id
+    LEFT JOIN dev_unique_users duc ON duc.device_id = o.device_id
+        AND duc.user_id = o.user_id
+    LEFT JOIN dev_order_unique_users dou ON dou.order_id = o.order_id
+    LEFT JOIN ip_24h_distinct ip24 ON ip24.ip_address = o.ip_address
+        AND ip24.anchor_placed_at = o.placed_at
+    LEFT JOIN payment_cb_rates pcr ON pcr.order_id = o.order_id
+    LEFT JOIN store_cb_rates scr ON scr.order_id = o.order_id
+    LEFT JOIN merchant_cb_rates mcr ON mcr.order_id = o.order_id
+    LEFT JOIN email_domain_cb_rates ecr ON ecr.order_id = o.order_id
 )
 SELECT *
 FROM order_features

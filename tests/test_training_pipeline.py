@@ -469,6 +469,129 @@ def test_data_loader_no_future_leakage(
         assert column in result.columns
 
 
+def test_data_loader_window_semantics(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verify rewritten historical features use strictly prior orders."""
+    assert tmp_path.exists()
+    placed_at = [
+        datetime(2026, 1, 1, 10, 0, 0, tzinfo=timezone.utc),
+        datetime(2026, 1, 1, 11, 0, 0, tzinfo=timezone.utc),
+        datetime(2026, 1, 1, 11, 0, 0, tzinfo=timezone.utc),
+        datetime(2026, 1, 2, 12, 30, 0, tzinfo=timezone.utc),
+    ]
+    # Device: t0 sees 0 prior users; same-time t1/t2 see only user-a; t3 sees a/b/c.
+    expected_device_users = [0, 1, 1, 3]
+    # IP 24h: t3's trailing window starts after the three earlier orders.
+    expected_ip_users_24h = [0, 1, 1, 0]
+    # Payment: charged prior orders are p0 for t1/t2, then p0 and p2 over 3 priors.
+    expected_payment_rates = [0.0, 1.0, 1.0, 2.0 / 3.0]
+    charged_order_ids = {"p0", "p2"}
+
+    return_df = make_synthetic_df(n_rows=4, n_fraud=0, seed=43)
+    return_df["order_id"] = ["p0", "p1", "p2", "p3"]
+    return_df["user_id"] = ["user-a", "user-b", "user-c", "user-d"]
+    return_df["device_id"] = ["device-1"] * 4
+    return_df["ip_address"] = ["203.0.113.9"] * 4
+    return_df["payment_method_id"] = ["payment-1"] * 4
+    return_df["placed_at"] = placed_at
+
+    engine = MagicMock()
+    get_engine_mock = MagicMock(return_value=engine)
+    monkeypatch.setattr("ml.training.data_loader.get_engine", get_engine_mock)
+
+    def fake_read_sql_query(
+        query: object,
+        conn: object,
+        params: Mapping[str, object],
+    ) -> pd.DataFrame:
+        del conn
+        query_text = str(query)
+        assert "dev_user_first_seen AS" in query_text
+        assert "dev_unique_users AS" in query_text
+        assert "dev_order_unique_users AS" in query_text
+        assert "ip_24h_distinct AS" in query_text
+        assert "payment_cb_events AS" in query_text
+        assert "payment_cb_rates AS" in query_text
+        assert "chargeback_event_times AS" in query_text
+        assert "previous_orders.placed_at < anchors.placed_at" in query_text
+        assert "ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING" in query_text
+        assert "(SELECT COUNT" not in query_text
+        assert "SELECT COUNT(DISTINCT o2.user_id)" not in query_text
+        assert params == {
+            "start_date": placed_at[0] - timedelta(hours=1),
+            "end_date": placed_at[-1] + timedelta(hours=1),
+            "label_finalisation_buffer_days": 0,
+        }
+
+        base = return_df[
+            [
+                "order_id",
+                "user_id",
+                "device_id",
+                "ip_address",
+                "payment_method_id",
+                "placed_at",
+            ]
+        ].copy()
+
+        def count_prior_device_users(row: pd.Series) -> int:
+            mask = (base["device_id"] == row["device_id"]) & (base["placed_at"] < row["placed_at"])
+            return int(base.loc[mask, "user_id"].nunique(dropna=True))
+
+        def count_prior_ip_users_24h(row: pd.Series) -> int:
+            cutoff = row["placed_at"] - pd.Timedelta(hours=24)
+            mask = (
+                (base["ip_address"] == row["ip_address"])
+                & (base["placed_at"] >= cutoff)
+                & (base["placed_at"] < row["placed_at"])
+            )
+            return int(base.loc[mask, "user_id"].nunique(dropna=True))
+
+        def payment_prior_chargeback_rate(row: pd.Series) -> float:
+            mask = (base["payment_method_id"] == row["payment_method_id"]) & (
+                base["placed_at"] < row["placed_at"]
+            )
+            prior_orders = base.loc[mask, "order_id"]
+            if prior_orders.empty:
+                return 0.0
+            chargeback_count = int(prior_orders.isin(charged_order_ids).sum())
+            return float(chargeback_count / len(prior_orders))
+
+        computed_device_users = base.apply(count_prior_device_users, axis=1)
+        computed_ip_users_24h = base.apply(count_prior_ip_users_24h, axis=1)
+        computed_payment_rates = base.apply(payment_prior_chargeback_rate, axis=1)
+
+        df_out = return_df.copy()
+        df_out["device_unique_users_lifetime"] = computed_device_users.values
+        df_out["ip_unique_users_24h"] = computed_ip_users_24h.values
+        df_out["payment_lifetime_chargeback_rate"] = computed_payment_rates.values
+        return df_out
+
+    def fake_to_parquet(self: pd.DataFrame, path: object, index: bool = False) -> None:
+        del self, path, index
+
+    monkeypatch.setattr("ml.training.data_loader.pd.read_sql_query", fake_read_sql_query)
+    monkeypatch.setattr("ml.training.data_loader.pd.DataFrame.to_parquet", fake_to_parquet)
+
+    config = TrainingDataConfig(
+        start_date=placed_at[0] - timedelta(hours=1),
+        end_date=placed_at[-1] + timedelta(hours=1),
+        label_finalisation_buffer_days=0,
+    )
+    result = load_training_data(config)
+
+    get_engine_mock.assert_called_once_with(role="training")
+    assert result["device_unique_users_lifetime"].tolist() == expected_device_users
+    assert result["ip_unique_users_24h"].tolist() == expected_ip_users_24h
+    assert result["payment_lifetime_chargeback_rate"].tolist() == pytest.approx(
+        expected_payment_rates,
+    )
+    for column in ("order_id", "user_id", "placed_at", *_REQUIRED_COLUMNS):
+        assert column in result.columns
+
+
 def test_preprocessing_fn_handles_oov(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
