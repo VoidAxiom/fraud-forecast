@@ -16,6 +16,12 @@ STALL_MIN="${SIDECAR_STALL_MIN:-15}"
 cd "$REPO" 2>/dev/null || { echo "✗ sidecar: cannot cd $REPO" >&2; exit 1; }
 now=$(date +%s)
 
+# ── ALWAYS fetch latest main from origin (every tick, no exception) ──
+# Without this, the sidecar reads a stale local origin/main and misses
+# merges Claude made in another worktree or that landed via squash-
+# merge from a PR. That makes "newly merged" detection below useless.
+git fetch origin main --quiet 2>/dev/null || true
+
 # ── backup-tick skip ──
 # Cron fires 3 ticks at 1-min spacing per cycle so a socket-error-killed
 # Claude turn gets retried within 60-120s. If the prior tick completed
@@ -41,10 +47,40 @@ echo "  · PR clean → merge; queue has next → dispatch; nothing actionable �
 echo
 
 # ── primary (2 lines) ──
-main_head=$(git log --oneline -1 main 2>/dev/null | cut -c1-72)
+main_head=$(git log --oneline -1 origin/main 2>/dev/null | cut -c1-72)
 containers=$(docker compose -p fraud-forecast ps --format '{{.Name}}={{.State}}' 2>/dev/null | tr '\n' ' ')
 echo "primary: $main_head"
 echo "  live: ${containers:-none}"
+
+# ── newly-merged PRs since last tick (cross-tick state) ──
+# Compares current origin/main HEAD to the SHA we saw last tick. Any new
+# commits on main are squash-merges from PRs (per repo policy). For each,
+# pull the PR number from the conventional "(#N)" subject suffix and
+# emit an ACT-NOW so Claude dispatches impls on any newly-unblocked work.
+LAST_MAIN_MARKER="$REPO/.codex-runs/sidecar-last-known-main.txt"
+cur_main_sha=$(git rev-parse origin/main 2>/dev/null || echo "")
+prev_main_sha=""
+[ -f "$LAST_MAIN_MARKER" ] && prev_main_sha=$(cat "$LAST_MAIN_MARKER" 2>/dev/null | head -c 40)
+merged_voi_list=""
+if [ -n "$prev_main_sha" ] && [ "$prev_main_sha" != "$cur_main_sha" ]; then
+  # Walk new commits oldest→newest; extract VOI-N from "Closes VOI-N" or
+  # the conventional "(#PR)" squash-merge suffix.
+  new_merges=$(git log --pretty='%H %s' "$prev_main_sha..origin/main" 2>/dev/null | head -50)
+  if [ -n "$new_merges" ]; then
+    echo
+    echo "merged since last tick:"
+    while IFS= read -r line; do
+      sha=${line:0:7}
+      subject=${line:41}
+      pr_num=$(echo "$subject" | grep -oE '\(#[0-9]+\)' | tr -d '(#)' | head -1)
+      voi_num=$(echo "$subject" | grep -oE 'VOI-[0-9]+' | head -1)
+      echo "  + $sha PR#${pr_num:-?} ${voi_num:-?}: $(echo "$subject" | cut -c1-60)"
+      [ -n "$voi_num" ] && merged_voi_list="$merged_voi_list $voi_num"
+    done <<< "$new_merges"
+  fi
+fi
+# Update marker for next tick (even if unchanged, so first-run captures).
+echo "$cur_main_sha" > "$LAST_MAIN_MARKER"
 echo
 
 # ── packets (per-worktree + per-PR, condensed) ──
@@ -62,6 +98,10 @@ if [ -z "$WTS" ] && [ "$PR_COUNT" = "0" ]; then
   actions_now=1
 else
   echo "packets:"
+  # Track branches covered by worktree iteration so the second pass can
+  # process open PRs whose branch has no worktree (director-owned doc/CI
+  # PRs from primary, cherry-pick branches, etc).
+  covered_branches=""
   for wt in $WTS; do
     wt_name=$(basename "$wt")
     branch=$(git -C "$wt" rev-parse --abbrev-ref HEAD 2>/dev/null)
@@ -193,10 +233,87 @@ for p in json.load(sys.stdin):
     fi
     echo "  $wt_name [$head_short $ahead-ahead $pushed] $pr_tag"
     echo "    → $decision"
+    covered_branches="$covered_branches|$branch|"
   done
+
+  # ── second pass: open PRs not backed by a worktree (director-owned
+  # branches from primary checkout, cherry-pick branches, etc).
+  # Without this, PRs that don't map to a worktree are invisible to the
+  # sidecar and rot unattended — exact failure mode that left PR #40's
+  # codex P2s sitting for 30+ min on 2026-05-27.
+  while IFS=$'\t' read -r pr_num branch head_sha; do
+    case "$covered_branches" in *"|$branch|"*) continue ;; esac
+    head_short=${head_sha:0:7}
+
+    # PR-side state (head SHA, gate, threads, 👀, codex-clean-on-head)
+    status_out=$(bash "$REPO/scripts/review-gate.sh" status "$pr_num" 2>&1)
+    gate=$(echo "$status_out" | grep -oE 'GATE: [A-Z-]+( \(.*\))?' | head -1 || echo "?")
+    threads_open=$(echo "$status_out" | grep -oE '[0-9]+ UNRESOLVED' | grep -oE '^[0-9]+' || echo 0)
+
+    # Latest @codex review request from a non-bot (timestamp + 👀)
+    latest_rr=$(gh api "repos/VoidAxiom/fraud-forecast/issues/$pr_num/comments" \
+      --jq '[.[] | select(.body | startswith("@codex review")) | select(.user.login != "chatgpt-codex-connector" and .user.login != "chatgpt-codex-connector[bot]")] | sort_by(.created_at) | last' 2>/dev/null)
+    acked="?"; rr_age="-"
+    if [ -n "$latest_rr" ] && [ "$latest_rr" != "null" ]; then
+      rr_id=$(echo "$latest_rr" | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])' 2>/dev/null)
+      rr_at=$(echo "$latest_rr" | python3 -c 'import json,sys; print(json.load(sys.stdin)["created_at"])' 2>/dev/null)
+      if [ -n "$rr_id" ]; then
+        eyes=$(gh api "repos/VoidAxiom/fraud-forecast/issues/comments/$rr_id/reactions" \
+          --jq '[.[] | select(.content=="eyes") | select(.user.login=="chatgpt-codex-connector[bot]" or .user.login=="chatgpt-codex-connector")] | length' 2>/dev/null)
+        [ "${eyes:-0}" -gt 0 ] && acked="yes" || acked="no"
+      fi
+      if [ -n "$rr_at" ]; then
+        rr_epoch=$(date -ju -f '%Y-%m-%dT%H:%M:%SZ' "$rr_at" '+%s' 2>/dev/null || echo 0)
+        rr_age=$(( (now - rr_epoch) / 60 ))
+      fi
+    fi
+
+    # decision (orphan-PR variant; no local-side commit/codex-run signal)
+    if echo "$gate" | grep -q 'CLEAN ('; then
+      decision="ACT-NOW: head-pinned CLEAN — merge"
+      actions_now=$((actions_now+1))
+    elif echo "$gate" | grep -q 'CLEAN-COMMENT-MANUAL'; then
+      decision="ACT-NOW: CLEAN-COMMENT-MANUAL — judge timeline (push < @codex review < clean comment) + merge"
+      actions_now=$((actions_now+1))
+    elif [ "$threads_open" -gt 0 ]; then
+      decision="ACT-NOW: $threads_open unresolved threads — read findings, fix or resolve, re-trigger"
+      actions_now=$((actions_now+1))
+    elif [ "$acked" = "yes" ]; then
+      decision="NO-ACTION: codex 👀'd ${rr_age}min ago — verdict in flight"
+      in_flight=$((in_flight+1))
+    elif [ "$rr_age" = "-" ]; then
+      decision="ACT-NOW: PR open + no @codex review yet — post bare @codex review"
+      actions_now=$((actions_now+1))
+    elif [ "$rr_age" -gt 5 ] 2>/dev/null; then
+      decision="ACT-NOW: @codex review posted ${rr_age}min ago + no 👀 — re-trigger (codex may have missed)"
+      actions_now=$((actions_now+1))
+    else
+      decision="NO-ACTION: @codex review posted ${rr_age}min ago, grace window for 👀 (≤5min)"
+      in_flight=$((in_flight+1))
+    fi
+
+    echo "  orphan-PR $branch [$head_short] PR#$pr_num $gate threads:$threads_open 👀:$acked rr:${rr_age}min"
+    echo "    → $decision"
+  done < <(echo "$PRS_JSON" | python3 -c '
+import json, sys
+for p in json.load(sys.stdin):
+    n, b, o = p["number"], p["headRefName"], p["headRefOid"]
+    print("\t".join([str(n), b, o]))
+' 2>/dev/null)
 fi
 
 echo
+# Bump ACT-NOW if anything merged this tick — director should enumerate
+# downstream-unblocked issues and spin up impls.
+if [ -n "$merged_voi_list" ]; then
+  actions_now=$((actions_now+1))
+  echo "→ ACT-NOW (newly merged):${merged_voi_list}"
+  echo "  - Live-verify each on primary per packet acceptance (Outcome over output)."
+  echo "  - Read VOI-139 Phase queue + spec/PHASE_*.md DAG; any issue whose deps just"
+  echo "    closed is now unblocked — dispatch impl(s) immediately, in parallel where"
+  echo "    file surfaces are disjoint."
+  echo
+fi
 echo "tick summary: ${actions_now} ACT-NOW, ${verify_owed} VERIFY, ${in_flight} NO-ACTION (in-flight)"
 if [ "$actions_now" = "0" ] && [ "$verify_owed" = "0" ]; then
   echo "→ end turn cleanly; next tick in ~20min"
