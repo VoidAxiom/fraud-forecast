@@ -14,6 +14,8 @@ import tensorflow as tf
 import xgboost as xgb
 
 from ml.training.data_loader import _REQUIRED_COLUMNS, TrainingDataConfig, load_training_data
+from ml.training.train_dnn import NUM_FEATURES, build_dnn_model, build_serving_model
+from ml.transform.preprocessing import preprocessing_fn
 from tests.fixtures.synthetic_training_data import make_synthetic_df
 
 # The packet requires Python 3.8-compatible typing names here.
@@ -204,6 +206,105 @@ def _write_tfrecord(
     finally:
         writer.close()
     return tfrecord_path
+
+
+_RAW_NUMERICAL_FEATURES: Tuple[str, ...] = (
+    "user_account_age_days",
+    "user_lifetime_order_count",
+    "user_lifetime_chargeback_rate",
+    "user_orders_1h_at_order_time",
+    "user_orders_24h_at_order_time",
+    "user_spend_24h_pence",
+    "device_lifetime_order_count",
+    "device_unique_users_lifetime",
+    "payment_lifetime_chargeback_rate",
+    "ip_unique_users_24h",
+    "store_chargeback_rate",
+    "merchant_chargeback_rate",
+    "email_domain_chargeback_rate",
+    "subtotal_pence",
+    "total_pence",
+    "item_count",
+    "delivery_distance_km",
+    "ip_to_delivery_distance_km",
+    "billing_to_delivery_distance_km",
+    "time_to_checkout_seconds",
+)
+_RAW_LOW_CARD_CATEGORICAL_FEATURES: Tuple[str, ...] = (
+    "order_channel",
+    "order_type",
+    "payment_type",
+    "card_brand",
+    "card_funding_type",
+    "device_type",
+    "platform",
+    "merchant_category",
+    "delivery_address_type",
+    "cancellation_reason",
+)
+_RAW_HIGH_CARD_HASH_FEATURES: Tuple[str, ...] = (
+    "card_bin",
+    "card_issuer_bank",
+    "ip_country",
+    "store_city",
+    "browser_name",
+    "user_email_domain",
+)
+_RAW_ENGINEERED_STRING_FEATURES: Tuple[str, ...] = ("card_issuer_country",)
+_RAW_STRING_FEATURES: Tuple[str, ...] = (
+    _RAW_LOW_CARD_CATEGORICAL_FEATURES
+    + _RAW_HIGH_CARD_HASH_FEATURES
+    + _RAW_ENGINEERED_STRING_FEATURES
+)
+_RAW_BOOLEAN_FEATURES: Tuple[str, ...] = (
+    "is_first_order_for_user",
+    "is_new_payment_method",
+    "is_new_delivery_address",
+    "is_guest_checkout",
+    "is_digital_native_bank",
+    "ip_is_proxy",
+    "ip_is_vpn",
+    "ip_is_tor",
+    "ip_is_hosting",
+)
+
+
+def _raw_tft_feature_spec(include_row_id: bool = False) -> Dict[str, object]:
+    feature_spec: Dict[str, object] = {
+        feature_name: tf.io.FixedLenFeature([], tf.float32)
+        for feature_name in _RAW_NUMERICAL_FEATURES
+    }
+    feature_spec.update(
+        {
+            feature_name: tf.io.FixedLenFeature([], tf.string)
+            for feature_name in _RAW_STRING_FEATURES
+        },
+    )
+    feature_spec.update(
+        {
+            feature_name: tf.io.FixedLenFeature([], tf.bool)
+            for feature_name in _RAW_BOOLEAN_FEATURES
+        },
+    )
+    feature_spec["gt_is_fraud"] = tf.io.FixedLenFeature([], tf.bool)
+    if include_row_id:
+        feature_spec["row_id"] = tf.io.FixedLenFeature([], tf.int64)
+    return feature_spec
+
+
+def _raw_tft_row(
+    card_brand: bytes = b"gb",
+    row_id: int = 0,
+    include_row_id: bool = False,
+) -> Dict[str, object]:
+    row: Dict[str, object] = {feature_name: 1.0 for feature_name in _RAW_NUMERICAL_FEATURES}
+    row.update({feature_name: b"gb" for feature_name in _RAW_STRING_FEATURES})
+    row.update({feature_name: False for feature_name in _RAW_BOOLEAN_FEATURES})
+    row["card_brand"] = card_brand
+    row["gt_is_fraud"] = False
+    if include_row_id:
+        row["row_id"] = row_id
+    return row
 
 
 def _raw_preprocessing_inputs() -> Dict[str, object]:
@@ -440,46 +541,47 @@ def test_preprocessing_fn_handles_oov(
     import tensorflow_transform.beam as tft_beam
     from tensorflow_transform.tf_metadata import dataset_metadata, schema_utils
 
-    feature_spec: Dict[str, object] = {
-        "card_brand": tf.io.FixedLenFeature([], tf.string),
-        "row_id": tf.io.FixedLenFeature([], tf.int64),
-    }
+    feature_spec = _raw_tft_feature_spec(include_row_id=True)
     metadata = dataset_metadata.DatasetMetadata(schema_utils.schema_from_feature_spec(feature_spec))
 
-    def _card_brand_preprocessing_fn(inputs: Dict[str, object]) -> Dict[str, object]:
-        import tensorflow_transform as _tft
+    def _prod_preprocessing_fn_with_row_id(inputs: Dict[str, object]) -> Dict[str, object]:
+        outputs: Dict[str, object] = dict(preprocessing_fn(inputs))
+        outputs["row_id"] = tf.cast(inputs["row_id"], tf.int64)
+        return outputs
 
-        return {
-            "card_brand": _tft.compute_and_apply_vocabulary(
-                inputs["card_brand"],
-                top_k=2,  # only top-2 in vocab; amex (1 count) is OOV
-                num_oov_buckets=1,
-                vocab_filename="vocab_card_brand",
-            ),
-            "row_id": tf.cast(inputs["row_id"], tf.int64),
-        }
-
-    # row_id semantics: 0 = vocab data (ignored), 1 = test in-vocab (visa), 2 = test OOV (amex)
-    # visa x10 + mastercard x10 = top-2; amex x1 = OOV
-    all_data: List[Dict[str, object]] = (
-        [{"card_brand": b"visa", "row_id": 0}] * 10
-        + [{"card_brand": b"mastercard", "row_id": 0}] * 10
-        + [{"card_brand": b"visa", "row_id": 1}]
-        + [{"card_brand": b"amex", "row_id": 2}]
-    )
+    # row_id semantics: 0 = vocab data (ignored), 1 = test in-vocab, 2 = test OOV.
+    vocab_data: List[Dict[str, object]] = [
+        _raw_tft_row(card_brand=b"visa", row_id=0, include_row_id=True) for _ in range(10)
+    ] + [_raw_tft_row(card_brand=b"mastercard", row_id=0, include_row_id=True) for _ in range(10)]
+    test_data: List[Dict[str, object]] = [
+        _raw_tft_row(card_brand=b"visa", row_id=1, include_row_id=True),
+        _raw_tft_row(card_brand=b"discover", row_id=2, include_row_id=True),
+    ]
 
     output_prefix = str(tmp_path / "output")
 
     with tft_beam.Context(temp_dir=str(tmp_path / "beam_temp")):  # noqa: SIM117
         with beam.Pipeline(runner="DirectRunner") as pipeline:
-            raw_data = pipeline | "CreateData" >> beam.Create(all_data)
-            (transformed_dataset, _transform_fn) = (
-                raw_data,
+            raw_vocab_data = pipeline | "CreateVocabData" >> beam.Create(vocab_data)
+            (transformed_vocab_dataset, transform_fn) = (
+                raw_vocab_data,
                 metadata,
             ) | "AnalyzeAndTransform" >> tft_beam.AnalyzeAndTransformDataset(
-                _card_brand_preprocessing_fn
+                _prod_preprocessing_fn_with_row_id
             )
-            transformed_data, _transformed_metadata = transformed_dataset
+            transformed_vocab_data, _transformed_metadata = transformed_vocab_dataset
+            transformed_test_dataset = (
+                (
+                    (pipeline | "CreateTestData" >> beam.Create(test_data)),
+                    metadata,
+                ),
+                transform_fn,
+            ) | "TransformTestData" >> tft_beam.TransformDataset()
+            transformed_test_data, _test_metadata = transformed_test_dataset
+            transformed_data = (
+                transformed_vocab_data,
+                transformed_test_data,
+            ) | "FlattenTransformedData" >> beam.Flatten()
             (
                 transformed_data
                 | "ToJson"
@@ -491,7 +593,7 @@ def test_preprocessing_fn_handles_oov(
                 | "WriteOutput" >> beam.io.WriteToText(output_prefix)
             )
 
-    # Read back all output shards and parse
+    # Read back all output shards and parse.
     import glob as _glob
 
     rows: List[Dict[str, int]] = []
@@ -506,11 +608,12 @@ def test_preprocessing_fn_handles_oov(
     oov_idx: int = next(r["card_brand"] for r in rows if r["row_id"] == 2)
 
     assert in_vocab_idx != oov_idx, (
-        f"in-vocab 'visa' ({in_vocab_idx}) and OOV 'amex' ({oov_idx}) "
+        f"in-vocab 'visa' ({in_vocab_idx}) and OOV 'discover' ({oov_idx}) "
         "must map to different indices to prove OOV bucketing works"
     )
     assert in_vocab_idx >= 0
     assert oov_idx >= 0
+    assert oov_idx == 2
 
 
 def test_xgboost_trains_and_predicts(
@@ -657,61 +760,55 @@ def test_promote_blocks_regression(tmp_path: Path) -> None:
 
 
 def test_savedmodel_serving_signature_works(tmp_path: Path) -> None:
-    train_dnn_module = _train_dnn_module()
+    import apache_beam as beam
+    import tensorflow_transform.beam as tft_beam
+    from tensorflow_transform.tf_metadata import dataset_metadata, schema_utils
+
     tf.keras.backend.clear_session()
     tf.random.set_seed(42)
-    model = train_dnn_module.build_dnn_model(input_dim=train_dnn_module.NUM_FEATURES)
-    wrapper = tf.Module()
-    wrapper.model = model
+    feature_spec = _raw_tft_feature_spec()
+    metadata = dataset_metadata.DatasetMetadata(schema_utils.schema_from_feature_spec(feature_spec))
+    single_row = _raw_tft_row()
 
-    def serve(**features: object) -> Dict[str, object]:
-        feature_columns = [
-            tf.reshape(tf.cast(features[feature_name], tf.float32), [-1, 1])
-            for feature_name in train_dnn_module.FEATURE_ORDER
-        ]
-        feature_matrix = tf.concat(feature_columns, axis=1)
-        wrapper_model = cast(tf.keras.Model, wrapper.model)
-        return {"scores": wrapper_model(feature_matrix, training=False)}
+    with tft_beam.Context(temp_dir=str(tmp_path / "beam_temp2")):  # noqa: SIM117
+        with beam.Pipeline(runner="DirectRunner") as pipeline:
+            raw_data = pipeline | beam.Create([single_row])
+            transform_fn = (
+                raw_data,
+                metadata,
+            ) | tft_beam.AnalyzeDataset(preprocessing_fn)
+            transform_fn | tft_beam.WriteTransformFn(str(tmp_path / "transform_output"))
 
-    input_spec: Dict[str, object] = {}
-    input_spec.update(
-        {
-            feature_name: tf.TensorSpec(shape=[None], dtype=tf.float32, name=feature_name)
-            for feature_name in train_dnn_module.FLOAT_FEATURE_NAMES
-        },
-    )
-    input_spec.update(
-        {
-            feature_name: tf.TensorSpec(shape=[None], dtype=tf.int64, name=feature_name)
-            for feature_name in train_dnn_module.INT_FEATURE_NAMES
-        },
-    )
-    concrete_fn = tf.function(serve).get_concrete_function(**input_spec)
-    saved_model_path = tmp_path / "saved_model"
-    tf.saved_model.save(
-        wrapper,
-        str(saved_model_path),
-        signatures={"serving_default": concrete_fn},
+    dnn_model = build_dnn_model(input_dim=NUM_FEATURES)
+    saved_model_path = build_serving_model(
+        str(tmp_path / "transform_output"),
+        dnn_model,
+        output_dir=str(tmp_path / "serving"),
+        version="v_test",
     )
 
-    loaded = tf.saved_model.load(str(saved_model_path))
-    input_batch: Dict[str, object] = {}
-    input_batch.update(
-        {
-            feature_name: tf.constant([0.0] * 5, dtype=tf.float32)
-            for feature_name in train_dnn_module.FLOAT_FEATURE_NAMES
-        },
-    )
-    input_batch.update(
-        {
-            feature_name: tf.constant([0] * 5, dtype=tf.int64)
-            for feature_name in train_dnn_module.INT_FEATURE_NAMES
-        },
-    )
+    loaded = tf.saved_model.load(saved_model_path)
     signature = loaded.signatures["serving_default"]
+
+    input_batch: Dict[str, object] = {
+        feature_name: tf.constant([1.0], dtype=tf.float32)
+        for feature_name in _RAW_NUMERICAL_FEATURES
+    }
+    input_batch.update(
+        {
+            feature_name: tf.constant([b"gb"], dtype=tf.string)
+            for feature_name in _RAW_STRING_FEATURES
+        },
+    )
+    input_batch.update(
+        {
+            feature_name: tf.constant([False], dtype=tf.bool)
+            for feature_name in _RAW_BOOLEAN_FEATURES
+        },
+    )
     result = cast(Mapping[str, object], signature(**input_batch))
     output = np.asarray(next(iter(result.values())), dtype=np.float64)
 
-    assert output.shape == (5, 1)
+    assert output.shape == (1, 1)
     assert np.all(output >= 0.0)
     assert np.all(output <= 1.0)
