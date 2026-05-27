@@ -79,6 +79,7 @@ WITH all_orders AS (
     UNION ALL
     SELECT * FROM orders_archive
 ),
+-- There is no chargebacks_archive table in the schema, so use live chargebacks.
 order_features AS (
     SELECT
         o.order_id,
@@ -140,7 +141,22 @@ order_features AS (
             WHERE o2.device_id = o.device_id
               AND o2.placed_at < o.placed_at
         ) AS device_unique_users_lifetime,
-        CAST(0.0 AS DOUBLE PRECISION) AS payment_lifetime_chargeback_rate,
+        COALESCE(
+            CAST((
+                SELECT COUNT(*)
+                FROM chargebacks cb
+                JOIN all_orders o2 ON cb.order_id = o2.order_id
+                WHERE o2.payment_method_id = o.payment_method_id
+                  AND o2.placed_at < o.placed_at
+                  AND cb.received_at < o.placed_at
+            ) AS DOUBLE PRECISION) / NULLIF((
+                SELECT COUNT(*)
+                FROM all_orders o2
+                WHERE o2.payment_method_id = o.payment_method_id
+                  AND o2.placed_at < o.placed_at
+            ), 0),
+            0.0
+        ) AS payment_lifetime_chargeback_rate,
         (
             SELECT COUNT(DISTINCT o2.user_id)
             FROM all_orders o2
@@ -148,9 +164,54 @@ order_features AS (
               AND o2.placed_at >= o.placed_at - INTERVAL '24 hours'
               AND o2.placed_at < o.placed_at
         ) AS ip_unique_users_24h,
-        CAST(0.0 AS DOUBLE PRECISION) AS store_chargeback_rate,
-        CAST(0.0 AS DOUBLE PRECISION) AS merchant_chargeback_rate,
-        CAST(0.0 AS DOUBLE PRECISION) AS email_domain_chargeback_rate,
+        COALESCE(
+            CAST((
+                SELECT COUNT(*)
+                FROM chargebacks cb
+                JOIN all_orders o2 ON cb.order_id = o2.order_id
+                WHERE o2.store_id = o.store_id
+                  AND o2.placed_at < o.placed_at
+                  AND cb.received_at < o.placed_at
+            ) AS DOUBLE PRECISION) / NULLIF((
+                SELECT COUNT(*)
+                FROM all_orders o2
+                WHERE o2.store_id = o.store_id
+                  AND o2.placed_at < o.placed_at
+            ), 0),
+            0.0
+        ) AS store_chargeback_rate,
+        COALESCE(
+            CAST((
+                SELECT COUNT(*)
+                FROM chargebacks cb
+                JOIN all_orders o2 ON cb.order_id = o2.order_id
+                WHERE o2.merchant_id = o.merchant_id
+                  AND o2.placed_at < o.placed_at
+                  AND cb.received_at < o.placed_at
+            ) AS DOUBLE PRECISION) / NULLIF((
+                SELECT COUNT(*)
+                FROM all_orders o2
+                WHERE o2.merchant_id = o.merchant_id
+                  AND o2.placed_at < o.placed_at
+            ), 0),
+            0.0
+        ) AS merchant_chargeback_rate,
+        COALESCE(
+            CAST((
+                SELECT COUNT(*)
+                FROM chargebacks cb
+                JOIN all_orders o2 ON cb.order_id = o2.order_id
+                WHERE o2.user_email_domain = o.user_email_domain
+                  AND o2.placed_at < o.placed_at
+                  AND cb.received_at < o.placed_at
+            ) AS DOUBLE PRECISION) / NULLIF((
+                SELECT COUNT(*)
+                FROM all_orders o2
+                WHERE o2.user_email_domain = o.user_email_domain
+                  AND o2.placed_at < o.placed_at
+            ), 0),
+            0.0
+        ) AS email_domain_chargeback_rate,
         COALESCE(o.subtotal_pence, 0) AS subtotal_pence,
         COALESCE(o.total_pence, 0) AS total_pence,
         COALESCE(o.item_count, 0) AS item_count,
