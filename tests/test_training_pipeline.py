@@ -15,6 +15,7 @@ import xgboost as xgb
 
 from ml.training.data_loader import _REQUIRED_COLUMNS, TrainingDataConfig, load_training_data
 from ml.training.train_dnn import NUM_FEATURES, build_dnn_model, build_serving_model
+import ml.transform.run_transform as run_transform_module
 from ml.transform.preprocessing import preprocessing_fn
 from ml.transform.run_transform import FEATURE_SPEC as _PRODUCTION_FEATURE_SPEC
 from tests.fixtures.synthetic_training_data import make_synthetic_df
@@ -679,6 +680,51 @@ def test_preprocessing_fn_handles_oov(
     assert in_vocab_idx >= 0
     assert oov_idx >= 0
     assert oov_idx == 2
+
+
+def test_transform_split_uses_placed_at_quantile_boundaries(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    placed_at = [
+        datetime(2026, 1, 1, tzinfo=timezone.utc) + timedelta(days=row_index)
+        for row_index in range(10)
+    ]
+    meta_df = pd.DataFrame({"placed_at": placed_at})
+    read_calls: List[Tuple[str, List[str]]] = []
+
+    def fake_read_parquet(path: str, columns: List[str]) -> pd.DataFrame:
+        read_calls.append((path, columns))
+        return meta_df
+
+    monkeypatch.setattr(run_transform_module.pd, "read_parquet", fake_read_parquet)
+
+    train_cutoff, val_cutoff = run_transform_module._compute_placed_at_cutoffs(
+        "training.parquet",
+    )
+    buckets = [
+        run_transform_module._split_bucket(
+            {"placed_at": row_placed_at},
+            3,
+            train_cutoff,
+            val_cutoff,
+        )
+        for row_placed_at in placed_at
+    ]
+
+    assert read_calls == [("training.parquet", ["placed_at"])]
+    assert buckets == [0, 0, 0, 0, 0, 0, 0, 0, 1, 2]
+    assert run_transform_module._split_bucket(
+        {"placed_at": train_cutoff},
+        3,
+        train_cutoff,
+        val_cutoff,
+    ) == 1
+    assert run_transform_module._split_bucket(
+        {"placed_at": val_cutoff},
+        3,
+        train_cutoff,
+        val_cutoff,
+    ) == 2
 
 
 def test_xgboost_trains_and_predicts(
