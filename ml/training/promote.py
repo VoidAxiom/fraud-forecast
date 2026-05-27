@@ -92,13 +92,19 @@ def _recall_gate_failures(
     production_metrics: Dict[str, Any],
 ) -> List[str]:
     failures: List[str] = []
-    common_metric_names = sorted(set(candidate_metrics).intersection(production_metrics))
-    for metric_name in common_metric_names:
+    for metric_name in sorted(production_metrics):
         if not metric_name.startswith("recall_"):
             continue
 
-        candidate_recall = _metric_as_float(candidate_metrics, metric_name, "candidate")
         production_recall = _metric_as_float(production_metrics, metric_name, "production")
+        candidate_recall = _optional_float(candidate_metrics.get(metric_name))
+        if candidate_recall is None:
+            failures.append(
+                f"{metric_name} "
+                f"(candidate metric absent; production {production_recall:.6f})"
+            )
+            continue
+
         minimum_recall = production_recall * RECALL_DROP_FACTOR
         if candidate_recall < minimum_recall:
             failures.append(
