@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 from ml.registry import ModelRegistry
+from ml.training.evaluate import FRAUD_CATEGORIES
 
 if sys.version_info >= (3, 9):
     from zoneinfo import ZoneInfo
@@ -92,8 +93,9 @@ def _recall_gate_failures(
     production_metrics: Dict[str, Any],
 ) -> List[str]:
     failures: List[str] = []
+    recall_keys = {f"recall_{cat}" for cat in FRAUD_CATEGORIES}
     for metric_name in sorted(production_metrics):
-        if not metric_name.startswith("recall_"):
+        if metric_name not in recall_keys:
             continue
 
         production_recall = _metric_as_float(production_metrics, metric_name, "production")

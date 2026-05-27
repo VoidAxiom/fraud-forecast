@@ -172,6 +172,54 @@ def test_missing_candidate_recall_for_production_category_is_blocked(
     assert registry.promotions == []
 
 
+def test_headline_recall_metric_not_gated_as_category_recall(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    reports_root = tmp_path / "reports"
+    production_version = "v20260301_120000_aaaaaaaa"
+    candidate_version = "v20260302_120000_bbbbbbbb"
+    production_metrics: Dict[str, float] = {
+        "auprc": 0.8,
+        "auroc": 0.9,
+        "brier_score": 0.1,
+        "recall_stolen_card": 0.8,
+        "recall_account_takeover": 0.7,
+        "recall_at_99_precision": 0.9,
+    }
+    candidate_metrics: Dict[str, float] = {
+        "auprc": 0.8,
+        "auroc": 0.9,
+        "brier_score": 0.1,
+        "recall_stolen_card": 0.8,
+        "recall_account_takeover": 0.7,
+        "recall_at_99_precision": 0.5,
+    }
+    production_path = reports_root / production_version / "metrics.json"
+    production_path.parent.mkdir(parents=True)
+    production_path.write_text(
+        json.dumps(production_metrics, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    candidate_path = reports_root / candidate_version / "metrics.json"
+    candidate_path.parent.mkdir(parents=True)
+    candidate_path.write_text(
+        json.dumps(candidate_metrics, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    registry = RecordingRegistry(production_version)
+    _patch_registry(monkeypatch, registry)
+
+    promote_module.promote(
+        candidate_version,
+        "xgboost",
+        registry_root=tmp_path / "registry",
+        reports_root=reports_root,
+    )
+
+    assert registry.promotions == [("xgboost", candidate_version)]
+
+
 def test_force_overrides_promotion_gate(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

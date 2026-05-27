@@ -236,3 +236,26 @@ def test_plotting_functions_write_png_files(tmp_path: Path) -> None:
 
     for destination in destinations.values():
         assert destination.exists()
+
+
+def test_evaluate_ensemble_handles_column_vector_dnn_scores() -> None:
+    rng = np.random.default_rng(42)
+    y_test = np.where(rng.integers(0, 10, size=100) == 0, 1, 0).astype(np.int64)
+    xgb_scores = rng.random(100, dtype=np.float64)
+    dnn_scores = rng.random((100, 1), dtype=np.float64)
+
+    metrics = evaluate_ensemble(xgb_scores, dnn_scores, y_test)
+
+    assert "auprc" in metrics
+    assert isinstance(metrics["auprc"], float)
+    assert 0.0 <= metrics["auprc"] <= 1.0
+
+
+def test_evaluate_ensemble_raises_on_mismatched_lengths() -> None:
+    rng = np.random.default_rng(42)
+    y_test = np.where(rng.integers(0, 10, size=10) == 0, 1, 0).astype(np.int64)
+    xgb_scores = rng.random(10, dtype=np.float64)
+    dnn_scores = rng.random(8, dtype=np.float64)
+
+    with pytest.raises(ValueError, match="length"):
+        evaluate_ensemble(xgb_scores, dnn_scores, y_test)

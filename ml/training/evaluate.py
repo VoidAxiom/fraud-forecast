@@ -275,7 +275,13 @@ def evaluate_ensemble(
     y_test: np.ndarray,
     weights: Tuple[float, float] = (0.6, 0.4),
 ) -> Dict[str, Any]:
-    ensemble_scores = weights[0] * xgb_scores + weights[1] * dnn_scores
+    xgb_flat = _as_1d_array(xgb_scores, np.float64)
+    dnn_flat = _as_1d_array(dnn_scores, np.float64)
+    if len(xgb_flat) != len(dnn_flat):
+        raise ValueError(
+            f"xgb_scores length {len(xgb_flat)} != dnn_scores length {len(dnn_flat)}"
+        )
+    ensemble_scores = weights[0] * xgb_flat + weights[1] * dnn_flat
     return compute_metrics(y_test, ensemble_scores)
 
 
@@ -284,6 +290,8 @@ def best_ensemble_weights(
     dnn_scores: np.ndarray,
     y_test: np.ndarray,
 ) -> Tuple[float, float]:
+    xgb_flat = _as_1d_array(xgb_scores, np.float64)
+    dnn_flat = _as_1d_array(dnn_scores, np.float64)
     weight_grid: Tuple[Tuple[float, float], ...] = (
         (0.3, 0.7),
         (0.4, 0.6),
@@ -294,7 +302,7 @@ def best_ensemble_weights(
     best_weights = weight_grid[0]
     best_auprc = float("-inf")
     for weights in weight_grid:
-        metrics = evaluate_ensemble(xgb_scores, dnn_scores, y_test, weights=weights)
+        metrics = evaluate_ensemble(xgb_flat, dnn_flat, y_test, weights=weights)
         auprc = float(metrics["auprc"])
         if auprc > best_auprc:
             best_auprc = auprc
