@@ -170,6 +170,30 @@ def test_force_overrides_promotion_gate(
     assert result["forced"] is True
 
 
+def test_missing_production_metrics_fail_closed_without_force(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    reports_root = tmp_path / "reports"
+    production_version = "v20260301_120000_aaaaaaaa"
+    candidate_version = "v20260302_120000_bbbbbbbb"
+    _write_metrics(reports_root, candidate_version, {"auprc": 0.8})
+    registry = RecordingRegistry(production_version)
+    _patch_registry(monkeypatch, registry)
+
+    expected_path = reports_root / production_version / "metrics.json"
+    with pytest.raises(PromotionGateError, match="cannot safely evaluate"):
+        promote_module.promote(
+            candidate_version,
+            "xgboost",
+            registry_root=tmp_path / "registry",
+            reports_root=reports_root,
+        )
+
+    assert not expected_path.exists()
+    assert registry.promotions == []
+
+
 def test_no_existing_production_version_promotes_first_model(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

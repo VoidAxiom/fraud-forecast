@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import tempfile
@@ -300,6 +301,32 @@ def best_ensemble_weights(
     return best_weights
 
 
+def main() -> None:
+    """CLI entry point for evaluating saved fraud model predictions."""
+    parser = argparse.ArgumentParser(description="Evaluate fraud model predictions.")
+    parser.add_argument("--version", required=True)
+    parser.add_argument("--model-path", required=True)
+    parser.add_argument("--test-data-path", required=True)
+    parser.add_argument("--reports-dir", default="ml/training/reports")
+    args = parser.parse_args()
+
+    with np.load(str(args.test_data_path), allow_pickle=False) as test_data_file:
+        y_true = np.asarray(test_data_file["y_true"])
+        y_pred = np.asarray(test_data_file["y_pred"])
+        if "categories" in test_data_file.files:
+            categories = np.asarray(test_data_file["categories"])
+        else:
+            categories = np.full(_as_1d_array(y_true, np.int64).shape, "", dtype=str)
+
+    metrics = evaluate(str(args.model_path), (y_true, y_pred), categories)
+    save_report(metrics, str(Path(str(args.reports_dir)) / str(args.version)))
+    print(json.dumps(_json_compatible(metrics), sort_keys=True))
+
+
+if __name__ == "__main__":
+    main()
+
+
 __all__ = [
     "evaluate",
     "evaluate_ensemble",
@@ -312,4 +339,5 @@ __all__ = [
     "plot_pr_curve",
     "plot_roc_curve",
     "plot_calibration",
+    "main",
 ]

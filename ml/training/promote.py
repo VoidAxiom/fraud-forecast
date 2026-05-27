@@ -45,6 +45,17 @@ def _load_version_metrics(reports_root: Path, version: str) -> Dict[str, Any]:
     return _load_metrics(reports_root / version / "metrics.json")
 
 
+def _missing_production_metrics_error(
+    production_version: str,
+    production_metrics_path: Path,
+) -> PromotionGateError:
+    return PromotionGateError(
+        f"Production metrics for version {production_version!r} not found at "
+        f"{production_metrics_path}; cannot safely evaluate candidate without a baseline. "
+        "Re-run evaluation for the production version or use --force to override."
+    )
+
+
 def _optional_float(value: Any) -> Optional[float]:
     if isinstance(value, bool):
         return None
@@ -136,7 +147,7 @@ def promote(
     version: str,
     model_type: str,
     force: bool = False,
-    registry_root: Union[Path, str] = Path("/var/lib/models"),
+    registry_root: Union[Path, str] = Path("models"),
     reports_root: Union[Path, str] = Path("ml/training/reports"),
 ) -> Dict[str, Any]:
     """Promote a candidate model version when it satisfies the evaluation gate."""
@@ -149,7 +160,19 @@ def promote(
     if production_version is not None:
         production_metrics_path = reports_path / production_version / "metrics.json"
         if production_metrics_path.exists():
-            production_metrics = _load_metrics(production_metrics_path)
+            try:
+                production_metrics = _load_metrics(production_metrics_path)
+            except (OSError, ValueError) as exc:
+                if not force:
+                    raise _missing_production_metrics_error(
+                        production_version,
+                        production_metrics_path,
+                    ) from exc
+        elif not force:
+            raise _missing_production_metrics_error(
+                production_version,
+                production_metrics_path,
+            )
 
     if not force and production_metrics is not None:
         _enforce_gate(candidate_metrics, production_metrics)
@@ -182,12 +205,14 @@ def main() -> None:
         choices=("xgboost", "dnn", "ensemble_config"),
     )
     parser.add_argument("--force", action="store_true")
+    parser.add_argument("--registry-root", default="models")
     args = parser.parse_args()
 
     result = promote(
         version=str(args.version),
         model_type=str(args.model_type),
         force=bool(args.force),
+        registry_root=str(args.registry_root),
     )
     print(json.dumps(result, sort_keys=True))
 

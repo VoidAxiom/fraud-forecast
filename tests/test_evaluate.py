@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 from typing import Any, Dict, Tuple
 
@@ -15,6 +16,7 @@ from ml.training.evaluate import (
     compute_metrics,
     evaluate,
     evaluate_ensemble,
+    main as evaluate_main,
     plot_calibration,
     plot_pr_curve,
     plot_roc_curve,
@@ -133,6 +135,82 @@ def test_save_report_writes_json_and_markdown(tmp_path: Path) -> None:
     assert saved_metrics["count"] == 4
     assert saved_metrics["cm_at_0.5"] == [[2, 0], [0, 2]]
     assert "| auprc | 0.750000 |" in report_path.read_text(encoding="utf-8")
+
+
+def test_main_loads_npz_saves_versioned_report_and_prints_json(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    y_true = np.array([0, 1, 1, 0], dtype=np.int64)
+    y_pred = np.array([0.1, 0.9, 0.4, 0.2], dtype=np.float64)
+    categories = np.array(["legit", "stolen_card", "promo_abuse", "legit"])
+    test_data_path = tmp_path / "test-data.npz"
+    reports_dir = tmp_path / "reports"
+    np.savez(test_data_path, y_true=y_true, y_pred=y_pred, categories=categories)
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "evaluate",
+            "--version",
+            "cli-version",
+            "--model-path",
+            "models/xgboost/artifact-version",
+            "--test-data-path",
+            str(test_data_path),
+            "--reports-dir",
+            str(reports_dir),
+        ],
+    )
+
+    evaluate_main()
+
+    printed_metrics = json.loads(capsys.readouterr().out)
+    saved_metrics = json.loads(
+        (reports_dir / "cli-version" / "metrics.json").read_text(encoding="utf-8")
+    )
+    assert printed_metrics["auprc"] == pytest.approx(1.0)
+    assert printed_metrics["recall_stolen_card"] == pytest.approx(1.0)
+    assert printed_metrics["recall_promo_abuse"] == pytest.approx(0.0)
+    assert saved_metrics == printed_metrics
+
+
+def test_main_uses_empty_categories_when_npz_omits_categories(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    y_true = np.array([0, 1, 1, 0], dtype=np.int64)
+    y_pred = np.array([0.1, 0.9, 0.4, 0.2], dtype=np.float64)
+    test_data_path = tmp_path / "test-data.npz"
+    np.savez(test_data_path, y_true=y_true, y_pred=y_pred)
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "evaluate",
+            "--version",
+            "missing-categories",
+            "--model-path",
+            "models/dnn/artifact-version",
+            "--test-data-path",
+            str(test_data_path),
+        ],
+    )
+
+    evaluate_main()
+
+    printed_metrics = json.loads(capsys.readouterr().out)
+    assert printed_metrics["recall_stolen_card"] == pytest.approx(0.0)
+    assert printed_metrics["recall_account_takeover"] == pytest.approx(0.0)
+    assert (
+        tmp_path / "ml" / "training" / "reports" / "missing-categories" / "metrics.json"
+    ).exists()
 
 
 def test_plotting_functions_write_png_files(tmp_path: Path) -> None:
