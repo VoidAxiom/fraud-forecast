@@ -7,7 +7,7 @@ import os
 import uuid
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import tensorflow as tf  # TensorFlow 2.3 lacks complete stubs.
 
@@ -184,7 +184,17 @@ def compute_class_weight(train_ds: tf.data.Dataset) -> Dict[int, float]:
             pos += 1
 
     if pos == 0:
-        return {0: 1.0, 1: 50.0}
+        raise ValueError(
+            f"Training dataset has no positive (fraud) examples "
+            f"({neg} negatives, 0 positives). "
+            "Cannot compute class weights for one-class data."
+        )
+    if neg == 0:
+        raise ValueError(
+            f"Training dataset has no negative (non-fraud) examples "
+            f"(0 negatives, {pos} positives). "
+            "Cannot compute class weights for one-class data."
+        )
     return {0: 1.0, 1: float(neg) / float(pos)}
 
 
@@ -273,17 +283,20 @@ class _ServingWrapper(tf.Module):  # type: ignore[misc]
     dnn_model: tf.keras.Model
     transform_layer: Any
     _inject_gt_is_fraud: bool
+    _gt_is_fraud_dtype: Any
 
     def __init__(
         self,
         dnn_model: tf.keras.Model,
         transform_layer: Any,
         inject_gt_is_fraud: bool = False,
+        gt_is_fraud_dtype: Any = tf.bool,
     ) -> None:
         super().__init__()
         self.dnn_model = dnn_model
         self.transform_layer = transform_layer
         self._inject_gt_is_fraud = inject_gt_is_fraud
+        self._gt_is_fraud_dtype = gt_is_fraud_dtype
 
     # TF 2.3 stubs leave tf.function untyped, but SavedModel needs this trace.
     @tf.function  # type: ignore[misc]
@@ -297,7 +310,7 @@ class _ServingWrapper(tf.Module):  # type: ignore[misc]
                 features_with_label = dict(raw_features)
                 features_with_label["gt_is_fraud"] = tf.zeros(
                     [batch_size],
-                    dtype=tf.bool,
+                    dtype=self._gt_is_fraud_dtype,
                 )
                 transformed_features = self.transform_layer(features_with_label)
             else:
@@ -306,7 +319,12 @@ class _ServingWrapper(tf.Module):  # type: ignore[misc]
         return self.dnn_model(x)
 
 
-def build_serving_model(transform_fn_path: str, dnn_model: tf.keras.Model) -> str:
+def build_serving_model(
+    transform_fn_path: str,
+    dnn_model: tf.keras.Model,
+    output_dir: str = "models/dnn",
+    version: Optional[str] = None,
+) -> str:
     import tensorflow_transform as tft
 
     tft_output = tft.TFTransformOutput(transform_fn_path)
@@ -315,18 +333,23 @@ def build_serving_model(transform_fn_path: str, dnn_model: tf.keras.Model) -> st
     try:
         tft_raw_spec = tft_output.raw_feature_spec()
         inject_gt_is_fraud = "gt_is_fraud" in tft_raw_spec
+        gt_is_fraud_dtype = (
+            tft_raw_spec["gt_is_fraud"].dtype if inject_gt_is_fraud else tf.bool
+        )
         transform_layer = tft_output.transform_features_layer()
         feature_spec = _serving_feature_spec(tft_raw_spec)
     except AttributeError:
         transform_layer = None
+        gt_is_fraud_dtype = tf.bool
         feature_spec = _passthrough_feature_spec()
 
-    version = _new_version()
-    saved_model_path = str(Path("models") / "dnn" / version / "saved_model")
+    resolved_version = version or _new_version()
+    saved_model_path = str(Path(output_dir) / resolved_version / "saved_model")
     wrapper = _ServingWrapper(
         dnn_model=dnn_model,
         transform_layer=transform_layer,
         inject_gt_is_fraud=inject_gt_is_fraud,
+        gt_is_fraud_dtype=gt_is_fraud_dtype,
     )
     serving_signature = wrapper.serve.get_concrete_function(
         _tensor_specs_from_feature_spec(feature_spec)
@@ -394,7 +417,12 @@ def main() -> None:
     print(f"Final validation metrics: {val_metrics}")
 
     if args.transform_fn_path:
-        saved_model_path = build_serving_model(args.transform_fn_path, model)
+        saved_model_path = build_serving_model(
+            args.transform_fn_path,
+            model,
+            output_dir=args.output_dir,
+            version=args.version,
+        )
         print(f"SavedModel exported to: {saved_model_path}")
     else:
         version = args.version or _new_version()

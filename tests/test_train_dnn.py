@@ -8,6 +8,7 @@ from typing import Any
 from unittest.mock import Mock, patch
 
 import numpy as np
+import pytest
 import tensorflow as tf
 
 from ml.training.train_dnn import (
@@ -108,6 +109,8 @@ def test_serving_transform_with_label_inputs_injects_dummy_gt() -> None:
     call_args = MockWrapper.call_args
     assert call_args.kwargs.get("inject_gt_is_fraud") is True
     assert call_args.kwargs.get("transform_layer") is not None
+    # raw_spec["gt_is_fraud"] is declared as tf.int64 above.
+    assert call_args.kwargs.get("gt_is_fraud_dtype") == tf.int64
     mock_tft_output.transform_features_layer.assert_called_once()
 
 
@@ -121,6 +124,24 @@ def test_compute_class_weight_uses_training_label_ratio() -> None:
 
     # 90 negative examples / 10 positive examples = 9.0 positive-class weight.
     assert class_weight == {0: 1.0, 1: 9.0}
+
+
+def test_compute_class_weight_raises_on_all_negative() -> None:
+    features = np.zeros((10, NUM_FEATURES), dtype=np.float32)
+    labels = np.zeros(10, dtype=np.int32)  # all negatives
+    train_ds = tf.data.Dataset.from_tensor_slices((features, labels))
+
+    with pytest.raises(ValueError, match="no positive"):
+        compute_class_weight(train_ds)
+
+
+def test_compute_class_weight_raises_on_all_positive() -> None:
+    features = np.zeros((10, NUM_FEATURES), dtype=np.float32)
+    labels = np.ones(10, dtype=np.int32)  # all positives
+    train_ds = tf.data.Dataset.from_tensor_slices((features, labels))
+
+    with pytest.raises(ValueError, match="no negative"):
+        compute_class_weight(train_ds)
 
 
 def test_train_dnn_one_epoch_smoke(tmp_path: Path) -> None:
