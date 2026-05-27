@@ -410,8 +410,6 @@ def test_data_loader_no_future_leakage(
     return_df["order_id"] = ["t0", "t1", "t2", "t3", "t4"]
     return_df["user_id"] = ["user-1", "user-1", "user-1", "user-1", "user-1"]
     return_df["placed_at"] = placed_at
-    return_df["user_orders_1h_at_order_time"] = expected_1h
-    return_df["user_orders_24h_at_order_time"] = expected_24h
 
     engine = MagicMock()
     get_engine_mock = MagicMock(return_value=engine)
@@ -434,7 +432,27 @@ def test_data_loader_no_future_leakage(
             "end_date": placed_at[-1] + timedelta(hours=1),
             "label_finalisation_buffer_days": 0,
         }
-        return return_df
+
+        base = return_df[["order_id", "user_id", "placed_at"]].copy()
+
+        def count_prior_window(row: pd.Series, window_seconds: int) -> int:
+            """Count rows in [t - window, t), matching EXCLUDE CURRENT ROW."""
+            t = row["placed_at"]
+            cutoff = t - pd.Timedelta(seconds=window_seconds)
+            mask = (
+                (base["user_id"] == row["user_id"])
+                & (base["placed_at"] >= cutoff)
+                & (base["placed_at"] < t)
+            )
+            return int(mask.sum())
+
+        computed_1h = base.apply(lambda row: count_prior_window(row, 3600), axis=1)
+        computed_24h = base.apply(lambda row: count_prior_window(row, 86400), axis=1)
+
+        df_out = return_df.copy()
+        df_out["user_orders_1h_at_order_time"] = computed_1h.values
+        df_out["user_orders_24h_at_order_time"] = computed_24h.values
+        return df_out
 
     def fake_to_parquet(self: pd.DataFrame, path: object, index: bool = False) -> None:
         del self, path, index
