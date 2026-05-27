@@ -419,7 +419,6 @@ def main() -> None:
     train_ds = full_ds.take(train_size)
     val_ds = full_ds.skip(train_size).take(val_size)
     test_ds = full_ds.skip(train_size + val_size)
-    del test_ds
 
     hyperparams = {"epochs": args.epochs}
     print(f"Training DNN on {train_size} examples...")
@@ -431,6 +430,20 @@ def main() -> None:
         if key.startswith("val_")
     }
     print(f"Final validation metrics: {val_metrics}")
+
+    # Evaluate on held-out test split.
+    test_size = total - train_size - val_size
+    if test_size > 0:
+        print(f"Evaluating on held-out test set ({test_size} examples)...")
+        test_results = model.evaluate(
+            test_ds.batch(_BATCH_SIZE),
+            verbose=0,
+        )
+        test_metric_names = model.metrics_names
+        held_out_metrics = dict(zip(test_metric_names, test_results))
+        print(f"Held-out test metrics: {held_out_metrics}")
+    else:
+        print("Warning: no held-out test examples available (dataset too small).")
 
     if resolved_transform_fn:
         saved_model_path = build_serving_model(
