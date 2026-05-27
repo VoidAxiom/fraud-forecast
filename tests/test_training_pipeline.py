@@ -16,6 +16,7 @@ import xgboost as xgb
 from ml.training.data_loader import _REQUIRED_COLUMNS, TrainingDataConfig, load_training_data
 from ml.training.train_dnn import NUM_FEATURES, build_dnn_model, build_serving_model
 from ml.transform.preprocessing import preprocessing_fn
+from ml.transform.run_transform import FEATURE_SPEC as _PRODUCTION_FEATURE_SPEC
 from tests.fixtures.synthetic_training_data import make_synthetic_df
 
 # The packet requires Python 3.8-compatible typing names here.
@@ -208,85 +209,8 @@ def _write_tfrecord(
     return tfrecord_path
 
 
-_RAW_NUMERICAL_FEATURES: Tuple[str, ...] = (
-    "user_account_age_days",
-    "user_lifetime_order_count",
-    "user_lifetime_chargeback_rate",
-    "user_orders_1h_at_order_time",
-    "user_orders_24h_at_order_time",
-    "user_spend_24h_pence",
-    "device_lifetime_order_count",
-    "device_unique_users_lifetime",
-    "payment_lifetime_chargeback_rate",
-    "ip_unique_users_24h",
-    "store_chargeback_rate",
-    "merchant_chargeback_rate",
-    "email_domain_chargeback_rate",
-    "subtotal_pence",
-    "total_pence",
-    "item_count",
-    "delivery_distance_km",
-    "ip_to_delivery_distance_km",
-    "billing_to_delivery_distance_km",
-    "time_to_checkout_seconds",
-)
-_RAW_LOW_CARD_CATEGORICAL_FEATURES: Tuple[str, ...] = (
-    "order_channel",
-    "order_type",
-    "payment_type",
-    "card_brand",
-    "card_funding_type",
-    "device_type",
-    "platform",
-    "merchant_category",
-    "delivery_address_type",
-    "cancellation_reason",
-)
-_RAW_HIGH_CARD_HASH_FEATURES: Tuple[str, ...] = (
-    "card_bin",
-    "card_issuer_bank",
-    "ip_country",
-    "store_city",
-    "browser_name",
-    "user_email_domain",
-)
-_RAW_ENGINEERED_STRING_FEATURES: Tuple[str, ...] = ("card_issuer_country",)
-_RAW_STRING_FEATURES: Tuple[str, ...] = (
-    _RAW_LOW_CARD_CATEGORICAL_FEATURES
-    + _RAW_HIGH_CARD_HASH_FEATURES
-    + _RAW_ENGINEERED_STRING_FEATURES
-)
-_RAW_BOOLEAN_FEATURES: Tuple[str, ...] = (
-    "is_first_order_for_user",
-    "is_new_payment_method",
-    "is_new_delivery_address",
-    "is_guest_checkout",
-    "is_digital_native_bank",
-    "ip_is_proxy",
-    "ip_is_vpn",
-    "ip_is_tor",
-    "ip_is_hosting",
-)
-
-
 def _raw_tft_feature_spec(include_row_id: bool = False) -> Dict[str, object]:
-    feature_spec: Dict[str, object] = {
-        feature_name: tf.io.FixedLenFeature([], tf.float32)
-        for feature_name in _RAW_NUMERICAL_FEATURES
-    }
-    feature_spec.update(
-        {
-            feature_name: tf.io.FixedLenFeature([], tf.string)
-            for feature_name in _RAW_STRING_FEATURES
-        },
-    )
-    feature_spec.update(
-        {
-            feature_name: tf.io.FixedLenFeature([], tf.bool)
-            for feature_name in _RAW_BOOLEAN_FEATURES
-        },
-    )
-    feature_spec["gt_is_fraud"] = tf.io.FixedLenFeature([], tf.bool)
+    feature_spec: Dict[str, object] = dict(_PRODUCTION_FEATURE_SPEC)
     if include_row_id:
         feature_spec["row_id"] = tf.io.FixedLenFeature([], tf.int64)
     return feature_spec
@@ -297,11 +221,17 @@ def _raw_tft_row(
     row_id: int = 0,
     include_row_id: bool = False,
 ) -> Dict[str, object]:
-    row: Dict[str, object] = {feature_name: 1.0 for feature_name in _RAW_NUMERICAL_FEATURES}
-    row.update({feature_name: b"gb" for feature_name in _RAW_STRING_FEATURES})
-    row.update({feature_name: False for feature_name in _RAW_BOOLEAN_FEATURES})
+    row: Dict[str, object] = {}
+    for feature_name, spec in _PRODUCTION_FEATURE_SPEC.items():
+        if spec.dtype == tf.float32:
+            row[feature_name] = 1.0
+        elif spec.dtype == tf.int64:
+            row[feature_name] = 1
+        elif spec.dtype == tf.bool:
+            row[feature_name] = False
+        else:
+            row[feature_name] = b"gb"
     row["card_brand"] = card_brand
-    row["gt_is_fraud"] = False
     if include_row_id:
         row["row_id"] = row_id
     return row
@@ -790,22 +720,19 @@ def test_savedmodel_serving_signature_works(tmp_path: Path) -> None:
     loaded = tf.saved_model.load(saved_model_path)
     signature = loaded.signatures["serving_default"]
 
-    input_batch: Dict[str, object] = {
-        feature_name: tf.constant([1.0], dtype=tf.float32)
-        for feature_name in _RAW_NUMERICAL_FEATURES
-    }
-    input_batch.update(
-        {
-            feature_name: tf.constant([b"gb"], dtype=tf.string)
-            for feature_name in _RAW_STRING_FEATURES
-        },
-    )
-    input_batch.update(
-        {
-            feature_name: tf.constant([False], dtype=tf.bool)
-            for feature_name in _RAW_BOOLEAN_FEATURES
-        },
-    )
+    input_batch: Dict[str, object] = {}
+    for feature_name, spec in _PRODUCTION_FEATURE_SPEC.items():
+        if spec.dtype == tf.float32:
+            input_batch[feature_name] = tf.constant([1.0], dtype=tf.float32)
+        elif spec.dtype == tf.int64:
+            input_batch[feature_name] = tf.constant([1], dtype=tf.int64)
+        elif spec.dtype == tf.bool:
+            input_batch[feature_name] = tf.constant([False], dtype=tf.bool)
+        else:
+            input_batch[feature_name] = tf.constant([b"gb"], dtype=tf.string)
+    # gt_is_fraud is a training-only label; build_serving_model strips it from the serving spec.
+    # Do not include it in the input_batch passed to the serving signature.
+    input_batch.pop("gt_is_fraud", None)
     result = cast(Mapping[str, object], signature(**input_batch))
     output = np.asarray(next(iter(result.values())), dtype=np.float64)
 
