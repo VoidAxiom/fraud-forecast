@@ -402,13 +402,13 @@ def main() -> None:
     resolved_transform_fn: Optional[str] = args.transform_fn_path
     if resolved_transform_fn is None:
         if versioned_base is not None:
-            candidate_transform_fn = str(Path(versioned_base) / "transform_fn")
-            if os.path.isdir(candidate_transform_fn):
-                resolved_transform_fn = candidate_transform_fn
+            candidate_check = str(Path(versioned_base) / "transform_fn")
+            if os.path.isdir(candidate_check):
+                resolved_transform_fn = versioned_base
         if resolved_transform_fn is None:
-            candidate_transform_fn = str(Path(args.tfrecord_path) / "transform_fn")
-            if os.path.isdir(candidate_transform_fn):
-                resolved_transform_fn = candidate_transform_fn
+            candidate_check = str(Path(args.tfrecord_path) / "transform_fn")
+            if os.path.isdir(candidate_check):
+                resolved_transform_fn = args.tfrecord_path
 
     full_ds = make_dataset(args.tfrecord_path)
 
