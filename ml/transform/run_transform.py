@@ -164,7 +164,7 @@ def run_pipeline(
                 | "EncodeTFExample" >> beam.Map(coder.encode)
                 | "WriteTFRecord"
                 >> beam.io.WriteToTFRecord(
-                    os.path.join(output_dir, "transformed"),
+                    os.path.join(output_dir, "train"),
                     file_name_suffix=".tfrecord.gz",
                 )
             )
