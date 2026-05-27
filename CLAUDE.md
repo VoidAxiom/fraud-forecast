@@ -380,27 +380,6 @@ Linear is the planning ledger. GitHub is the delivery ledger. Per packet:
    
    Claude does NOT touch the PR between APPROVE and the REVIEWED-CLEAN notify. Specifically: Claude does not push, does not open the PR, does not post review-request comments, does not resolve threads, does not author fix-slice task.md files on the impl's behalf. The impl owns those.
 
-6. **Pre-PR scope check (Claude).**
-   - `bash scripts/impl-precommit-scope.sh --base origin/main
-     --worktree <impl worktree path> --scope-file <packet allowlist>`. Both
-     flags REQUIRED — without `--worktree` the script cwd-derives and
-     silently validates main; without `--scope-file` the role allowlist
-     alone is too broad. Exit 2 → REQUEST CHANGES; the impl re-enters the
-     Impl Contract.
-   - **codex-exec audit-trail check:** every file in `git -C <worktree>
-     diff --name-only origin/main...HEAD` MUST appear in at
-     least one `.codex-runs/<run-id>/git_diff.patch` on the branch. Any
-     source change not traceable → REQUEST CHANGES (the impl bypassed
-     codex-exec via Bash; this breaks the production-code-only-from-codex
-     invariant).
-
-7. **APPROVE → tell the impl to proceed.** The implementer pushes, creates
-   the PR with `Closes VOI-N` in the body, posts a dual-trigger
-   review-request comment (first two lines `@codex review` then
-   `@claude review`, each on its own line — see implementer.md § 8e),
-   drives the eye-emoji loop (see `implementer.md`), and notifies Claude
-   on `REVIEWED-CLEAN` or `CLEAN-COMMENT-MANUAL`.
-
 8. **Final-head re-gate (Claude, at merge time).**
    - Rerun `bash scripts/impl-precommit-scope.sh --base
      origin/main --worktree <path> --scope-file <allowlist>`
