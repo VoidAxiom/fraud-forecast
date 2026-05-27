@@ -18,6 +18,10 @@ ignore_missing_imports = true
 module = ["numpy", "tensorflow.*", "tensorflow_transform.*", "xgboost", "pandas", "apache_beam.*"]
 ignore_missing_imports = true
 
+[[tool.mypy.overrides]]
+module = ["sklearn.*", "matplotlib", "matplotlib.*"]
+ignore_missing_imports = true
+
 [tool.ruff]
 line-length = 100
 target-version = "py38"
