@@ -289,27 +289,63 @@ def _write_metrics(reports_root: Path, version: str, auprc: float) -> None:
     metrics_path.write_text(json.dumps(metrics, sort_keys=True) + "\n", encoding="utf-8")
 
 
-def test_data_loader_excludes_unfinalised(tmp_path: Path) -> None:
+def test_data_loader_excludes_unfinalised(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     assert tmp_path.exists()
-    now_utc = datetime.now(timezone.utc)
-    df = pd.DataFrame(
-        {
-            "order_id": [1, 2, 3, 4, 5],
-            "placed_at": [
-                now_utc - timedelta(days=60, minutes=2),
-                now_utc - timedelta(days=60, minutes=1),
-                now_utc - timedelta(days=60),
-                now_utc - timedelta(days=20, minutes=1),
-                now_utc - timedelta(days=20),
-            ],
-        },
+    placed_at = [
+        datetime(2026, 1, 1, 10, 0, 0, tzinfo=timezone.utc),
+        datetime(2026, 1, 1, 10, 1, 0, tzinfo=timezone.utc),
+        datetime(2026, 1, 1, 10, 2, 0, tzinfo=timezone.utc),
+        datetime(2026, 1, 1, 10, 3, 0, tzinfo=timezone.utc),
+        datetime(2026, 1, 1, 10, 4, 0, tzinfo=timezone.utc),
+    ]
+    return_df = make_synthetic_df(n_rows=5, n_fraud=0, seed=1)
+    return_df["order_id"] = ["old-1", "old-2", "old-3", "old-4", "old-5"]
+    return_df["placed_at"] = placed_at
+
+    engine = MagicMock()
+    get_engine_mock = MagicMock(return_value=engine)
+    monkeypatch.setattr("ml.training.data_loader.get_engine", get_engine_mock)
+
+    def fake_read_sql_query(
+        query: object,
+        conn: object,
+        params: Mapping[str, object],
+    ) -> pd.DataFrame:
+        del conn
+        query_text = str(query)
+        buffer_expression = (
+            "NOW() - (CAST(:label_finalisation_buffer_days AS INTEGER) * "
+            "INTERVAL '1 day')"
+        )
+        assert buffer_expression in query_text
+        assert "label_finalisation_buffer_days" in params
+        assert params == {
+            "start_date": placed_at[0] - timedelta(hours=1),
+            "end_date": placed_at[-1] + timedelta(hours=1),
+            "label_finalisation_buffer_days": 45,
+        }
+        return return_df
+
+    def fake_to_parquet(self: pd.DataFrame, path: object, index: bool = False) -> None:
+        del self, path, index
+
+    monkeypatch.setattr("ml.training.data_loader.pd.read_sql_query", fake_read_sql_query)
+    monkeypatch.setattr("ml.training.data_loader.pd.DataFrame.to_parquet", fake_to_parquet)
+
+    config = TrainingDataConfig(
+        start_date=placed_at[0] - timedelta(hours=1),
+        end_date=placed_at[-1] + timedelta(hours=1),
+        label_finalisation_buffer_days=45,
     )
+    result = load_training_data(config)
 
-    cutoff = now_utc - timedelta(days=45)
-    filtered = df[df["placed_at"] < cutoff]
-
-    assert filtered["order_id"].tolist() == [1, 2, 3]
-    assert filtered["placed_at"].max() < cutoff
+    get_engine_mock.assert_called_once_with(role="training")
+    assert len(result) == 5
+    assert result["order_id"].tolist() == ["old-1", "old-2", "old-3", "old-4", "old-5"]
+    assert result["placed_at"].tolist() == placed_at
 
 
 def test_data_loader_no_future_leakage(
@@ -318,12 +354,20 @@ def test_data_loader_no_future_leakage(
 ) -> None:
     """Verify the loader routes through real SQL window logic via patched pd.read_sql_query."""
     assert tmp_path.exists()
-    t1 = datetime(2026, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
+    placed_at = [
+        datetime(2026, 1, 1, 12, 0, 0, tzinfo=timezone.utc),
+        datetime(2026, 1, 1, 12, 30, 0, tzinfo=timezone.utc),
+        datetime(2026, 1, 1, 13, 30, 0, tzinfo=timezone.utc),
+    ]
+    expected_user_orders_1h = [0, 1, 1]
+    expected_user_orders_24h = [0, 1, 2]
 
-    fixture_df = make_synthetic_df(n_rows=3, n_fraud=0, seed=42)
-    fixture_df["order_id"] = ["t1", "t2", "t3"]
-    fixture_df["user_id"] = ["user-1", "user-1", "user-1"]
-    fixture_df["placed_at"] = [t1, t1 + timedelta(hours=2), t1 + timedelta(hours=4)]
+    return_df = make_synthetic_df(n_rows=3, n_fraud=0, seed=42)
+    return_df["order_id"] = ["t1", "t2", "t3"]
+    return_df["user_id"] = ["user-1", "user-1", "user-1"]
+    return_df["placed_at"] = placed_at
+    return_df["user_orders_1h_at_order_time"] = expected_user_orders_1h
+    return_df["user_orders_24h_at_order_time"] = expected_user_orders_24h
 
     engine = MagicMock()
     get_engine_mock = MagicMock(return_value=engine)
@@ -342,11 +386,11 @@ def test_data_loader_no_future_leakage(
         assert "RANGE BETWEEN INTERVAL '24 hours' PRECEDING AND CURRENT ROW" in query_text
         assert "EXCLUDE CURRENT ROW" in query_text
         assert params == {
-            "start_date": t1 - timedelta(hours=1),
-            "end_date": t1 + timedelta(hours=5),
+            "start_date": placed_at[0] - timedelta(hours=1),
+            "end_date": placed_at[-1] + timedelta(hours=1),
             "label_finalisation_buffer_days": 0,
         }
-        return fixture_df
+        return return_df
 
     def fake_to_parquet(self: pd.DataFrame, path: object, index: bool = False) -> None:
         del self, path, index
@@ -355,14 +399,16 @@ def test_data_loader_no_future_leakage(
     monkeypatch.setattr("ml.training.data_loader.pd.DataFrame.to_parquet", fake_to_parquet)
 
     config = TrainingDataConfig(
-        start_date=t1 - timedelta(hours=1),
-        end_date=t1 + timedelta(hours=5),
+        start_date=placed_at[0] - timedelta(hours=1),
+        end_date=placed_at[-1] + timedelta(hours=1),
         label_finalisation_buffer_days=0,
     )
     result = load_training_data(config)
 
     get_engine_mock.assert_called_once_with(role="training")
     assert len(result) == 3
+    assert result["user_orders_1h_at_order_time"].tolist() == expected_user_orders_1h
+    assert result["user_orders_24h_at_order_time"].tolist() == expected_user_orders_24h
     for column in ("order_id", "user_id", "placed_at", *_REQUIRED_COLUMNS):
         assert column in result.columns
 
