@@ -72,6 +72,7 @@ FEATURE_NAMES: Tuple[str, ...] = FLOAT_FEATURE_NAMES + INT_FEATURE_NAMES
 FEATURE_ORDER: Tuple[str, ...] = FEATURE_NAMES
 NUM_FEATURES = len(FEATURE_NAMES)
 LABEL_NAME = "label"
+_LABEL_FIELD_NAMES = frozenset((LABEL_NAME, "gt_is_fraud"))
 _BATCH_SIZE = 512
 
 _FEATURE_SPEC: Dict[str, Any] = {
@@ -172,13 +173,28 @@ def build_dnn_model(input_dim: int) -> tf.keras.Model:
     return model
 
 
+def compute_class_weight(train_ds: tf.data.Dataset) -> Dict[int, float]:
+    neg = 0
+    pos = 0
+    for _feature_vector, label in train_ds:
+        label_value = int(tf.reshape(label, []).numpy())
+        if label_value == 0:
+            neg += 1
+        else:
+            pos += 1
+
+    if pos == 0:
+        return {0: 1.0, 1: 50.0}
+    return {0: 1.0, 1: float(neg) / float(pos)}
+
+
 def train_dnn(
     train_ds: tf.data.Dataset,
     val_ds: tf.data.Dataset,
     hyperparams: Dict[str, Any],
 ) -> Tuple[tf.keras.Model, Any]:
     model = build_dnn_model(input_dim=NUM_FEATURES)
-    class_weight = {0: 1.0, 1: 50.0}
+    class_weight = compute_class_weight(train_ds)
     version = _new_version()
     checkpoint_path = Path("models") / "dnn" / version / "checkpoint"
     checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
@@ -225,7 +241,24 @@ def _feature_matrix_from_dict(features: Dict[str, Any]) -> Any:
 
 
 def _passthrough_feature_spec() -> Dict[str, Any]:
-    return {feature_name: _FEATURE_SPEC[feature_name] for feature_name in FEATURE_ORDER}
+    # FEATURE_ORDER intentionally excludes LABEL_NAME; keep the fallback serving-only.
+    return {
+        feature_name: _FEATURE_SPEC[feature_name]
+        for feature_name in FEATURE_ORDER
+        if feature_name not in _LABEL_FIELD_NAMES
+    }
+
+
+def _is_training_label_field(feature_name: str) -> bool:
+    return feature_name in _LABEL_FIELD_NAMES or feature_name.startswith(("gt_", "label"))
+
+
+def _serving_feature_spec(feature_spec: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        feature_name: spec
+        for feature_name, spec in feature_spec.items()
+        if not _is_training_label_field(feature_name)
+    }
 
 
 def _tensor_specs_from_feature_spec(feature_spec: Dict[str, Any]) -> Dict[str, Any]:
@@ -267,6 +300,7 @@ def build_serving_model(transform_fn_path: str, dnn_model: tf.keras.Model) -> st
     except AttributeError:
         transform_layer = None
         feature_spec = _passthrough_feature_spec()
+    feature_spec = _serving_feature_spec(feature_spec)
 
     version = _new_version()
     saved_model_path = str(Path("models") / "dnn" / version / "saved_model")
@@ -291,6 +325,7 @@ __all__ = [
     "NUM_FEATURES",
     "build_dnn_model",
     "build_serving_model",
+    "compute_class_weight",
     "make_dataset",
     "train_dnn",
 ]

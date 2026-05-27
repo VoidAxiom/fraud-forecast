@@ -11,8 +11,12 @@ from ml.training.train_dnn import (
     FEATURE_ORDER,
     FLOAT_FEATURE_NAMES,
     INT_FEATURE_NAMES,
+    LABEL_NAME,
     NUM_FEATURES,
+    _passthrough_feature_spec,
+    _serving_feature_spec,
     build_dnn_model,
+    compute_class_weight,
     make_dataset,
     train_dnn,
 )
@@ -54,6 +58,36 @@ def test_build_dnn_model_output_shape() -> None:
     model = build_dnn_model(input_dim=42)
 
     assert model.output_shape == (None, 1)
+
+
+def test_serving_feature_spec_excludes_training_labels() -> None:
+    passthrough_spec = _passthrough_feature_spec()
+    raw_spec = dict(passthrough_spec)
+    raw_spec[LABEL_NAME] = tf.io.FixedLenFeature([], tf.int64)
+    raw_spec["gt_is_fraud"] = tf.io.FixedLenFeature([], tf.int64)
+    raw_spec["gt_review_reason"] = tf.io.FixedLenFeature([], tf.int64)
+    raw_spec["label_source"] = tf.io.FixedLenFeature([], tf.int64)
+
+    serving_spec = _serving_feature_spec(raw_spec)
+
+    assert LABEL_NAME not in passthrough_spec
+    assert LABEL_NAME not in serving_spec
+    assert "gt_is_fraud" not in serving_spec
+    assert "gt_review_reason" not in serving_spec
+    assert "label_source" not in serving_spec
+    assert set(serving_spec) == set(FEATURE_ORDER)
+
+
+def test_compute_class_weight_uses_training_label_ratio() -> None:
+    num_examples = 100
+    features = np.zeros((num_examples, NUM_FEATURES), dtype=np.float32)
+    labels = np.array([0] * 90 + [1] * 10, dtype=np.int32)
+    train_ds = tf.data.Dataset.from_tensor_slices((features, labels))
+
+    class_weight = compute_class_weight(train_ds)
+
+    # 90 negative examples / 10 positive examples = 9.0 positive-class weight.
+    assert class_weight == {0: 1.0, 1: 9.0}
 
 
 def test_train_dnn_one_epoch_smoke(tmp_path: Path) -> None:
