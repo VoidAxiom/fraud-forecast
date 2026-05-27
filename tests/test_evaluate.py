@@ -92,7 +92,9 @@ def test_evaluate_computes_per_category_recall(
     # promo_abuse: zero scores >= 0.5 out of one category example = 0 / 1.
     assert metrics["recall_promo_abuse"] == pytest.approx(0.0)
     assert metrics["recall_refund_abuse"] == pytest.approx(1.0)
-    assert metrics["recall_collusive_merchant"] == pytest.approx(0.0)
+    assert "recall_collusive_merchant" not in metrics
+    assert "recall_triangulation" not in metrics
+    assert "recall_reseller" not in metrics
     assert (tmp_path / "ml" / "training" / "reports" / "test-version" / "metrics.json").exists()
 
 
@@ -176,6 +178,10 @@ def test_main_loads_npz_saves_versioned_report_and_prints_json(
     assert printed_metrics["recall_stolen_card"] == pytest.approx(1.0)
     assert printed_metrics["recall_promo_abuse"] == pytest.approx(0.0)
     assert saved_metrics == printed_metrics
+    assert (reports_dir / "cli-version" / "score_dist.png").exists()
+    assert (reports_dir / "cli-version" / "pr_curve.png").exists()
+    assert (reports_dir / "cli-version" / "roc_curve.png").exists()
+    assert (reports_dir / "cli-version" / "calibration.png").exists()
 
 
 def test_main_uses_empty_categories_when_npz_omits_categories(
@@ -206,8 +212,8 @@ def test_main_uses_empty_categories_when_npz_omits_categories(
     evaluate_main()
 
     printed_metrics = json.loads(capsys.readouterr().out)
-    assert printed_metrics["recall_stolen_card"] == pytest.approx(0.0)
-    assert printed_metrics["recall_account_takeover"] == pytest.approx(0.0)
+    assert "recall_stolen_card" not in printed_metrics
+    assert "recall_account_takeover" not in printed_metrics
     assert (
         tmp_path / "ml" / "training" / "reports" / "missing-categories" / "metrics.json"
     ).exists()

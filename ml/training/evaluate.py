@@ -7,7 +7,7 @@ import json
 import os
 import tempfile
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 os.environ.setdefault(
     "MPLCONFIGDIR",
@@ -241,6 +241,7 @@ def evaluate(
     model_path: str,
     test_data: Tuple[np.ndarray, np.ndarray],
     ground_truth_categories: np.ndarray,
+    report_dir: Optional[str] = None,
 ) -> Dict[str, Any]:
     y_test, y_pred = test_data
     y_test_array = _as_1d_array(y_test, np.int64)
@@ -250,13 +251,12 @@ def evaluate(
 
     for category in FRAUD_CATEGORIES:
         category_mask = categories == category
-        if int(category_mask.sum()) == 0:
-            metrics[f"recall_{category}"] = 0.0
-        else:
+        if int(category_mask.sum()) > 0:
             metrics[f"recall_{category}"] = float((y_pred_array[category_mask] >= 0.5).mean())
 
     version = Path(model_path).name
-    report_dir = str(Path("ml") / "training" / "reports" / version)
+    if report_dir is None:
+        report_dir = str(Path("ml") / "training" / "reports" / version)
     plot_score_distributions(
         y_test_array, y_pred_array, save_to=str(Path(report_dir) / "score_dist.png")
     )
@@ -318,8 +318,12 @@ def main() -> None:
         else:
             categories = np.full(_as_1d_array(y_true, np.int64).shape, "", dtype=str)
 
-    metrics = evaluate(str(args.model_path), (y_true, y_pred), categories)
-    save_report(metrics, str(Path(str(args.reports_dir)) / str(args.version)))
+    metrics = evaluate(
+        str(args.model_path),
+        (y_true, y_pred),
+        categories,
+        report_dir=str(Path(str(args.reports_dir)) / str(args.version)),
+    )
     print(json.dumps(_json_compatible(metrics), sort_keys=True))
 
 
