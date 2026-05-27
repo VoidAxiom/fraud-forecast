@@ -19,7 +19,7 @@ jobs:
     if: |
       github.event.issue.pull_request &&
       github.event.issue.state == 'open' &&
-      contains(toLower(github.event.comment.body), '@claude review') &&
+      contains(github.event.comment.body, '@claude review') &&
       github.event.comment.user.type != 'Bot' &&
       contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association) &&
       contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.issue.author_association)
