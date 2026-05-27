@@ -439,7 +439,7 @@ def test_data_loader_no_future_leakage(
         assert "EXCLUDE CURRENT ROW" in query_text
         assert params == {
             "start_date": placed_at[0] - timedelta(hours=1),
-            "end_date": placed_at[-1] + timedelta(hours=1),
+            "end_date": max(placed_at) + timedelta(hours=1),
             "label_finalisation_buffer_days": 0,
         }
 
@@ -473,7 +473,7 @@ def test_data_loader_no_future_leakage(
 
     config = TrainingDataConfig(
         start_date=placed_at[0] - timedelta(hours=1),
-        end_date=placed_at[-1] + timedelta(hours=1),
+        end_date=max(placed_at) + timedelta(hours=1),
         label_finalisation_buffer_days=0,
     )
     result = load_training_data(config)
