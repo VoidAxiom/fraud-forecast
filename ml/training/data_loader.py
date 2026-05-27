@@ -112,18 +112,21 @@ order_features AS (
         COUNT(*) OVER (
             PARTITION BY o.user_id
             ORDER BY o.placed_at
-            RANGE BETWEEN INTERVAL '1 hour' PRECEDING AND INTERVAL '1 second' PRECEDING
+            RANGE BETWEEN INTERVAL '1 hour' PRECEDING AND CURRENT ROW
+            EXCLUDE CURRENT ROW
         ) AS user_orders_1h_at_order_time,
         COUNT(*) OVER (
             PARTITION BY o.user_id
             ORDER BY o.placed_at
-            RANGE BETWEEN INTERVAL '24 hours' PRECEDING AND INTERVAL '1 second' PRECEDING
+            RANGE BETWEEN INTERVAL '24 hours' PRECEDING AND CURRENT ROW
+            EXCLUDE CURRENT ROW
         ) AS user_orders_24h_at_order_time,
         COALESCE(
             SUM(o.total_pence) OVER (
                 PARTITION BY o.user_id
                 ORDER BY o.placed_at
-                RANGE BETWEEN INTERVAL '24 hours' PRECEDING AND INTERVAL '1 second' PRECEDING
+                RANGE BETWEEN INTERVAL '24 hours' PRECEDING AND CURRENT ROW
+                EXCLUDE CURRENT ROW
             ),
             0
         )::BIGINT AS user_spend_24h_pence,
@@ -132,7 +135,8 @@ order_features AS (
             ELSE COUNT(*) OVER (
                 PARTITION BY o.device_id
                 ORDER BY o.placed_at
-                RANGE BETWEEN UNBOUNDED PRECEDING AND INTERVAL '1 second' PRECEDING
+                RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+                EXCLUDE CURRENT ROW
             )
         END AS device_lifetime_order_count,
         (
