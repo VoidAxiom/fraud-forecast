@@ -381,12 +381,12 @@ email_domain_cb_rates AS (
 ),
 order_features AS (
     SELECT
-        o.order_id,
+        CAST(o.order_id AS VARCHAR) AS order_id,
         o.placed_at,
-        o.user_id,
-        o.store_id,
-        o.merchant_id,
-        o.device_id,
+        CAST(o.user_id AS VARCHAR) AS user_id,
+        CAST(o.store_id AS VARCHAR) AS store_id,
+        CAST(o.merchant_id AS VARCHAR) AS merchant_id,
+        CAST(o.device_id AS VARCHAR) AS device_id,
         COALESCE(CAST(o.ip_address AS VARCHAR), '') AS ip_address,
         COALESCE(CAST(o.fraud_outcome AS VARCHAR), 'UNKNOWN') AS fraud_outcome,
         COALESCE(o.user_total_orders_lifetime, 0) AS user_total_orders_lifetime,
