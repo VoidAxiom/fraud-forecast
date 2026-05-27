@@ -1,0 +1,100 @@
+name: Claude Review (manual one-off)
+
+on:
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: PR number to review
+        required: true
+        type: number
+
+# Disabled auto-trigger: we pivoted from PR-level Claude review to local
+# /code-review (run by the implementer subagent in step 4 of the Impl
+# Contract). This workflow is retained as a manual one-off escape hatch
+# for cases where a cloud-side Claude review of an existing PR is wanted
+# — trigger from the Actions UI with the PR number as input.
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+  id-token: write
+
+concurrency:
+  group: claude-review-${{ inputs.pr_number }}
+  cancel-in-progress: false
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Verify PR head is in this repo (no forks)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          head_repo=$(gh api repos/${{ github.repository }}/pulls/${{ inputs.pr_number }} --jq '.head.repo.full_name')
+          if [ "$head_repo" != "${{ github.repository }}" ]; then
+            echo "::error::PR #${{ inputs.pr_number }} head is in fork ($head_repo); refusing to expose OAuth + GITHUB_TOKEN to fork-authored code."
+            exit 1
+          fi
+
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: refs/pull/${{ inputs.pr_number }}/head
+
+      - uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          prompt: |
+            Review pull request #${{ inputs.pr_number }}.
+
+            ## Severity scheme (mirror Codex's P0–P3)
+
+            Tag every finding's title with its priority in brackets, e.g.
+            "[P1] Missing null check in PaymentService.charge".
+
+            - [P0] — Drop everything to fix. Blocking release, operations, or
+              major usage. Only use for universal issues that do not depend on
+              assumptions about inputs. (SQL injection, secret leak, data loss,
+              crash-on-startup.)
+            - [P1] — Urgent. Should be addressed in the next cycle.
+              (Missing auth check, broken error handling on critical path,
+              missing test for changed behavior.)
+            - [P2] — Normal. To be fixed eventually.
+              (N+1 under low load, suboptimal abstraction, minor missing test.)
+            - [P3] — Low. Nice to have.
+              (Naming, micro-optimization, doc polish.)
+
+            ## What to post
+
+            Post P0, P1, P2, and P3 findings as inline comments on the PR,
+            each with its severity tag in the title. Group by severity in the
+            summary, P0 first.
+
+            ## Focus areas
+
+            - Correctness, edge cases, error handling
+            - Security: auth, injection, secret handling, unsafe deserialization
+            - Test quality: are tests load-bearing, or do they mirror the
+              implementation? Flag tautological tests as [P1].
+            - Adherence to conventions in CLAUDE.md and REVIEW.md if present
+            - Adherence to spec/PHASE_*.md verbatim contracts when a PR touches that phase's surface (the source-of-truth files for our packets)
+            - Issues another reviewer (Codex) might systematically miss
+
+            ## Behavior
+
+            - Prefer no finding over a weak finding — especially at P0/P1.
+            - Do not praise the author.
+            - Do not pad the review with generic comments.
+            - If you find nothing material, post a one-line summary saying so.
+            - Summary under 200 words.
+
+            ## Verdict
+
+            End the summary with one line:
+            **Verdict:** APPROVE (no P0/P1) | REQUEST CHANGES (P0/P1 present)
+
+            P2/P3 findings do not block the verdict — they're informational.
+          claude_args: "--model claude-opus-4-7"
