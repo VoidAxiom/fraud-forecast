@@ -83,6 +83,7 @@ def test_evaluate_computes_per_category_recall(
     )
 
     monkeypatch.chdir(tmp_path)
+    (tmp_path / "models" / "xgboost" / "test-version").mkdir(parents=True, exist_ok=True)
     metrics = evaluate("models/xgboost/test-version", (y_true, y_scores), categories)
 
     # stolen_card: one score >= 0.5 out of two category examples = 1 / 2.

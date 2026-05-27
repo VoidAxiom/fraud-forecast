@@ -254,9 +254,10 @@ def evaluate(
         if int(category_mask.sum()) > 0:
             metrics[f"recall_{category}"] = float((y_pred_array[category_mask] >= 0.5).mean())
 
-    version = Path(model_path).name
     if report_dir is None:
-        report_dir = str(Path("ml") / "training" / "reports" / version)
+        model_p = Path(model_path)
+        derived_version = model_p.name if model_p.is_dir() else model_p.parent.name
+        report_dir = str(Path("ml") / "training" / "reports" / derived_version)
     plot_score_distributions(
         y_test_array, y_pred_array, save_to=str(Path(report_dir) / "score_dist.png")
     )
