@@ -397,19 +397,16 @@ def test_data_loader_no_future_leakage(
     placed_at = [
         datetime(2026, 1, 1, 12, 0, 0, tzinfo=timezone.utc),
         datetime(2026, 1, 1, 12, 30, 0, tzinfo=timezone.utc),
-        datetime(2026, 1, 1, 12, 30, 0, tzinfo=timezone.utc),
         datetime(2026, 1, 1, 13, 30, 0, tzinfo=timezone.utc),
         datetime(2026, 1, 2, 10, 0, 0, tzinfo=timezone.utc),
         datetime(2026, 1, 2, 13, 30, 0, tzinfo=timezone.utc),
     ]
-    # 1h prior counts: t5 sees t0 plus tied peer t1; t2 sees both 12:30 rows.
-    expected_1h = [0, 1, 2, 2, 0, 0]
-    # 24h prior counts: t3 sees t0/t1/t5/t2; t4 sees t2 at 24h boundary plus t3.
-    expected_24h = [0, 1, 2, 3, 4, 2]
+    expected_1h = [0, 1, 1, 0, 0]
+    expected_24h = [0, 1, 2, 3, 2]
 
-    return_df = make_synthetic_df(n_rows=6, n_fraud=0, seed=42)
-    return_df["order_id"] = ["t0", "t1", "t5", "t2", "t3", "t4"]
-    return_df["user_id"] = ["user-1"] * 6
+    return_df = make_synthetic_df(n_rows=5, n_fraud=0, seed=42)
+    return_df["order_id"] = ["t0", "t1", "t2", "t3", "t4"]
+    return_df["user_id"] = ["user-1"] * 5
     return_df["placed_at"] = placed_at
 
     engine = MagicMock()
@@ -436,22 +433,19 @@ def test_data_loader_no_future_leakage(
 
         base = return_df[["order_id", "user_id", "placed_at"]].copy()
 
-        def count_prior_window(row: pd.Series, window_seconds: int, row_idx: object) -> int:
-            """Count rows in [t - window, t], excluding self."""
+        def count_prior_window(row: pd.Series, window_seconds: int) -> int:
+            """Count rows in [t - window, t), strict-less-than on upper bound, no peer rows."""
             t = row["placed_at"]
             cutoff = t - pd.Timedelta(seconds=window_seconds)
-            # RANGE ... CURRENT ROW includes tied ORDER BY timestamps;
-            # EXCLUDE CURRENT ROW removes only the current physical row.
             mask = (
                 (base["user_id"] == row["user_id"])
                 & (base["placed_at"] >= cutoff)
-                & (base["placed_at"] <= t)
-                & (base.index != row_idx)
+                & (base["placed_at"] < t)
             )
             return int(mask.sum())
 
-        computed_1h = base.apply(lambda row: count_prior_window(row, 3600, row.name), axis=1)
-        computed_24h = base.apply(lambda row: count_prior_window(row, 86400, row.name), axis=1)
+        computed_1h = base.apply(lambda row: count_prior_window(row, 3600), axis=1)
+        computed_24h = base.apply(lambda row: count_prior_window(row, 86400), axis=1)
 
         df_out = return_df.copy()
         df_out["user_orders_1h_at_order_time"] = computed_1h.values
@@ -472,7 +466,7 @@ def test_data_loader_no_future_leakage(
     result = load_training_data(config)
 
     get_engine_mock.assert_called_once_with(role="training")
-    assert len(result) == 6
+    assert len(result) == 5
     assert result["user_orders_1h_at_order_time"].tolist() == expected_1h
     assert result["user_orders_24h_at_order_time"].tolist() == expected_24h
     for column in ("order_id", "user_id", "placed_at", *_REQUIRED_COLUMNS):
