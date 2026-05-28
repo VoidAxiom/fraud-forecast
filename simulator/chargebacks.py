@@ -163,7 +163,7 @@ def bulk_chargeback_received_at(
     chargeback_at = delivered_at + datetime.timedelta(days=days_to_chargeback)
     if chargeback_at > window_end:
         return None
-    delivered_age_days = (window_end - delivered_at).total_seconds() / 86400
+    delivered_age_days = (chargeback_at - delivered_at).total_seconds() / 86400
     if not _chargeback_age_allowed(delivered_age_days):
         return None
     chargeback_probability = _chargeback_probability(is_fraud, fraud_category)

@@ -335,6 +335,10 @@ async def bulk_generate(
             )
 
     rng = random.Random(config.seed)
+    # Mix window start into seed so runs over different windows with
+    # the same seed don't collide on sim.simulator_ground_truth.order_id.
+    _window_seed = int(window_start.timestamp()) & 0x7FFFFFFFFFFFFFFF
+    rng.seed(config.seed ^ _window_seed)
     run_id = f"bulk_{datetime.now(tz=LONDON_TZ).strftime('%Y%m%d_%H%M%S')}_{config.seed}"
 
     resolved_redis: aioredis.Redis[Any]
