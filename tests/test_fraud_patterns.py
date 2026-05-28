@@ -280,7 +280,11 @@ def test_triangulation_signals_present() -> None:
 
 
 def test_reseller_signals_present() -> None:
-    init_reseller_accounts(rng=random.Random(7), n=50)
+    init_reseller_accounts(
+        rng=random.Random(7),
+        store_id_pool=[uuid.UUID(int=i + 1) for i in range(5)],
+        n=50,
+    )
     ctx = _ctx(seed=0)
     delivery_address_ids: set[uuid.UUID] = set()
 
@@ -717,7 +721,11 @@ def test_triangulation_ground_truth_recorded(db_engine: Engine) -> None:
 
 
 def test_reseller_ground_truth_recorded(db_engine: Engine) -> None:
-    init_reseller_accounts(rng=random.Random(7), n=50)
+    init_reseller_accounts(
+        rng=random.Random(7),
+        store_id_pool=[uuid.UUID(int=i + 1) for i in range(5)],
+        n=50,
+    )
     rows: list[uuid.UUID] = []
     min_placed_at: datetime | None = None
     expected = "reseller"
@@ -788,7 +796,11 @@ def test_fraud_distribution() -> None:
     init_rings(rng=random.Random(42), n_rings=50)
     init_collusive_stores(rng=random.Random(42), n=10)
     init_accounts(rng=random.Random(42), n=30)
-    init_reseller_accounts(rng=random.Random(42), n=50)
+    init_reseller_accounts(
+        rng=random.Random(42),
+        store_id_pool=[uuid.UUID(int=i + 1) for i in range(5)],
+        n=50,
+    )
 
     ctx: FraudPatternContext = _ctx(42)
     category_counts: dict[str, int] = {
@@ -878,7 +890,11 @@ def test_collusive_store_concentration() -> None:
     init_collusive_stores(rng=random.Random(7), n=10)
     init_rings(rng=random.Random(7), n_rings=50)
     init_accounts(rng=random.Random(7), n=30)
-    init_reseller_accounts(rng=random.Random(7), n=50)
+    init_reseller_accounts(
+        rng=random.Random(7),
+        store_id_pool=[uuid.UUID(int=i + 1) for i in range(5)],
+        n=50,
+    )
     ctx: FraudPatternContext = _ctx(7)
 
     orders_by_store: dict[uuid.UUID, int] = {}

@@ -1635,7 +1635,10 @@ async def main() -> None:
         # Initialize fraud-pattern state (callers-must-init per CLAUDE.md).
         init_collusive_stores(rng)
         init_promo_abuse_rings(rng)
-        init_reseller_accounts(rng)
+        init_reseller_accounts(
+            rng,
+            store_id_pool=[s["store_id"] for stores in stores_by_city.values() for s in stores],
+        )
         init_triangulation_accounts(rng)
         rng_lock = asyncio.Lock()
         stats_lock = asyncio.Lock()
