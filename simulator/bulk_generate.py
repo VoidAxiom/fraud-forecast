@@ -36,7 +36,7 @@ from simulator.generator import (
     load_store_hours,
     load_stores_by_city,
 )
-from simulator.lifecycle import advance_lifecycle
+from simulator.lifecycle import _TERMINAL_STATES, advance_lifecycle
 from simulator.timestamps import synthesize_chronological_timestamps
 from simulator.user_picker import WeightedUserPicker
 
@@ -268,7 +268,14 @@ async def bulk_generate(
                     promos=promos,
                     scoring_enabled=False,
                 )
-                await advance_lifecycle(order_id, conn, now=window_end)
+                for _ in range(20):
+                    status = await conn.fetchval(
+                        "SELECT order_status FROM orders WHERE order_id = $1",
+                        order_id,
+                    )
+                    if status in _TERMINAL_STATES:
+                        break
+                    await advance_lifecycle(order_id, conn, now=window_end)
                 await maybe_emit_chargeback(order_id, conn, now=window_end)
 
             processed += 1
