@@ -789,6 +789,8 @@ async def _insert_ephemeral_payment_method(
             payment_method_id, user_id, payment_type, card_bin, card_last_four,
             card_brand, card_funding_type, card_issuer_country, is_digital_native_bank
         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+        ON CONFLICT (payment_method_id) DO UPDATE
+            SET payment_method_id = EXCLUDED.payment_method_id
         RETURNING payment_method_id, payment_type, card_bin, card_last_four, card_brand,
                   card_funding_type, card_issuer_country, is_digital_native_bank,
                   unique_users_count
