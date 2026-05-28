@@ -778,7 +778,7 @@ async def _insert_ephemeral_payment_method(
     payment_method_id: Optional[uuid.UUID] = None,
 ) -> tuple[dict[str, Any], bool]:
     if payment_method_id is None:
-        payment_method_id = uuid.UUID(bytes=bytes(rng.getrandbits(8) for _ in range(16)))
+        payment_method_id = uuid.uuid4()
 
     card_bin = f"{rng.randint(100000, 999999):06d}"
     card_last_four = f"{rng.randint(1000, 9999):04d}"
@@ -1606,6 +1606,7 @@ async def generate_order(
     scoring_enabled: bool = False,
     order_id_override: uuid.UUID | None = None,
     device_id_override: uuid.UUID | None = None,
+    ephemeral_pm_id_override: Optional[uuid.UUID] = None,
     bulk_pm_tracker: Optional[set[uuid.UUID]] = None,
 ) -> uuid.UUID:
     user_id = user_picker.pick(rng)
@@ -1667,6 +1668,7 @@ async def generate_order(
             conn,
             user_id,
             rng,
+            payment_method_id=ephemeral_pm_id_override,
         )
         if is_new_ephemeral_payment_method and bulk_pm_tracker is not None:
             bulk_pm_tracker.add(payment_method["payment_method_id"])

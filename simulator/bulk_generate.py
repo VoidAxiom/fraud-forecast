@@ -492,6 +492,9 @@ async def bulk_generate(
         bulk_pm_ids: set[uuid.UUID] = set()
         for ts in timestamps:
             order_rng = random.Random(rng.randint(0, 2**63 - 1))
+            bulk_ephemeral_pm_id = uuid.UUID(
+                bytes=bytes(order_rng.getrandbits(8) for _ in range(16))
+            )
             order_id_bytes = bytes(rng.getrandbits(8) for _ in range(16))
             bulk_order_id = uuid.UUID(bytes=order_id_bytes)
             async with pool.acquire() as conn:
@@ -505,6 +508,7 @@ async def bulk_generate(
                     promos=promos,
                     scoring_enabled=False,
                     order_id_override=bulk_order_id,
+                    ephemeral_pm_id_override=bulk_ephemeral_pm_id,
                     bulk_pm_tracker=bulk_pm_ids,
                 )
                 for lifecycle_iter in range(20):
