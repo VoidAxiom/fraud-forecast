@@ -155,7 +155,7 @@ async def init_reseller_accounts(
             )
             rows = await conn.fetch(_SELECT_RESELLER_ACCOUNTS_SQL)
 
-    RESELLER_ACCOUNTS.extend(_account_from_row(row) for row in rows)
+    RESELLER_ACCOUNTS.extend(_account_from_row(row) for row in rows[:n])
 
 
 def _sample_per_item_price_pence(
