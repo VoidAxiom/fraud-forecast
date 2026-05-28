@@ -24,6 +24,7 @@ CREATE TABLE sim.fraud_reseller_accounts (
 """
     )
     op.execute("GRANT SELECT, INSERT, UPDATE ON sim.fraud_reseller_accounts TO simulator_user;")
+    op.execute("REVOKE DELETE ON sim.fraud_reseller_accounts FROM simulator_user;")
     op.execute("GRANT SELECT ON sim.fraud_reseller_accounts TO training_user;")
 
 
