@@ -79,7 +79,7 @@ _ORDER_INSERT_SQL = text(
 
 _GROUND_TRUTH_INSERT_SQL = text(
     """
-    INSERT INTO simulator_ground_truth (
+    INSERT INTO sim.simulator_ground_truth (
         order_id,
         is_fraud,
         fraud_category,
@@ -347,7 +347,7 @@ def test_stolen_card_ground_truth_recorded(db_engine: Engine) -> None:
             found = {
                 row[0]: row[1]
                 for row in conn.execute(
-                    text("SELECT order_id, fraud_category FROM simulator_ground_truth WHERE order_id = ANY(:ids)"),
+                    text("SELECT order_id, fraud_category FROM sim.simulator_ground_truth WHERE order_id = ANY(:ids)"),
                     {"ids": rows},
                 ).fetchall()
             }
@@ -358,7 +358,7 @@ def test_stolen_card_ground_truth_recorded(db_engine: Engine) -> None:
     finally:
         with db_engine.begin() as conn:
             conn.execute(
-                text("DELETE FROM simulator_ground_truth WHERE order_id = ANY(:ids)"),
+                text("DELETE FROM sim.simulator_ground_truth WHERE order_id = ANY(:ids)"),
                 {"ids": rows},
             )
             if min_placed_at is not None:
@@ -428,7 +428,7 @@ def test_account_takeover_ground_truth_recorded(db_engine: Engine) -> None:
             found = {
                 row[0]: row[1]
                 for row in conn.execute(
-                    text("SELECT order_id, fraud_category FROM simulator_ground_truth WHERE order_id = ANY(:ids)"),
+                    text("SELECT order_id, fraud_category FROM sim.simulator_ground_truth WHERE order_id = ANY(:ids)"),
                     {"ids": rows},
                 ).fetchall()
             }
@@ -439,7 +439,7 @@ def test_account_takeover_ground_truth_recorded(db_engine: Engine) -> None:
     finally:
         with db_engine.begin() as conn:
             conn.execute(
-                text("DELETE FROM simulator_ground_truth WHERE order_id = ANY(:ids)"),
+                text("DELETE FROM sim.simulator_ground_truth WHERE order_id = ANY(:ids)"),
                 {"ids": rows},
             )
             if min_placed_at is not None:
@@ -496,7 +496,7 @@ def test_promo_abuse_ground_truth_recorded(db_engine: Engine) -> None:
             found = {
                 row[0]: row[1]
                 for row in conn.execute(
-                    text("SELECT order_id, fraud_category FROM simulator_ground_truth WHERE order_id = ANY(:ids)"),
+                    text("SELECT order_id, fraud_category FROM sim.simulator_ground_truth WHERE order_id = ANY(:ids)"),
                     {"ids": rows},
                 ).fetchall()
             }
@@ -507,7 +507,7 @@ def test_promo_abuse_ground_truth_recorded(db_engine: Engine) -> None:
     finally:
         with db_engine.begin() as conn:
             conn.execute(
-                text("DELETE FROM simulator_ground_truth WHERE order_id = ANY(:ids)"),
+                text("DELETE FROM sim.simulator_ground_truth WHERE order_id = ANY(:ids)"),
                 {"ids": rows},
             )
             if min_placed_at is not None:
@@ -563,7 +563,7 @@ def test_refund_abuse_ground_truth_recorded(db_engine: Engine) -> None:
             found = {
                 row[0]: row[1]
                 for row in conn.execute(
-                    text("SELECT order_id, fraud_category FROM simulator_ground_truth WHERE order_id = ANY(:ids)"),
+                    text("SELECT order_id, fraud_category FROM sim.simulator_ground_truth WHERE order_id = ANY(:ids)"),
                     {"ids": rows},
                 ).fetchall()
             }
@@ -574,7 +574,7 @@ def test_refund_abuse_ground_truth_recorded(db_engine: Engine) -> None:
     finally:
         with db_engine.begin() as conn:
             conn.execute(
-                text("DELETE FROM simulator_ground_truth WHERE order_id = ANY(:ids)"),
+                text("DELETE FROM sim.simulator_ground_truth WHERE order_id = ANY(:ids)"),
                 {"ids": rows},
             )
             if min_placed_at is not None:
@@ -631,7 +631,7 @@ def test_collusive_merchant_ground_truth_recorded(db_engine: Engine) -> None:
             found = {
                 row[0]: row[1]
                 for row in conn.execute(
-                    text("SELECT order_id, fraud_category FROM simulator_ground_truth WHERE order_id = ANY(:ids)"),
+                    text("SELECT order_id, fraud_category FROM sim.simulator_ground_truth WHERE order_id = ANY(:ids)"),
                     {"ids": rows},
                 ).fetchall()
             }
@@ -642,7 +642,7 @@ def test_collusive_merchant_ground_truth_recorded(db_engine: Engine) -> None:
     finally:
         with db_engine.begin() as conn:
             conn.execute(
-                text("DELETE FROM simulator_ground_truth WHERE order_id = ANY(:ids)"),
+                text("DELETE FROM sim.simulator_ground_truth WHERE order_id = ANY(:ids)"),
                 {"ids": rows},
             )
             if min_placed_at is not None:
@@ -699,7 +699,7 @@ def test_triangulation_ground_truth_recorded(db_engine: Engine) -> None:
             found = {
                 row[0]: row[1]
                 for row in conn.execute(
-                    text("SELECT order_id, fraud_category FROM simulator_ground_truth WHERE order_id = ANY(:ids)"),
+                    text("SELECT order_id, fraud_category FROM sim.simulator_ground_truth WHERE order_id = ANY(:ids)"),
                     {"ids": rows},
                 ).fetchall()
             }
@@ -710,7 +710,7 @@ def test_triangulation_ground_truth_recorded(db_engine: Engine) -> None:
     finally:
         with db_engine.begin() as conn:
             conn.execute(
-                text("DELETE FROM simulator_ground_truth WHERE order_id = ANY(:ids)"),
+                text("DELETE FROM sim.simulator_ground_truth WHERE order_id = ANY(:ids)"),
                 {"ids": rows},
             )
             if min_placed_at is not None:
@@ -771,7 +771,7 @@ def test_reseller_ground_truth_recorded(db_engine: Engine) -> None:
             found = {
                 row[0]: row[1]
                 for row in conn.execute(
-                    text("SELECT order_id, fraud_category FROM simulator_ground_truth WHERE order_id = ANY(:ids)"),
+                    text("SELECT order_id, fraud_category FROM sim.simulator_ground_truth WHERE order_id = ANY(:ids)"),
                     {"ids": rows},
                 ).fetchall()
             }
@@ -782,7 +782,7 @@ def test_reseller_ground_truth_recorded(db_engine: Engine) -> None:
     finally:
         with db_engine.begin() as conn:
             conn.execute(
-                text("DELETE FROM simulator_ground_truth WHERE order_id = ANY(:ids)"),
+                text("DELETE FROM sim.simulator_ground_truth WHERE order_id = ANY(:ids)"),
                 {"ids": rows},
             )
             if min_placed_at is not None:
@@ -1026,7 +1026,7 @@ def test_collusive_store_concentration() -> None:
                 {"ids": order_ids},
             )
             conn.execute(
-                text("DELETE FROM simulator_ground_truth WHERE order_id = ANY(:ids)"),
+                text("DELETE FROM sim.simulator_ground_truth WHERE order_id = ANY(:ids)"),
                 {"ids": fraud_order_ids},
             )
             conn.execute(
@@ -1044,7 +1044,7 @@ def test_scoring_user_cannot_read_ground_truth() -> None:
 
     with pytest.raises(sqlalchemy_exc.ProgrammingError) as exc_info:
         with engine.connect() as conn:
-            conn.execute(text("SELECT * FROM simulator_ground_truth LIMIT 1"))
+            conn.execute(text("SELECT * FROM sim.simulator_ground_truth LIMIT 1"))
 
     engine.dispose()
 
@@ -1060,7 +1060,7 @@ def test_scoring_user_cannot_join_to_ground_truth() -> None:
             conn.execute(
                 text(
                     "SELECT o.order_id FROM orders o "
-                    "JOIN simulator_ground_truth gt ON o.order_id = gt.order_id "
+                    "JOIN sim.simulator_ground_truth gt ON o.order_id = gt.order_id "
                     "LIMIT 1"
                 )
             )
@@ -1210,7 +1210,7 @@ def test_chargeback_rates() -> None:
                 text(
                     "SELECT COALESCE(gt.fraud_category, 'legit') AS fraud_category, COUNT(*)\n"
                     "FROM chargebacks cb\n"
-                    "JOIN simulator_ground_truth gt USING (order_id)\n"
+                    "JOIN sim.simulator_ground_truth gt USING (order_id)\n"
                     "WHERE cb.order_id = ANY(:ids)\n"
                     "GROUP BY COALESCE(gt.fraud_category, 'legit')"
                 ),
@@ -1237,7 +1237,7 @@ def test_chargeback_rates() -> None:
                 {"ids": order_ids},
             )
             conn.execute(
-                text("DELETE FROM simulator_ground_truth WHERE order_id = ANY(:ids)"),
+                text("DELETE FROM sim.simulator_ground_truth WHERE order_id = ANY(:ids)"),
                 {"ids": order_ids},
             )
             conn.execute(
@@ -1354,7 +1354,7 @@ def test_chargeback_on_archived_order() -> None:
                 {"order_id": order_id},
             )
             conn.execute(
-                text("DELETE FROM simulator_ground_truth WHERE order_id = :order_id"),
+                text("DELETE FROM sim.simulator_ground_truth WHERE order_id = :order_id"),
                 {"order_id": order_id},
             )
             conn.execute(

@@ -654,3 +654,18 @@ class Chargeback(Base):  # type: ignore  # SQLAlchemy 1.4 declarative_base() ret
     resolved_at = Column(DateTime(timezone=True))
     resolution = Column(String(20))
     created_at = Column(DateTime(timezone=True), nullable=False, server_default=text("NOW()"))
+
+
+class SimulatorGroundTruth(Base):  # type: ignore  # SQLAlchemy 1.4 declarative_base() returns Any
+    """Simulation-only ground truth labels; lives in the `sim` schema."""
+
+    __tablename__ = "simulator_ground_truth"
+
+    order_id = Column(UUID(as_uuid=True), primary_key=True)
+    is_fraud = Column(Boolean, nullable=False)
+    fraud_category = Column(String(50))
+    pattern_notes = Column(Text)
+    ring_id = Column(UUID(as_uuid=True))
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=text("NOW()"))
+
+    __table_args__ = {"schema": "sim"}

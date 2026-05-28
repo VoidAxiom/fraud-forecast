@@ -493,7 +493,7 @@ order_features AS (
         COALESCE(gt.is_fraud, FALSE) AS gt_is_fraud,
         COALESCE(CAST(gt.fraud_category AS VARCHAR), 'LEGIT') AS fraud_category
     FROM all_orders o
-    LEFT JOIN simulator_ground_truth gt ON gt.order_id = o.order_id
+    LEFT JOIN sim.simulator_ground_truth gt ON gt.order_id = o.order_id
     LEFT JOIN dev_unique_users duc ON duc.device_id = o.device_id
         AND duc.user_id = o.user_id
     LEFT JOIN dev_order_unique_users dou ON dou.order_id = o.order_id

@@ -1204,7 +1204,7 @@ async def insert_order(
 
         await conn.execute(
             """
-            INSERT INTO simulator_ground_truth (
+            INSERT INTO sim.simulator_ground_truth (
                 order_id, is_fraud, fraud_category, pattern_notes, ring_id
             )
             VALUES ($1, $2, $3, $4, $5)
