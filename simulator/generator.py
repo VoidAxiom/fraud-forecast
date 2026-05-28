@@ -129,6 +129,7 @@ def _extract_indexed_float_map(
 
 _TIMING_PATTERNS = _load_timing_patterns()
 _HOURLY_RATE = _extract_indexed_float_map(_TIMING_PATTERNS, "hourly_rate", range(24))
+_MEAN_HOURLY_RATE: float = sum(_HOURLY_RATE.values()) / len(_HOURLY_RATE)
 _DAY_OF_WEEK_MULTIPLIER = _extract_indexed_float_map(
     _TIMING_PATTERNS,
     "day_of_week_multiplier",
@@ -1824,11 +1825,16 @@ async def main() -> None:
         async with pool.acquire() as _tri_conn:
             await init_triangulation_accounts(rng, _tri_conn)
 
-        try:
-            rate_multiplier = float(os.environ.get("LIVE_RATE_MULTIPLIER", "0.02"))
-        except ValueError:
-            logger.warning("invalid_live_rate_multiplier falling_back_to=0.02")
-            rate_multiplier = 0.02
+        _live_rate_env = os.environ.get("LIVE_RATE_MULTIPLIER")
+        if _live_rate_env is not None:
+            try:
+                rate_multiplier = float(_live_rate_env)
+            except ValueError:
+                logger.warning("invalid_live_rate_multiplier falling_back_to_ops_derived")
+                rate_multiplier = config.orders_per_second / _MEAN_HOURLY_RATE
+        else:
+            # Scale so that average hourly rate = config.orders_per_second.
+            rate_multiplier = config.orders_per_second / _MEAN_HOURLY_RATE
 
         day_multiplier_cache: dict[date, float] = {}
         orders_since_report = 0
@@ -1886,6 +1892,7 @@ async def main() -> None:
                             "event": "throughput_report",
                             "orders_last_100": successful_orders,
                             "errors_since_last_report": window_errors,
+                            "orders_per_second_target": config.orders_per_second,
                             "elapsed_seconds": round(elapsed_seconds, 3),
                             "observed_orders_per_second": round(
                                 successful_orders / max(elapsed_seconds, 0.001),
