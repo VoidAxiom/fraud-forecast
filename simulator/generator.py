@@ -18,7 +18,7 @@ if sys.version_info >= (3, 9):
     from zoneinfo import ZoneInfo
 else:
     from backports.zoneinfo import ZoneInfo
-from typing import Any
+from typing import Any, Optional
 
 import asyncpg
 import redis.asyncio as aioredis
@@ -171,6 +171,41 @@ def load_config_from_env() -> GeneratorConfig:
         simulation_time_compression=simulation_time_compression,
         scoring_enabled=scoring_enabled,
     )
+
+
+async def write_simulator_epoch(
+    conn: asyncpg.Connection,
+    now: Optional[datetime] = None,
+) -> str:
+    """Insert a startup epoch row. Returns the key inserted."""
+    _now = now if now is not None else datetime.now(tz=LONDON_TZ)
+    async with conn.transaction():
+        await conn.execute("SELECT pg_advisory_xact_lock(1234567890)")
+        epoch_raw = await conn.fetchval(
+            """
+            SELECT coalesce(max((value->>'epoch_num')::int), 0) + 1
+            FROM sim.simulator_meta WHERE key LIKE 'simulator\\_epoch\\_%' ESCAPE '\\'
+            """,
+        )
+        epoch_num = int(epoch_raw)
+        key = f"simulator_epoch_{epoch_num:06d}_{uuid.uuid4().hex[:8]}"
+        value = {
+            "started_at": _now.isoformat(),
+            "git_commit": os.environ.get("GIT_COMMIT", "unknown"),
+            "rng_seed": 42,
+            "epoch_num": epoch_num,
+        }
+
+        await conn.execute(
+            """
+            INSERT INTO sim.simulator_meta (key, value)
+            VALUES ($1, $2::jsonb)
+            ON CONFLICT (key) DO NOTHING
+            """,
+            key,
+            json.dumps(value),
+        )
+    return key
 
 
 async def load_stores_by_city(pool: asyncpg.Pool) -> dict[str, list[dict[str, Any]]]:
@@ -1653,6 +1688,9 @@ async def main() -> None:
 
         user_picker = WeightedUserPicker(pool, redis_conn)
         await user_picker.refresh()
+
+        async with pool.acquire() as conn:
+            await write_simulator_epoch(conn)
 
         semaphore = asyncio.Semaphore(100)
         rng = random.Random(42)

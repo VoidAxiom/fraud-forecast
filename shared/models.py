@@ -62,15 +62,21 @@ class User(Base):  # type: ignore  # SQLAlchemy 1.4 declarative_base() returns A
     devices = relationship("Device", secondary="user_devices", back_populates="users")
 
     __table_args__ = (
-        CheckConstraint("account_status IN ('ACTIVE','SUSPENDED','BANNED','DELETED')", name="users_status_check"),
-        CheckConstraint("risk_tier IN ('TRUSTED','STANDARD','ELEVATED','HIGH_RISK')", name="users_tier_check"),
+        CheckConstraint(
+            "account_status IN ('ACTIVE','SUSPENDED','BANNED','DELETED')", name="users_status_check"
+        ),
+        CheckConstraint(
+            "risk_tier IN ('TRUSTED','STANDARD','ELEVATED','HIGH_RISK')", name="users_tier_check"
+        ),
     )
 
 
 class UserAddress(Base):  # type: ignore  # SQLAlchemy 1.4 declarative_base() returns Any
     __tablename__ = "user_addresses"
 
-    address_id = Column(UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()"))
+    address_id = Column(
+        UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()")
+    )
     user_id = Column(UUID(as_uuid=True), ForeignKey("users.user_id"), nullable=False)
     label = Column(String(50))
     address_line_1 = Column(String(255), nullable=False)
@@ -102,7 +108,9 @@ class UserAddress(Base):  # type: ignore  # SQLAlchemy 1.4 declarative_base() re
 class Device(Base):  # type: ignore  # SQLAlchemy 1.4 declarative_base() returns Any
     __tablename__ = "devices"
 
-    device_id = Column(UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()"))
+    device_id = Column(
+        UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()")
+    )
     device_fingerprint = Column(String(255), unique=True, nullable=False)
     device_type = Column(String(20), nullable=False)
     platform = Column(String(20))
@@ -147,7 +155,9 @@ class UserDevice(Base):  # type: ignore  # SQLAlchemy 1.4 declarative_base() ret
 class Session(Base):  # type: ignore  # SQLAlchemy 1.4 declarative_base() returns Any
     __tablename__ = "sessions"
 
-    session_id = Column(UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()"))
+    session_id = Column(
+        UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()")
+    )
     user_id = Column(UUID(as_uuid=True), ForeignKey("users.user_id"))
     device_id = Column(UUID(as_uuid=True), ForeignKey("devices.device_id"), nullable=False)
     ip_address = Column(INET, nullable=False)
@@ -169,7 +179,9 @@ class Session(Base):  # type: ignore  # SQLAlchemy 1.4 declarative_base() return
 class PaymentMethod(Base):  # type: ignore  # SQLAlchemy 1.4 declarative_base() returns Any
     __tablename__ = "payment_methods"
 
-    payment_method_id = Column(UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()"))
+    payment_method_id = Column(
+        UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()")
+    )
     user_id = Column(UUID(as_uuid=True), ForeignKey("users.user_id"), nullable=False)
     payment_type = Column(String(20), nullable=False)
     card_token = Column(String(255))
@@ -196,7 +208,9 @@ class PaymentMethod(Base):  # type: ignore  # SQLAlchemy 1.4 declarative_base() 
 class Merchant(Base):  # type: ignore  # SQLAlchemy 1.4 declarative_base() returns Any
     __tablename__ = "merchants"
 
-    merchant_id = Column(UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()"))
+    merchant_id = Column(
+        UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()")
+    )
     legal_name = Column(String(255), nullable=False)
     brand_name = Column(String(255), nullable=False)
     merchant_category = Column(String(50))
@@ -212,7 +226,9 @@ class Merchant(Base):  # type: ignore  # SQLAlchemy 1.4 declarative_base() retur
 class Store(Base):  # type: ignore  # SQLAlchemy 1.4 declarative_base() returns Any
     __tablename__ = "stores"
 
-    store_id = Column(UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()"))
+    store_id = Column(
+        UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()")
+    )
     merchant_id = Column(UUID(as_uuid=True), ForeignKey("merchants.merchant_id"), nullable=False)
     store_name = Column(String(255), nullable=False)
     store_code = Column(String(50))
@@ -277,7 +293,9 @@ class MenuItem(Base):  # type: ignore  # SQLAlchemy 1.4 declarative_base() retur
 class Driver(Base):  # type: ignore  # SQLAlchemy 1.4 declarative_base() returns Any
     __tablename__ = "drivers"
 
-    driver_id = Column(UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()"))
+    driver_id = Column(
+        UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()")
+    )
     first_name = Column(String(100))
     last_name = Column(String(100))
     email = Column(CITEXTType(), unique=True)
@@ -295,7 +313,9 @@ class Driver(Base):  # type: ignore  # SQLAlchemy 1.4 declarative_base() returns
 class Promotion(Base):  # type: ignore  # SQLAlchemy 1.4 declarative_base() returns Any
     __tablename__ = "promotions"
 
-    promo_id = Column(UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()"))
+    promo_id = Column(
+        UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()")
+    )
     promo_code = Column(String(50), unique=True)
     promo_type = Column(String(30))
     discount_amount_pence = Column(BigInteger)
@@ -419,9 +439,7 @@ class Order(Base):  # type: ignore  # SQLAlchemy 1.4 declarative_base() returns 
 
     __tablename__ = "orders"
 
-    __table_args__ = (
-        PrimaryKeyConstraint("order_id", "placed_at"),
-    )
+    __table_args__ = (PrimaryKeyConstraint("order_id", "placed_at"),)
 
 
 class OrdersArchive(Base):  # type: ignore  # SQLAlchemy 1.4 declarative_base() returns Any
@@ -535,15 +553,15 @@ class OrdersArchive(Base):  # type: ignore  # SQLAlchemy 1.4 declarative_base() 
 
     __tablename__ = "orders_archive"
 
-    __table_args__ = (
-        PrimaryKeyConstraint("order_id", "placed_at"),
-    )
+    __table_args__ = (PrimaryKeyConstraint("order_id", "placed_at"),)
 
 
 class OrderItem(Base):  # type: ignore  # SQLAlchemy 1.4 declarative_base() returns Any
     """Partitioned by `order_placed_at`; composite PK (`order_item_id`, `order_placed_at`)."""
 
-    order_item_id = Column(UUID(as_uuid=True), nullable=False, server_default=text("gen_random_uuid()"))
+    order_item_id = Column(
+        UUID(as_uuid=True), nullable=False, server_default=text("gen_random_uuid()")
+    )
     order_id = Column(UUID(as_uuid=True), nullable=False)
     order_placed_at = Column(DateTime(timezone=True), nullable=False)
     item_id = Column(UUID(as_uuid=True), ForeignKey("menu_items.item_id"))
@@ -557,15 +575,15 @@ class OrderItem(Base):  # type: ignore  # SQLAlchemy 1.4 declarative_base() retu
 
     __tablename__ = "order_items"
 
-    __table_args__ = (
-        PrimaryKeyConstraint("order_item_id", "order_placed_at"),
-    )
+    __table_args__ = (PrimaryKeyConstraint("order_item_id", "order_placed_at"),)
 
 
 class OrderItemsArchive(Base):  # type: ignore  # SQLAlchemy 1.4 declarative_base() returns Any
     """Archive table. Same schema as `orders`/`order_items`/`order_events`. Rows moved here by the archiver daemon after 48h in terminal state."""
 
-    order_item_id = Column(UUID(as_uuid=True), nullable=False, server_default=text("gen_random_uuid()"))
+    order_item_id = Column(
+        UUID(as_uuid=True), nullable=False, server_default=text("gen_random_uuid()")
+    )
     order_id = Column(UUID(as_uuid=True), nullable=False)
     order_placed_at = Column(DateTime(timezone=True), nullable=False)
     item_id = Column(UUID(as_uuid=True), ForeignKey("menu_items.item_id"))
@@ -579,9 +597,7 @@ class OrderItemsArchive(Base):  # type: ignore  # SQLAlchemy 1.4 declarative_bas
 
     __tablename__ = "order_items_archive"
 
-    __table_args__ = (
-        PrimaryKeyConstraint("order_item_id", "order_placed_at"),
-    )
+    __table_args__ = (PrimaryKeyConstraint("order_item_id", "order_placed_at"),)
 
 
 class OrderEvent(Base):  # type: ignore  # SQLAlchemy 1.4 declarative_base() returns Any
@@ -600,9 +616,7 @@ class OrderEvent(Base):  # type: ignore  # SQLAlchemy 1.4 declarative_base() ret
 
     __tablename__ = "order_events"
 
-    __table_args__ = (
-        PrimaryKeyConstraint("event_id", "order_placed_at"),
-    )
+    __table_args__ = (PrimaryKeyConstraint("event_id", "order_placed_at"),)
 
 
 class OrderEventsArchive(Base):  # type: ignore  # SQLAlchemy 1.4 declarative_base() returns Any
@@ -621,9 +635,7 @@ class OrderEventsArchive(Base):  # type: ignore  # SQLAlchemy 1.4 declarative_ba
 
     __tablename__ = "order_events_archive"
 
-    __table_args__ = (
-        PrimaryKeyConstraint("event_id", "order_placed_at"),
-    )
+    __table_args__ = (PrimaryKeyConstraint("event_id", "order_placed_at"),)
 
 
 class FraudDecision(Base):  # type: ignore  # SQLAlchemy 1.4 declarative_base() returns Any
@@ -644,7 +656,9 @@ class FraudDecision(Base):  # type: ignore  # SQLAlchemy 1.4 declarative_base() 
 class Chargeback(Base):  # type: ignore  # SQLAlchemy 1.4 declarative_base() returns Any
     __tablename__ = "chargebacks"
 
-    chargeback_id = Column(UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()"))
+    chargeback_id = Column(
+        UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()")
+    )
     order_id = Column(UUID(as_uuid=True), nullable=False)
     order_placed_at = Column(DateTime(timezone=True), nullable=False)
     reason_code = Column(String(20))
@@ -667,5 +681,18 @@ class SimulatorGroundTruth(Base):  # type: ignore  # SQLAlchemy 1.4 declarative_
     pattern_notes = Column(Text)
     ring_id = Column(UUID(as_uuid=True))
     created_at = Column(DateTime(timezone=True), nullable=False, server_default=text("NOW()"))
+
+    __table_args__ = {"schema": "sim"}
+
+
+class SimulatorMeta(Base):  # type: ignore  # SQLAlchemy 1.4 declarative_base() returns Any
+    """Simulation metadata key-value rows; lives in the `sim` schema."""
+
+    __tablename__ = "simulator_meta"
+
+    key = Column(Text, primary_key=True)
+    value = Column(JSONB, nullable=False)
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=text("NOW()"))
+    updated_at = Column(DateTime(timezone=True), nullable=False, server_default=text("NOW()"))
 
     __table_args__ = {"schema": "sim"}
