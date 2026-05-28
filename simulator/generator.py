@@ -1814,8 +1814,8 @@ async def main() -> None:
                 ),
                 n=10,
             )
-<<<<<<< HEAD
-        init_promo_abuse_rings(rng)
+        async with pool.acquire() as _promo_conn:
+            await init_promo_abuse_rings(rng, _promo_conn)
         async with pool.acquire() as _reseller_conn:
             await init_reseller_accounts(
                 rng,
@@ -1825,17 +1825,6 @@ async def main() -> None:
                     key=str,
                 ),
             )
-=======
-        async with pool.acquire() as conn:
-            await init_promo_abuse_rings(rng, conn)
-        init_reseller_accounts(
-            rng,
-            store_id_pool=sorted(
-                [s["store_id"] for stores in stores_by_city.values() for s in stores],
-                key=str,
-            ),
-        )
->>>>>>> ac7e433 (feat(simulator): persist promo_abuse rings to sim.fraud_promo_rings (VOI-288))
         async with pool.acquire() as _tri_conn:
             await init_triangulation_accounts(rng, _tri_conn)
 
