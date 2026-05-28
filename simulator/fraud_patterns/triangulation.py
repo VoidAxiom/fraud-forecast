@@ -162,6 +162,9 @@ async def init_accounts(rng: random.Random, conn: asyncpg.Connection, n: int = 3
     rows = await conn.fetch(
         "SELECT account_id, device_id FROM sim.fraud_triangulation_accounts ORDER BY account_id"
     )
+    for _ in rows:
+        rng.getrandbits(128)
+        rng.getrandbits(128)
     new_accounts = [
         TriangulationAccount(
             account_id=_uuid_from_rng(rng),
@@ -173,9 +176,6 @@ async def init_accounts(rng: random.Random, conn: asyncpg.Connection, n: int = 3
         "INSERT INTO sim.fraud_triangulation_accounts (account_id, device_id) VALUES ($1, $2)",
         [(acc.account_id, acc.device_id) for acc in new_accounts],
     )
-    for _ in rows:
-        rng.getrandbits(128)
-        rng.getrandbits(128)
     rows = await conn.fetch(
         "SELECT account_id, device_id FROM sim.fraud_triangulation_accounts ORDER BY account_id"
     )
