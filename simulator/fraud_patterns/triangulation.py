@@ -133,7 +133,7 @@ async def init_accounts(rng: random.Random, conn: asyncpg.Connection, n: int = 3
     ]
     await conn.executemany(
         "INSERT INTO sim.fraud_triangulation_accounts (account_id, device_id) VALUES ($1, $2)",
-        [(str(acc.account_id), str(acc.device_id)) for acc in new_accounts],
+        [(acc.account_id, acc.device_id) for acc in new_accounts],
     )
     TRIANGULATION_ACCOUNTS.clear()
     TRIANGULATION_ACCOUNTS.extend(new_accounts)
