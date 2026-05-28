@@ -74,10 +74,14 @@ def _account_from_row(row: Mapping[str, Any]) -> ResellerAccount:
         raise TypeError("fraud_reseller_accounts.account_id must be a UUID")
 
     reseller_address_raw = row["reseller_address"]
-    if not isinstance(reseller_address_raw, dict):
+    if isinstance(reseller_address_raw, str):
+        reseller_address_value = json.loads(reseller_address_raw)
+    else:
+        reseller_address_value = reseller_address_raw
+    if not isinstance(reseller_address_value, dict):
         raise TypeError("fraud_reseller_accounts.reseller_address must be a dict")
     reseller_address: dict[str, Any] = {}
-    for key, value in reseller_address_raw.items():
+    for key, value in reseller_address_value.items():
         if not isinstance(key, str):
             raise TypeError("fraud_reseller_accounts.reseller_address keys must be str")
         reseller_address[key] = value

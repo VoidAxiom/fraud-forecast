@@ -9,6 +9,7 @@ import unittest.mock
 import uuid
 from datetime import datetime, timedelta, timezone
 from statistics import NormalDist
+from typing import Any
 from unittest.mock import AsyncMock
 
 import asyncpg
@@ -136,9 +137,41 @@ def _init_triangulation_accounts_for_test(rng: random.Random, n: int = 30) -> No
 
 
 def _mock_reseller_conn() -> unittest.mock.AsyncMock:
+    """Stateful mock connection for empty DB reseller account initialization."""
     conn = unittest.mock.AsyncMock()
-    conn.fetch.return_value = []
-    conn.executemany.return_value = None
+    rows: list[dict[str, Any]] = []
+
+    async def _fetch(_query: str) -> list[dict[str, Any]]:
+        return list(rows)
+
+    async def _executemany(
+        _query: str,
+        values: list[Any],
+    ) -> None:
+        import json as _json
+
+        for v in values:
+            (
+                account_id,
+                reseller_address_json,
+                delivery_address_uuid,
+                device_uuid,
+                preferred_store_ids,
+            ) = v
+            rows.append(
+                {
+                    "account_id": account_id,
+                    "reseller_address": _json.loads(reseller_address_json)
+                    if isinstance(reseller_address_json, str)
+                    else reseller_address_json,
+                    "delivery_address_uuid": delivery_address_uuid,
+                    "device_uuid": device_uuid,
+                    "preferred_store_ids": list(preferred_store_ids),
+                }
+            )
+
+    conn.fetch.side_effect = _fetch
+    conn.executemany.side_effect = _executemany
     return conn
 
 
