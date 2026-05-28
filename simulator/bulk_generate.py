@@ -3,6 +3,11 @@
 Stop the feature_aggregator container before running bulk generation. The
 generator still emits NOTIFY messages, but with no listener they are discarded;
 Redis can be rebuilt from Postgres in a later packet before scoring eval.
+
+Bulk generation uses the app role via DATABASE_URL_BULK -> DATABASE_URL rather
+than simulator_user because it needs DELETE on sim.simulator_ground_truth for
+the --force path and SELECT on sim.simulator_ground_truth when chargebacks are
+emitted.
 """
 
 from __future__ import annotations
@@ -28,7 +33,6 @@ from simulator.fraud_patterns.promo_abuse import init_rings_from_db as init_prom
 from simulator.fraud_patterns.reseller import init_reseller_accounts
 from simulator.fraud_patterns.triangulation import init_accounts as init_triangulation_accounts
 from simulator.generator import (
-    DATABASE_URL_SIMULATOR,
     LONDON_TZ,
     REDIS_URL,
     generate_order,
@@ -41,6 +45,14 @@ from simulator.timestamps import synthesize_chronological_timestamps
 from simulator.user_picker import WeightedUserPicker
 
 logger = logging.getLogger(__name__)
+
+DATABASE_URL_BULK: str = os.environ.get(
+    "DATABASE_URL_BULK",
+    os.environ.get(
+        "DATABASE_URL",
+        "postgresql://app:app_dev_password@postgres:5432/fraud_platform",
+    ),
+)
 
 _BULK_LIFECYCLE_STEP_SECONDS = 3600
 
@@ -373,7 +385,7 @@ async def main() -> None:
     )
 
     pool: asyncpg.Pool = await asyncpg.create_pool(
-        DATABASE_URL_SIMULATOR,
+        DATABASE_URL_BULK,
         min_size=2,
         max_size=10,
     )

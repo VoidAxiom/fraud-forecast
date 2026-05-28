@@ -17,7 +17,7 @@ from datetime import date, datetime, timedelta
 if sys.version_info >= (3, 9):
     from zoneinfo import ZoneInfo
 else:
-    from backports.zoneinfo import (  # type: ignore[import]  # Python 3.8 backport lacks local stubs.
+    from backports.zoneinfo import (  # Python 3.8 backport; zoneinfo is 3.9+.
         ZoneInfo,
     )
 

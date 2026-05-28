@@ -14,14 +14,13 @@ import pytest
 asyncpg = pytest.importorskip("asyncpg")
 
 from simulator.bulk_generate import (  # noqa: E402
-    DATABASE_URL_SIMULATOR,
     BulkRunConfig,
     _parse_end_at,
     _rate_multiplier_from_env,
     bulk_generate,
 )
 from simulator.cart_builder import Cart  # noqa: E402
-from simulator.generator import LONDON_TZ, generate_order  # noqa: E402
+from simulator.generator import DATABASE_URL_SIMULATOR, LONDON_TZ, generate_order  # noqa: E402
 from simulator.timestamps import synthesize_chronological_timestamps  # noqa: E402
 
 
