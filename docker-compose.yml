@@ -106,6 +106,7 @@ services:
       - SIMULATION_TIME_COMPRESSION=${SIMULATION_TIME_COMPRESSION:-1}
       - SIMULATION_FORCE_PEAK=${SIMULATION_FORCE_PEAK:-true}
       - SCORING_ENABLED=${SCORING_ENABLED:-false}
+      - LIVE_RATE_MULTIPLIER=${LIVE_RATE_MULTIPLIER:-}
       - TZ=Europe/London
     restart: unless-stopped
     networks:
