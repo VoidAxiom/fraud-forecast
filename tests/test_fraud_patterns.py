@@ -172,6 +172,12 @@ def _mock_reseller_conn() -> unittest.mock.AsyncMock:
 
     conn.fetch.side_effect = _fetch
     conn.executemany.side_effect = _executemany
+    conn.execute.return_value = None
+    txn_mock = unittest.mock.AsyncMock()
+    txn_mock.__aenter__ = unittest.mock.AsyncMock(return_value=txn_mock)
+    txn_mock.__aexit__ = unittest.mock.AsyncMock(return_value=None)
+    conn.transaction = unittest.mock.Mock()
+    conn.transaction.return_value = txn_mock
     return conn
 
 

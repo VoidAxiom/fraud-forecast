@@ -135,14 +135,16 @@ async def init_reseller_accounts(
     RESELLER_STORE_POOL.clear()
     RESELLER_STORE_POOL.extend(store_id_pool)
 
-    rows = await conn.fetch(_SELECT_RESELLER_ACCOUNTS_SQL)
-    if len(rows) < n:
-        new_accounts = [_create_account(rng, store_id_pool) for _ in range(n - len(rows))]
-        await conn.executemany(
-            _INSERT_RESELLER_ACCOUNTS_SQL,
-            [_insert_args(account) for account in new_accounts],
-        )
+    async with conn.transaction():
+        await conn.execute("LOCK TABLE sim.fraud_reseller_accounts IN SHARE ROW EXCLUSIVE MODE")
         rows = await conn.fetch(_SELECT_RESELLER_ACCOUNTS_SQL)
+        if len(rows) < n:
+            new_accounts = [_create_account(rng, store_id_pool) for _ in range(n - len(rows))]
+            await conn.executemany(
+                _INSERT_RESELLER_ACCOUNTS_SQL,
+                [_insert_args(account) for account in new_accounts],
+            )
+            rows = await conn.fetch(_SELECT_RESELLER_ACCOUNTS_SQL)
 
     RESELLER_ACCOUNTS.extend(_account_from_row(row) for row in rows)
 

@@ -36,11 +36,21 @@ def _ctx(now: datetime | None = None, rng_seed: int = 99) -> FraudPatternContext
     )
 
 
+def _prime_transaction_mock(conn: unittest.mock.AsyncMock) -> None:
+    conn.execute.return_value = None
+    txn_mock = unittest.mock.AsyncMock()
+    txn_mock.__aenter__ = unittest.mock.AsyncMock(return_value=txn_mock)
+    txn_mock.__aexit__ = unittest.mock.AsyncMock(return_value=None)
+    conn.transaction = unittest.mock.Mock()
+    conn.transaction.return_value = txn_mock
+
+
 @pytest.fixture
 def mock_conn() -> unittest.mock.AsyncMock:
     conn = unittest.mock.AsyncMock()
     conn.fetch.return_value = []
     conn.executemany.return_value = None
+    _prime_transaction_mock(conn)
     return conn
 
 
@@ -88,6 +98,7 @@ def _prime_empty_persistent_db(conn: unittest.mock.AsyncMock) -> None:
 
     conn.fetch.side_effect = _fetch
     conn.executemany.side_effect = _executemany
+    _prime_transaction_mock(conn)
 
 
 def test_reseller_init(mock_conn: unittest.mock.AsyncMock) -> None:
@@ -109,6 +120,7 @@ def test_reseller_init(mock_conn: unittest.mock.AsyncMock) -> None:
 def test_init_idempotent_across_restarts(mock_conn: unittest.mock.AsyncMock) -> None:
     rows_50 = [_fake_row(i) for i in range(50)]
     mock_conn.fetch.return_value = rows_50
+    _prime_transaction_mock(mock_conn)
 
     asyncio.run(
         init_reseller_accounts(
@@ -138,6 +150,7 @@ def test_init_loads_existing_from_db(mock_conn: unittest.mock.AsyncMock) -> None
     rows_30 = [_fake_row(i) for i in range(30)]
     rows_50 = [_fake_row(i) for i in range(50)]
     mock_conn.fetch.side_effect = [rows_30, rows_50]
+    _prime_transaction_mock(mock_conn)
 
     asyncio.run(
         init_reseller_accounts(
