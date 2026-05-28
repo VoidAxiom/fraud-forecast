@@ -111,7 +111,7 @@ async def init_accounts(rng: random.Random, conn: asyncpg.Connection, n: int = 3
     )
     if count == n:
         rows = await conn.fetch(
-            "SELECT account_id, device_id FROM sim.fraud_triangulation_accounts ORDER BY created_at"
+            "SELECT account_id, device_id FROM sim.fraud_triangulation_accounts ORDER BY created_at, account_id"
         )
         TRIANGULATION_ACCOUNTS.clear()
         for row in rows:
@@ -121,6 +121,8 @@ async def init_accounts(rng: random.Random, conn: asyncpg.Connection, n: int = 3
                     device_id=row["device_id"],
                 )
             )
+        for _ in range(2 * n):
+            rng.getrandbits(128)
         return
 
     await conn.execute("DELETE FROM sim.fraud_triangulation_accounts")
