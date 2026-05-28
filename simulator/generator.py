@@ -1657,13 +1657,16 @@ async def main() -> None:
         semaphore = asyncio.Semaphore(100)
         rng = random.Random(42)
         # Initialize fraud-pattern state (callers-must-init per CLAUDE.md).
-        init_collusive_stores(
-            rng,
-            store_id_pool=sorted(
-                [s["store_id"] for stores in stores_by_city.values() for s in stores],
-                key=str,
-            ),
-        )
+        async with pool.acquire() as _collusive_conn:
+            await init_collusive_stores(
+                rng,
+                _collusive_conn,
+                store_pool=sorted(
+                    [s["store_id"] for stores in stores_by_city.values() for s in stores],
+                    key=str,
+                ),
+                n=10,
+            )
         init_promo_abuse_rings(rng)
         init_reseller_accounts(
             rng,

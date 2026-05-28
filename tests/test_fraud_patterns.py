@@ -45,6 +45,27 @@ from simulator.fraud_patterns.triangulation import (
     init_accounts,
 )
 
+
+class _FakeConn:
+    def __init__(self) -> None:
+        self._rows: list[dict[str, uuid.UUID]] = []
+
+    async def fetch(self, query: str) -> list[dict[str, uuid.UUID]]:
+        _ = query
+        return self._rows
+
+    async def executemany(self, query: str, args: list[tuple[uuid.UUID, ...]]) -> None:
+        _ = query
+        existing = {row["store_id"] for row in self._rows}
+        for (store_id,) in args:
+            normalized_store_id = (
+                store_id if isinstance(store_id, uuid.UUID) else uuid.UUID(str(store_id))
+            )
+            if normalized_store_id not in existing:
+                self._rows.append({"store_id": normalized_store_id})
+                existing.add(normalized_store_id)
+
+
 _SCORING_URL: str = "postgresql://scoring_user:scoring_dev_password@postgres:5432/fraud_platform"
 
 LONDON_TZ_TEST: ZoneInfo = ZoneInfo("Europe/London")
@@ -239,7 +260,14 @@ def test_refund_abuse_signals_present() -> None:
 
 
 def test_collusive_merchant_signals_present() -> None:
-    init_collusive_stores(rng=random.Random(7), n=10)
+    asyncio.run(
+        init_collusive_stores(
+            random.Random(7),
+            _FakeConn(),
+            [uuid.UUID(int=i + 1) for i in range(20)],
+            n=10,
+        )
+    )
     ctx = _ctx(seed=0)
     avs_match_count: int = 0
     cvv_match_count: int = 0
@@ -585,7 +613,14 @@ def test_refund_abuse_ground_truth_recorded(db_engine: Engine) -> None:
 
 
 def test_collusive_merchant_ground_truth_recorded(db_engine: Engine) -> None:
-    init_collusive_stores(rng=random.Random(7), n=10)
+    asyncio.run(
+        init_collusive_stores(
+            random.Random(7),
+            _FakeConn(),
+            [uuid.UUID(int=i + 1) for i in range(20)],
+            n=10,
+        )
+    )
     rows: list[uuid.UUID] = []
     min_placed_at: datetime | None = None
     expected = "collusive_merchant"
@@ -794,7 +829,14 @@ def test_reseller_ground_truth_recorded(db_engine: Engine) -> None:
 
 def test_fraud_distribution() -> None:
     init_rings(rng=random.Random(42), n_rings=50)
-    init_collusive_stores(rng=random.Random(42), n=10)
+    asyncio.run(
+        init_collusive_stores(
+            random.Random(42),
+            _FakeConn(),
+            [uuid.UUID(int=i + 1) for i in range(20)],
+            n=10,
+        )
+    )
     init_accounts(rng=random.Random(42), n=30)
     init_reseller_accounts(
         rng=random.Random(42),
@@ -887,7 +929,14 @@ def test_promo_abuse_ring_consistency() -> None:
 
 
 def test_collusive_store_concentration() -> None:
-    init_collusive_stores(rng=random.Random(7), n=10)
+    asyncio.run(
+        init_collusive_stores(
+            random.Random(7),
+            _FakeConn(),
+            [uuid.UUID(int=i + 1) for i in range(20)],
+            n=10,
+        )
+    )
     init_rings(rng=random.Random(7), n_rings=50)
     init_accounts(rng=random.Random(7), n=30)
     init_reseller_accounts(
