@@ -114,7 +114,7 @@ async def _existing_order_count(
         SELECT COUNT(*)
         FROM orders
         WHERE placed_at >= $1
-          AND placed_at <= $2
+          AND placed_at < $2
         """,
         window_start,
         window_end,
@@ -159,6 +159,70 @@ async def bulk_generate(
             f"orders table has {existing_count} rows in target window "
             f"[{window_start}, {window_end}]. Use --force to overwrite."
         )
+
+    if config.force:
+        async with pool.acquire() as conn, conn.transaction():
+            await conn.execute(
+                """
+                DELETE FROM chargebacks
+                WHERE order_id IN (
+                    SELECT order_id
+                    FROM orders
+                    WHERE placed_at >= $1
+                      AND placed_at < $2
+                )
+                """,
+                window_start,
+                window_end,
+            )
+            await conn.execute(
+                """
+                DELETE FROM sim.simulator_ground_truth
+                WHERE order_id IN (
+                    SELECT order_id
+                    FROM orders
+                    WHERE placed_at >= $1
+                      AND placed_at < $2
+                )
+                """,
+                window_start,
+                window_end,
+            )
+            await conn.execute(
+                """
+                DELETE FROM order_events
+                WHERE order_id IN (
+                    SELECT order_id
+                    FROM orders
+                    WHERE placed_at >= $1
+                      AND placed_at < $2
+                )
+                """,
+                window_start,
+                window_end,
+            )
+            await conn.execute(
+                """
+                DELETE FROM order_items
+                WHERE order_id IN (
+                    SELECT order_id
+                    FROM orders
+                    WHERE placed_at >= $1
+                      AND placed_at < $2
+                )
+                """,
+                window_start,
+                window_end,
+            )
+            await conn.execute(
+                """
+                DELETE FROM orders
+                WHERE placed_at >= $1
+                  AND placed_at < $2
+                """,
+                window_start,
+                window_end,
+            )
 
     rng = random.Random(config.seed)
     run_id = f"bulk_{datetime.now(tz=LONDON_TZ).strftime('%Y%m%d_%H%M%S')}_{config.seed}"
