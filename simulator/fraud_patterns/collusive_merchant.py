@@ -22,15 +22,28 @@ from simulator.fraud_patterns.stolen_card import FraudPatternContext, _weighted_
 COLLUSIVE_STORES: set[UUID] = set()
 
 
-def init_collusive_stores(rng: random.Random, n: int = 10) -> None:
-    """Generate n placeholder store UUIDs as the collusive store pool.
+def init_collusive_stores(
+    rng: random.Random,
+    n: int = 10,
+    store_id_pool: list[UUID] | None = None,
+) -> None:
+    """Initialize the collusive store pool.
 
-    Must be called at simulator startup (and in tests) before generating
-    collusive_merchant orders. Phase 2-C resolves to real seeded store_ids.
+    When store_id_pool is provided (production path), sample n stores from real
+    seeded store IDs so collusive orders land at real stores (not FRAUD_RING).
+    When not provided (test path), generate placeholder UUIDs — still valid for
+    unit tests that do not query the DB.
     """
     COLLUSIVE_STORES.clear()
-    while len(COLLUSIVE_STORES) < n:
-        COLLUSIVE_STORES.add(UUID(int=rng.getrandbits(128)))
+    if store_id_pool is not None:
+        if len(store_id_pool) < n:
+            raise ValueError(
+                f"store_id_pool has {len(store_id_pool)} entries, need at least {n}"
+            )
+        COLLUSIVE_STORES.update(rng.sample(store_id_pool, k=n))
+    else:
+        while len(COLLUSIVE_STORES) < n:
+            COLLUSIVE_STORES.add(UUID(int=rng.getrandbits(128)))
 
 
 @register("collusive_merchant", 0.05)
@@ -100,9 +113,5 @@ async def generate_collusive_merchant_fraud(
     return order_dict, gt
 
 
-# Auto-initialize with placeholder UUIDs at module-import time so the pattern
-# can be dispatched without a separate startup call. Real seeded store_ids are
-# wired in by the full generator startup (future packet). Seed=0 is stable
-# across runs until the full startup wiring lands.
-if not COLLUSIVE_STORES:
-    init_collusive_stores(rng=random.Random(0))
+# No auto-init at module-import time. Call init_collusive_stores(rng, store_id_pool=pool)
+# explicitly at simulator startup, or init_collusive_stores(rng) for tests.

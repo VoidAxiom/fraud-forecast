@@ -21,13 +21,15 @@ NIGHT_HOURS = (2, 3, 4, 5)  # 2am-6am (2:00-5:59)
 NON_NIGHT_HOURS = tuple(h for h in range(24) if h not in NIGHT_HOURS)
 
 if TYPE_CHECKING:
-    from simulator.models import Order as _Order  # type: ignore[import]  # noqa: F401
+    import asyncpg
+
 
 
 @dataclass
 class FraudPatternContext:
     now: datetime
     rng: random.Random
+    conn: asyncpg.Connection | None = None
 
 
 def _weighted_choice(rng: random.Random, choices: list[tuple[str, float]]) -> str:

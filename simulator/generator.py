@@ -1335,9 +1335,10 @@ async def _apply_fraud_identity_overrides(
 
     Called after _apply_fraud_order_attrs has stamped the FK columns.  Looks
     up the row for each FK that was actually overridden and back-fills the
-    denormalized snapshot columns that insert_order writes. Rows that do not
-    exist in the DB (synthetic fraud UUIDs) receive explicit synthetic/null
-    derived values so the fraud FK is not mixed with legit-path attributes.
+    denormalized snapshot columns that insert_order writes. Missing fraud
+    device rows raise because account-takeover now eager-writes devices before
+    returning their FK. Payment method and delivery address misses still keep
+    synthetic/null derived values because those tables require seeded user FKs.
     """
     user_id = _fraud_user_id_override(fraud_dict)
     if user_id is not None:
@@ -1398,12 +1399,7 @@ async def _apply_fraud_identity_overrides(
             snapshot["browser_name"] = row["browser_name"]
             snapshot["browser_version"] = row["browser_version"]
         else:
-            snapshot["device_type"] = None
-            snapshot["platform"] = None
-            snapshot["os_version"] = None
-            snapshot["app_version"] = None
-            snapshot["browser_name"] = None
-            snapshot["browser_version"] = None
+            raise RuntimeError(f"fraud FK device_id not found in DB: {device_id}")
 
     pm_id = _fraud_uuid_override(fraud_dict.get("payment_method_id"))
     if pm_id is not None:
@@ -1422,15 +1418,7 @@ async def _apply_fraud_identity_overrides(
             snapshot["card_issuer_country"] = row["card_issuer_country"]
             snapshot["is_digital_native_bank"] = row["is_digital_native_bank"]
         else:
-            card_issuer_country = (
-                snapshot.get("card_issuer_country") if "card_country" in fraud_dict else None
-            )
-            snapshot["card_bin"] = None
-            snapshot["card_last_four"] = None
-            snapshot["card_brand"] = None
-            snapshot["payment_type"] = snapshot.get("payment_type") or "ACCOUNT_CREDIT"
-            snapshot["card_issuer_country"] = card_issuer_country
-            snapshot["card_issuer_bank"] = None
+            snapshot["payment_type"] = "CREDIT_CARD"
 
     addr_id = _fraud_uuid_override(fraud_dict.get("delivery_address_id"))
     if addr_id is not None:
@@ -1448,8 +1436,8 @@ async def _apply_fraud_identity_overrides(
         else:
             snapshot["delivery_latitude"] = None
             snapshot["delivery_longitude"] = None
-            snapshot["delivery_address_snapshot"] = json.dumps({"city": "FRAUD_RING"})
-            snapshot["delivery_city"] = "FRAUD_RING"
+            snapshot["delivery_address_snapshot"] = None
+            snapshot["delivery_address_type"] = "RESIDENTIAL_NEW"
 
 
 async def create_one_order(
@@ -1474,6 +1462,12 @@ async def create_one_order(
         if order_type == "DINE_IN" and not bool(store.get("accepts_in_store")):
             raise RuntimeError("DINE_IN selected but store does not accept in-store orders")
         order_channel = pick_channel_for_user(rng, user_data["devices"])
+        if (
+            not is_fraud_order
+            and order_channel in {"IOS_APP", "ANDROID_APP", "MOBILE_WEB", "DESKTOP_WEB"}
+            and rng.random() < 0.02
+        ):
+            order_channel = "LEGACY_API"
 
         device, ip_address = pick_device_and_ip(
             rng,
@@ -1482,6 +1476,17 @@ async def create_one_order(
             if isinstance(user_data.get("default_address"), dict)
             else None,
         )
+        if order_channel == "LEGACY_API":
+            device = {
+                "device_id": None,
+                "device_type": None,
+                "platform": None,
+                "os_version": None,
+                "app_version": None,
+                "browser_name": None,
+                "browser_version": None,
+            }
+            ip_address = _random_uk_ip(rng)
 
         delivery_address = None
         if order_type == "DELIVERY":
@@ -1577,7 +1582,7 @@ async def create_one_order(
         fraud_order_dict: dict[str, Any] | None = None
         fraud_ground_truth: GroundTruth | None = None
         if is_fraud_order:
-            ctx = FraudPatternContext(now=placed_at, rng=rng)
+            ctx = FraudPatternContext(now=placed_at, rng=rng, conn=conn)
             fraud_order_dict, fraud_ground_truth = await generate_fraud_order(ctx)
 
         if is_fraud_order and fraud_order_dict is not None:
@@ -1633,7 +1638,13 @@ async def main() -> None:
         semaphore = asyncio.Semaphore(100)
         rng = random.Random(42)
         # Initialize fraud-pattern state (callers-must-init per CLAUDE.md).
-        init_collusive_stores(rng)
+        init_collusive_stores(
+            rng,
+            store_id_pool=sorted(
+                [s["store_id"] for stores in stores_by_city.values() for s in stores],
+                key=str,
+            ),
+        )
         init_promo_abuse_rings(rng)
         init_reseller_accounts(
             rng,

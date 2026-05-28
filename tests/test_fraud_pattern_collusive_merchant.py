@@ -32,7 +32,32 @@ def _ctx(seed: int = 42, hour: int = 12) -> FraudPatternContext:
 
 
 def test_auto_initialized_at_import() -> None:
+    # After removing the auto-init block, COLLUSIVE_STORES may be empty at
+    # import (if no other test ran init first). The invariant is that
+    # init_collusive_stores produces exactly n distinct stores.
+    init_rng = random.Random(0)
+    init_collusive_stores(rng=init_rng)
     assert len(COLLUSIVE_STORES) == 10
+
+
+def test_init_with_store_id_pool() -> None:
+    """store_id_pool path uses real store IDs instead of fake UUIDs."""
+    from uuid import UUID as _UUID
+    pool = [_UUID(int=i + 1) for i in range(20)]
+    init_rng = random.Random(42)
+    init_collusive_stores(rng=init_rng, n=10, store_id_pool=pool)
+
+    assert len(COLLUSIVE_STORES) == 10
+    assert all(store_id in set(pool) for store_id in COLLUSIVE_STORES)
+
+
+def test_init_pool_too_small_raises() -> None:
+    """ValueError if pool has fewer than n stores."""
+    import pytest
+    from uuid import UUID as _UUID
+    pool = [_UUID(int=i + 1) for i in range(5)]
+    with pytest.raises(ValueError, match="store_id_pool has 5"):
+        init_collusive_stores(rng=random.Random(1), n=10, store_id_pool=pool)
 
 
 def test_collusive_init() -> None:
