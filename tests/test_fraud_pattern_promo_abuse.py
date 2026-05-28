@@ -65,11 +65,17 @@ def test_init_rings_from_db_idempotent() -> None:
             }
             have_before_ids = True
 
-            await init_rings_from_db(random.Random(101), conn, n_rings=10)
+            first_rng = random.Random(101)
+            first_rng_state = first_rng.getstate()
+            await init_rings_from_db(first_rng, conn, n_rings=10)
+            assert first_rng.getstate() == first_rng_state
             first_ring_ids: list[UUID] = [ring.ring_id for ring in PROMO_ABUSE_RINGS]
             assert len(first_ring_ids) == 10
 
-            await init_rings_from_db(random.Random(202), conn, n_rings=10)
+            second_rng = random.Random(202)
+            second_rng_state = second_rng.getstate()
+            await init_rings_from_db(second_rng, conn, n_rings=10)
+            assert second_rng.getstate() == second_rng_state
             second_ring_ids: list[UUID] = [ring.ring_id for ring in PROMO_ABUSE_RINGS]
             assert len(second_ring_ids) == 10
             assert second_ring_ids == first_ring_ids

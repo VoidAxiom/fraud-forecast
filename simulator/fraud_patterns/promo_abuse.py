@@ -20,6 +20,7 @@ class _Welcome10(NamedTuple):
 
 
 WELCOME10 = _Welcome10(min_order_pence=2000, discount_pence=200)
+_PROMO_RING_BOOTSTRAP_SEED: int = 0xF00D9A5E
 PROMO_ABUSE_RINGS: list[PromoAbuseRing] = []
 
 
@@ -177,10 +178,11 @@ async def init_rings_from_db(
         _populate_rings(existing_rings, n_rings)
         return
 
+    ring_rng = random.Random(_PROMO_RING_BOOTSTRAP_SEED)
     existing_ids = {ring.ring_id for ring in existing_rings}
     ring_index = 0
     while len(existing_ids) < n_rings:
-        ring = _create_ring(rng, ring_index)
+        ring = _create_ring(ring_rng, ring_index)
         ring_index += 1
         if ring.ring_id not in existing_ids:
             await _insert_ring(conn, ring)
