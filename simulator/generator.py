@@ -775,20 +775,25 @@ async def _insert_ephemeral_payment_method(
     conn: asyncpg.Connection,
     user_id: uuid.UUID,
     rng: random.Random,
+    payment_method_id: Optional[uuid.UUID] = None,
 ) -> dict[str, Any]:
+    if payment_method_id is None:
+        payment_method_id = uuid.UUID(bytes=bytes(rng.getrandbits(8) for _ in range(16)))
+
     card_bin = f"{rng.randint(100000, 999999):06d}"
     card_last_four = f"{rng.randint(1000, 9999):04d}"
 
     row = await conn.fetchrow(
         """
         INSERT INTO payment_methods (
-            user_id, payment_type, card_bin, card_last_four, card_brand,
-            card_funding_type, card_issuer_country, is_digital_native_bank
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+            payment_method_id, user_id, payment_type, card_bin, card_last_four,
+            card_brand, card_funding_type, card_issuer_country, is_digital_native_bank
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
         RETURNING payment_method_id, payment_type, card_bin, card_last_four, card_brand,
                   card_funding_type, card_issuer_country, is_digital_native_bank,
                   unique_users_count
         """,
+        payment_method_id,
         user_id,
         "CREDIT_CARD",
         card_bin,

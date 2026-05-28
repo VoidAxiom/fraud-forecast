@@ -572,7 +572,10 @@ def test_bulk_generate_force_rerun_cleans_ephemeral_state() -> None:
         assert int(second["orders_generated"]) == expected_generated
 
         normalized_sql = [" ".join(sql.split()) for sql, _args in conn.executed]
-        assert normalized_sql[0].startswith("DELETE FROM payment_methods")
+        payment_cleanup_sql = normalized_sql[0]
+        assert payment_cleanup_sql.startswith("DELETE FROM payment_methods")
+        assert "is_new_payment_method = TRUE" in payment_cleanup_sql
+        assert "NOT EXISTS" not in payment_cleanup_sql
         assert (
             normalized_sql[1]
             == "UPDATE sim.fraud_promo_rings SET created_user_ids = ARRAY[]::uuid[]"
