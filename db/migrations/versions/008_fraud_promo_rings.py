@@ -24,7 +24,7 @@ CREATE TABLE sim.fraud_promo_rings (
 """
     )
     op.execute(
-        "GRANT SELECT, INSERT, UPDATE ON sim.fraud_promo_rings TO simulator_user"
+        "GRANT SELECT, INSERT, UPDATE, DELETE ON sim.fraud_promo_rings TO simulator_user"
     )
     op.execute("GRANT SELECT ON sim.fraud_promo_rings TO training_user")
 
