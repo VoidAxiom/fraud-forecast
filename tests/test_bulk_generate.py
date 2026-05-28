@@ -6,7 +6,7 @@ import random
 import uuid
 from contextlib import ExitStack
 from datetime import datetime, time, timedelta, timezone
-from typing import Any
+from typing import Any, Optional
 from unittest.mock import patch
 
 import pytest
@@ -322,6 +322,7 @@ def test_generate_order_uses_placed_at_timestamp() -> None:
             fraud_category: str | None = None,
             pattern_notes: str | None = None,
             ring_id: uuid.UUID | None = None,
+            rng: Optional[random.Random] = None,
         ) -> tuple[uuid.UUID, datetime]:
             assert not is_fraud
             assert fraud_category is None

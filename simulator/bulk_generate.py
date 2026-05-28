@@ -317,6 +317,24 @@ async def bulk_generate(
             )
             await conn.execute(
                 """
+                DELETE FROM fraud_decisions
+                WHERE order_id IN (
+                    SELECT order_id
+                    FROM orders
+                    WHERE placed_at >= $1
+                      AND placed_at < $2
+                    UNION ALL
+                    SELECT order_id
+                    FROM orders_archive
+                    WHERE placed_at >= $1
+                      AND placed_at < $2
+                )
+                """,
+                window_start,
+                window_end,
+            )
+            await conn.execute(
+                """
                 DELETE FROM orders
                 WHERE placed_at >= $1
                   AND placed_at < $2
