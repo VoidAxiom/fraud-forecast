@@ -145,9 +145,10 @@ async def init_reseller_accounts(
         rows = await conn.fetch(_SELECT_RESELLER_ACCOUNTS_SQL)
         if len(rows) < n:
             existing_ids = {row["account_id"] for row in rows}
+            deficit = n - len(rows)
             new_accounts = [
                 account for account in all_accounts if account.account_id not in existing_ids
-            ]
+            ][:deficit]
             await conn.executemany(
                 _INSERT_RESELLER_ACCOUNTS_SQL,
                 [_insert_args(account) for account in new_accounts],
