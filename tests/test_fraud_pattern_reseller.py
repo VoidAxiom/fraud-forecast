@@ -32,7 +32,11 @@ def _ctx(now: datetime | None = None, rng_seed: int = 99) -> FraudPatternContext
 
 
 def test_reseller_init() -> None:
-    init_reseller_accounts(rng=random.Random(42), n=50)
+    init_reseller_accounts(
+        rng=random.Random(42),
+        store_id_pool=[UUID(int=i + 1) for i in range(5)],
+        n=50,
+    )
 
     assert len(RESELLER_ACCOUNTS) == 50
     account_ids = {account.account_id for account in RESELLER_ACCOUNTS}
@@ -46,7 +50,10 @@ def test_registered() -> None:
 
 
 def test_returns_ground_truth() -> None:
-    init_reseller_accounts(rng=random.Random(42))
+    init_reseller_accounts(
+        rng=random.Random(42),
+        store_id_pool=[UUID(int=i + 1) for i in range(5)],
+    )
 
     order_dict, gt = asyncio.run(generate_reseller_fraud(_ctx()))
 
@@ -62,7 +69,10 @@ def test_returns_ground_truth() -> None:
 
 
 def test_bulk_cart() -> None:
-    init_reseller_accounts(rng=random.Random(42))
+    init_reseller_accounts(
+        rng=random.Random(42),
+        store_id_pool=[UUID(int=i + 1) for i in range(5)],
+    )
     rng: random.Random = random.Random(123)
     item_counts: list[int] = []
     ctx_time = datetime(2026, 1, 2, 10, 0, tzinfo=LONDON_TZ_TEST)
@@ -81,7 +91,10 @@ def test_bulk_cart() -> None:
 
 
 def test_delivery_address_stable() -> None:
-    init_reseller_accounts(rng=random.Random(42))
+    init_reseller_accounts(
+        rng=random.Random(42),
+        store_id_pool=[UUID(int=i + 1) for i in range(5)],
+    )
 
     original_accounts = list(RESELLER_ACCOUNTS)
     single_account = RESELLER_ACCOUNTS[0]
@@ -112,7 +125,10 @@ def test_delivery_address_stable() -> None:
 
 
 def test_value_scales_with_items() -> None:
-    init_reseller_accounts(rng=random.Random(42))
+    init_reseller_accounts(
+        rng=random.Random(42),
+        store_id_pool=[UUID(int=i + 1) for i in range(5)],
+    )
     ctx_time = datetime(2026, 1, 4, 9, 0, tzinfo=LONDON_TZ_TEST)
     low_totals: list[int] = []
     high_totals: list[int] = []

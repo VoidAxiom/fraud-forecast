@@ -22,9 +22,11 @@ class ResellerAccount:
 
 
 RESELLER_ACCOUNTS: list[ResellerAccount] = []
+RESELLER_STORE_POOL: list[UUID] = []
 
 
-def _create_account(rng: random.Random) -> ResellerAccount:
+def _create_account(rng: random.Random, store_id_pool: list[UUID]) -> ResellerAccount:
+    preferred_store_count = rng.randint(1, min(3, len(store_id_pool)))
     return ResellerAccount(
         account_id=UUID(int=rng.getrandbits(128)),
         reseller_address={
@@ -36,14 +38,21 @@ def _create_account(rng: random.Random) -> ResellerAccount:
         },
         delivery_address_uuid=UUID(int=rng.getrandbits(128)),
         device_uuid=UUID(int=rng.getrandbits(128)),
-        preferred_store_ids=[UUID(int=rng.getrandbits(128)) for _ in range(rng.randint(1, 3))],
+        preferred_store_ids=[rng.choice(store_id_pool) for _ in range(preferred_store_count)],
     )
 
 
-def init_reseller_accounts(rng: random.Random, n: int = 50) -> None:
+def init_reseller_accounts(
+    rng: random.Random, store_id_pool: list[UUID], n: int = 50
+) -> None:
+    if not store_id_pool:
+        raise ValueError("store_id_pool must contain at least one store_id")
+
     RESELLER_ACCOUNTS.clear()
+    RESELLER_STORE_POOL.clear()
+    RESELLER_STORE_POOL.extend(store_id_pool)
     for _ in range(n):
-        RESELLER_ACCOUNTS.append(_create_account(rng))
+        RESELLER_ACCOUNTS.append(_create_account(rng, store_id_pool))
 
 
 def _sample_per_item_price_pence(
@@ -59,7 +68,8 @@ async def generate_reseller_fraud(
 ) -> tuple[dict[str, Any], GroundTruth]:
     if not RESELLER_ACCOUNTS:
         raise RuntimeError(
-            "RESELLER_ACCOUNTS is empty — call init_reseller_accounts(rng) explicitly"
+            "RESELLER_ACCOUNTS is empty — call "
+            "init_reseller_accounts(rng, store_id_pool) explicitly"
         )
 
     account = ctx.rng.choice(RESELLER_ACCOUNTS)
@@ -70,7 +80,16 @@ async def generate_reseller_fraud(
     if preferred_stores and ctx.rng.random() < 0.70:
         store_id: UUID = ctx.rng.choice(preferred_stores)
     else:
-        store_id = UUID(int=ctx.rng.getrandbits(128))
+        if not RESELLER_STORE_POOL:
+            raise RuntimeError(
+                "RESELLER_STORE_POOL is empty — call "
+                "init_reseller_accounts(rng, store_id_pool) explicitly"
+            )
+        preferred_set = set(preferred_stores)
+        non_preferred_pool = [
+            sid for sid in RESELLER_STORE_POOL if sid not in preferred_set
+        ]
+        store_id = ctx.rng.choice(non_preferred_pool or RESELLER_STORE_POOL)
 
     order_id: UUID = UUID(int=ctx.rng.getrandbits(128))
     pattern_notes: str = (
