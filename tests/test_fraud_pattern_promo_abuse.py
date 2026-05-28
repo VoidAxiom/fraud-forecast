@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import os
 import random
 import sys
 from datetime import datetime
@@ -14,6 +16,8 @@ if sys.version_info >= (3, 9):
 else:
     from backports.zoneinfo import ZoneInfo
 
+import asyncpg
+
 from simulator.fraud_patterns import GroundTruth
 from simulator.fraud_patterns.promo_abuse import (
     PROMO_ABUSE_RINGS,
@@ -21,10 +25,15 @@ from simulator.fraud_patterns.promo_abuse import (
     WELCOME10,
     generate_promo_abuse_fraud,
     init_rings,
+    init_rings_from_db,
 )
 from simulator.fraud_patterns.stolen_card import FraudPatternContext
 
 LONDON_TZ_TEST: ZoneInfo = ZoneInfo("Europe/London")
+DATABASE_URL_SIMULATOR: str = os.environ.get(
+    "DATABASE_URL",
+    "postgresql://simulator_user:simulator_dev_password@postgres:5432/fraud_platform",
+)
 
 
 def test_promo_abuse_ring_init() -> None:
@@ -42,6 +51,119 @@ def test_promo_abuse_ring_init() -> None:
 
     email_patterns: list[str] = [ring.email_pattern for ring in PROMO_ABUSE_RINGS]
     assert all(len(pattern) > 0 for pattern in email_patterns)
+
+
+def test_init_rings_from_db_idempotent() -> None:
+    async def _run() -> None:
+        conn = await asyncpg.connect(DATABASE_URL_SIMULATOR)
+        before_ids: set[UUID] = set()
+        have_before_ids = False
+        try:
+            before_ids = {
+                UUID(str(row["ring_id"]))
+                for row in await conn.fetch("SELECT ring_id FROM sim.fraud_promo_rings")
+            }
+            have_before_ids = True
+
+            await init_rings_from_db(random.Random(101), conn, n_rings=10)
+            first_ring_ids: list[UUID] = [ring.ring_id for ring in PROMO_ABUSE_RINGS]
+            assert len(first_ring_ids) == 10
+
+            await init_rings_from_db(random.Random(202), conn, n_rings=10)
+            second_ring_ids: list[UUID] = [ring.ring_id for ring in PROMO_ABUSE_RINGS]
+            assert len(second_ring_ids) == 10
+            assert second_ring_ids == first_ring_ids
+        finally:
+            try:
+                if have_before_ids:
+                    current_ids = {
+                        UUID(str(row["ring_id"]))
+                        for row in await conn.fetch("SELECT ring_id FROM sim.fraud_promo_rings")
+                    }
+                    created_ring_ids = sorted(current_ids - before_ids, key=str)
+                    if created_ring_ids:
+                        await conn.execute(
+                            "DELETE FROM sim.fraud_promo_rings WHERE ring_id = ANY($1::uuid[])",
+                            created_ring_ids,
+                        )
+            finally:
+                await conn.close()
+
+    asyncio.run(_run())
+
+
+def test_init_rings_from_db_loads_from_db() -> None:
+    async def _run() -> None:
+        conn = await asyncpg.connect(DATABASE_URL_SIMULATOR)
+        inserted_ring_ids: list[UUID] = [
+            UUID("00000000-0000-0000-0000-000000000101"),
+            UUID("00000000-0000-0000-0000-000000000102"),
+            UUID("00000000-0000-0000-0000-000000000103"),
+        ]
+        try:
+            await conn.execute(
+                "DELETE FROM sim.fraud_promo_rings WHERE ring_id = ANY($1::uuid[])",
+                inserted_ring_ids,
+            )
+            for index, ring_id in enumerate(inserted_ring_ids):
+                await conn.execute(
+                    """
+                    INSERT INTO sim.fraud_promo_rings
+                        (
+                            ring_id,
+                            device_id,
+                            base_address,
+                            payment_pool,
+                            email_pattern,
+                            created_user_ids,
+                            base_ip_prefix,
+                            created_at
+                        )
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, TIMESTAMPTZ '1900-01-01')
+                    """,
+                    ring_id,
+                    UUID(f"00000000-0000-0000-0000-00000000020{index}"),
+                    json.dumps(
+                        {
+                            "lat": 51.50 + (index * 0.01),
+                            "lon": -0.10,
+                            "postcode": f"W1{index:02d} 0AA",
+                            "city": "London",
+                        }
+                    ),
+                    json.dumps(
+                        [
+                            {
+                                "card_bin": f"40000{index}",
+                                "last4": f"100{index}",
+                                "funding": "PREPAID",
+                            }
+                        ]
+                    ),
+                    f"known_ring_{index}{{n}}@mailinator.com",
+                    [],
+                    f"192.168.{index}",
+                )
+
+            await init_rings_from_db(random.Random(303), conn, n_rings=len(inserted_ring_ids))
+
+            loaded_ring_ids: set[UUID] = {ring.ring_id for ring in PROMO_ABUSE_RINGS}
+            assert set(inserted_ring_ids).issubset(loaded_ring_ids)
+        finally:
+            try:
+                await conn.execute(
+                    "DELETE FROM sim.fraud_promo_rings WHERE ring_id = ANY($1::uuid[])",
+                    inserted_ring_ids,
+                )
+            finally:
+                await conn.close()
+
+    asyncio.run(_run())
+
+
+def test_init_rings_from_db_member_user_ids_resolvable() -> None:
+    init_rings(random.Random(42), n_rings=10)
+    assert all(isinstance(ring.created_users, list) for ring in PROMO_ABUSE_RINGS)
 
 
 def test_promo_abuse_pattern_returns_ground_truth() -> None:

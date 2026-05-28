@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import json
 import random
 from dataclasses import dataclass, field
 from typing import Any, NamedTuple
 from uuid import UUID
+
+import asyncpg
 
 from simulator.fraud_patterns import GroundTruth, register
 from simulator.fraud_patterns.stolen_card import FraudPatternContext
@@ -93,6 +96,99 @@ def init_rings(rng: random.Random, n_rings: int = 50) -> None:
         PROMO_ABUSE_RINGS.append(_create_ring(rng, ring_index))
 
 
+def _json_value(value: Any) -> Any:
+    if isinstance(value, str):
+        return json.loads(value)
+    return value
+
+
+def _ring_from_row(row: asyncpg.Record) -> PromoAbuseRing:
+    base_address = _json_value(row["base_address"])
+    payment_pool = _json_value(row["payment_pool"])
+    created_user_ids = row["created_user_ids"] or []
+    return PromoAbuseRing(
+        ring_id=UUID(str(row["ring_id"])),
+        device_id=UUID(str(row["device_id"])),
+        base_address=dict(base_address),
+        payment_pool=[dict(payment) for payment in payment_pool],
+        email_pattern=row["email_pattern"],
+        created_users=[UUID(str(user_id)) for user_id in created_user_ids],
+        base_ip_prefix=row["base_ip_prefix"],
+    )
+
+
+async def _load_rings_from_db(conn: asyncpg.Connection) -> list[PromoAbuseRing]:
+    rows = await conn.fetch(
+        """
+        SELECT
+            ring_id,
+            device_id,
+            base_address,
+            payment_pool,
+            email_pattern,
+            created_user_ids,
+            base_ip_prefix
+        FROM sim.fraud_promo_rings
+        ORDER BY created_at, ring_id
+        """
+    )
+    return [_ring_from_row(row) for row in rows]
+
+
+def _populate_rings(rings: list[PromoAbuseRing], n_rings: int) -> None:
+    PROMO_ABUSE_RINGS.clear()
+    PROMO_ABUSE_RINGS.extend(rings[:n_rings])
+
+
+async def _insert_ring(conn: asyncpg.Connection, ring: PromoAbuseRing) -> None:
+    await conn.execute(
+        """
+        INSERT INTO sim.fraud_promo_rings
+            (
+                ring_id,
+                device_id,
+                base_address,
+                payment_pool,
+                email_pattern,
+                created_user_ids,
+                base_ip_prefix
+            )
+        VALUES ($1, $2, $3, $4, $5, $6, $7)
+        ON CONFLICT (ring_id) DO NOTHING
+        """,
+        ring.ring_id,
+        ring.device_id,
+        json.dumps(ring.base_address),
+        json.dumps(ring.payment_pool),
+        ring.email_pattern,
+        ring.created_users,
+        ring.base_ip_prefix,
+    )
+
+
+async def init_rings_from_db(
+    rng: random.Random,
+    conn: asyncpg.Connection,
+    n_rings: int = 50,
+) -> None:
+    """Load promo-abuse rings from DB; top up if fewer than n_rings exist."""
+    existing_rings = await _load_rings_from_db(conn)
+    if len(existing_rings) >= n_rings:
+        _populate_rings(existing_rings, n_rings)
+        return
+
+    existing_ids = {ring.ring_id for ring in existing_rings}
+    ring_index = 0
+    while len(existing_ids) < n_rings:
+        ring = _create_ring(rng, ring_index)
+        ring_index += 1
+        if ring.ring_id not in existing_ids:
+            await _insert_ring(conn, ring)
+            existing_ids.add(ring.ring_id)
+
+    _populate_rings(await _load_rings_from_db(conn), n_rings)
+
+
 def _delivery_jitter(rng: random.Random) -> tuple[float, float]:
     max_delta = 0.0045
     return rng.uniform(-max_delta, max_delta), rng.uniform(-max_delta, max_delta)
@@ -124,6 +220,23 @@ def _select_or_create_user(
     return user_id, email
 
 
+async def _persist_created_users(
+    conn: asyncpg.Connection,
+    ring: PromoAbuseRing,
+) -> None:
+    status = await conn.execute(
+        """
+        UPDATE sim.fraud_promo_rings
+        SET created_user_ids = $1
+        WHERE ring_id = $2
+        """,
+        ring.created_users,
+        ring.ring_id,
+    )
+    if status == "UPDATE 0":
+        raise RuntimeError(f"promo-abuse ring not found in DB: {ring.ring_id}")
+
+
 @register("promo_abuse", 0.25)
 async def generate_promo_abuse_fraud(
     ctx: FraudPatternContext,
@@ -136,7 +249,10 @@ async def generate_promo_abuse_fraud(
         )
 
     ring = ctx.rng.choice(PROMO_ABUSE_RINGS)
+    created_users_before = len(ring.created_users)
     order_dict, _ = ring.generate_next_order(ctx.rng)
+    if ctx.conn is not None and len(ring.created_users) > created_users_before:
+        await _persist_created_users(ctx.conn, ring)
 
     return order_dict, GroundTruth(
         order_id=order_dict["order_id"],
