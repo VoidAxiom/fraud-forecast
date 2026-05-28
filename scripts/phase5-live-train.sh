@@ -13,12 +13,12 @@ RUN_ID="${RUN_ID:-run_$(date +%Y%m%d_%H%M%S)}"
 PARQUET_PATH="ml/data/training/latest.parquet"
 TRANSFORM_OUTPUT_DIR="ml/data/transformed"
 TRANSFORM_RUN_DIR="${TRANSFORM_OUTPUT_DIR}/${RUN_ID}"
-TRAIN_DAYS="${TRAIN_DAYS:-30}"
+TRAIN_DAYS="${TRAIN_DAYS:-90}"
 LABEL_BUFFER_DAYS="${LABEL_BUFFER_DAYS:-45}"
 
 echo "=== Phase 5 live-on-main training pipeline ==="
 echo "RUN_ID:              $RUN_ID"
-echo "TRAIN_DAYS:          $TRAIN_DAYS (rolling window from now)"
+echo "TRAIN_DAYS:          $TRAIN_DAYS (rolling window, default covers finalized-label orders)"
 echo "LABEL_BUFFER_DAYS:   $LABEL_BUFFER_DAYS (chargeback finalisation buffer; set to 0 for fresh data)"
 echo "PARQUET_PATH:        $PARQUET_PATH"
 echo "TRANSFORM_RUN:       $TRANSFORM_RUN_DIR"
@@ -128,6 +128,51 @@ METRICS_PATH="$TRANSFORM_RUN_DIR/reports/$RUN_ID/metrics.json"
 if [ -f "$METRICS_PATH" ]; then
   echo "metrics.json found: $METRICS_PATH"
   cat "$METRICS_PATH" | python3 -m json.tool
+  python3 -c '
+import json
+import sys
+
+path = sys.argv[1]
+with open(path, encoding="utf-8") as metrics_file:
+    metrics = json.load(metrics_file)
+
+thresholds = {
+    "auprc": 0.70,
+    "recall_stolen_card": 0.70,
+    "recall_account_takeover": 0.60,
+    "recall_promo_abuse": 0.80,
+    "recall_refund_abuse": 0.40,
+    "recall_collusive_merchant": 0.40,
+    "recall_triangulation": 0.40,
+    "recall_reseller": 0.40,
+}
+
+failures = []
+for key, threshold in thresholds.items():
+    value = metrics.get(key)
+    if value is None:
+        print(f"  WARNING: {key} not in metrics.json (category absent from test set) -- skipped")
+        continue
+    try:
+        numeric_value = float(value)
+    except (TypeError, ValueError):
+        failures.append(f"{key} has non-numeric value {value!r} (target >= {threshold:.2f})")
+        continue
+    if numeric_value < threshold:
+        failures.append(f"{key} {numeric_value:.6f} < {threshold:.2f}")
+
+if failures:
+    print("Phase 5 acceptance threshold failures:")
+    for failure in failures:
+        print(f"  - {failure}")
+    sys.exit(1)
+
+print("Phase 5 acceptance thresholds met.")
+' "$METRICS_PATH"
+  METRICS_EXIT=$?
+  if [ $METRICS_EXIT -ne 0 ]; then
+    exit $METRICS_EXIT
+  fi
 else
   echo "metrics.json not produced at $METRICS_PATH -- check step 5 errors above"
   exit 1
