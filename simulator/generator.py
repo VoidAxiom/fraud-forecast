@@ -1828,10 +1828,12 @@ async def main() -> None:
         async with pool.acquire() as _tri_conn:
             await init_triangulation_accounts(rng, _tri_conn)
 
+        _live_rate_override_active: bool = False
         _live_rate_env = os.environ.get("LIVE_RATE_MULTIPLIER")
         if _live_rate_env is not None:
             try:
                 rate_multiplier = float(_live_rate_env)
+                _live_rate_override_active = True
             except ValueError:
                 logger.warning("invalid_live_rate_multiplier falling_back_to_ops_derived")
                 rate_multiplier = config.orders_per_second / _MEAN_HOURLY_RATE
@@ -1919,7 +1921,7 @@ async def main() -> None:
                         }
                     )
                 )
-                if os.environ.get("LIVE_RATE_MULTIPLIER") is None:
+                if not _live_rate_override_active:
                     rate_multiplier = (
                         await _read_runtime_rate(redis_conn, config.orders_per_second)
                     ) / _MEAN_HOURLY_RATE
