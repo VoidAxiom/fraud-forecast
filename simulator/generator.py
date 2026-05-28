@@ -184,7 +184,7 @@ async def write_simulator_epoch(
         epoch_raw = await conn.fetchval(
             """
             SELECT coalesce(max((value->>'epoch_num')::int), 0) + 1
-            FROM sim.simulator_meta WHERE key LIKE 'simulator\_epoch\_%' ESCAPE '\'
+            FROM sim.simulator_meta WHERE key LIKE 'simulator\\_epoch\\_%' ESCAPE '\\'
             """,
         )
         epoch_num = int(epoch_raw)
