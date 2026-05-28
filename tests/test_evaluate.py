@@ -73,7 +73,7 @@ def _write_gzip_tfrecord(directory: Path) -> Path:
 def _write_xgboost_model(tfrecord_dir: Path, model_path: Path) -> None:
     x_test, y_test = tfrecords_to_numpy(str(tfrecord_dir))
     model_path.parent.mkdir(parents=True, exist_ok=True)
-    dtrain = xgb.DMatrix(x_test, label=y_test)
+    dtrain = xgb.DMatrix(x_test, label=y_test, feature_names=list(FEATURE_NAMES))
     model = xgb.train(
         {
             "objective": "binary:logistic",

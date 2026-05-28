@@ -328,13 +328,13 @@ def main() -> None:
             else:
                 categories = np.full(_as_1d_array(y_true, np.int64).shape, "", dtype=str)
     else:
-        from ml.training.train_xgboost import tfrecords_to_numpy
+        from ml.training.train_xgboost import FEATURE_NAMES, tfrecords_to_numpy
 
         x_test, y_test = tfrecords_to_numpy(test_data_path)
         y_true = y_test
         model = xgb.Booster()
         model.load_model(str(args.model_path))
-        y_pred = model.predict(xgb.DMatrix(x_test))
+        y_pred = model.predict(xgb.DMatrix(x_test, feature_names=list(FEATURE_NAMES)))
         categories = np.full(y_true.shape, "", dtype=str)
 
     metrics = evaluate(
