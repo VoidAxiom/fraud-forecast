@@ -23,6 +23,7 @@ from simulator.fraud_patterns.promo_abuse import (
     PROMO_ABUSE_RINGS,
     PromoAbuseRing,
     WELCOME10,
+    _persist_created_users,
     generate_promo_abuse_fraud,
     init_rings,
     init_rings_from_db,
@@ -160,6 +161,86 @@ def test_init_rings_from_db_loads_from_db() -> None:
                 await conn.execute(
                     "DELETE FROM sim.fraud_promo_rings WHERE ring_id = ANY($1::uuid[])",
                     inserted_ring_ids,
+                )
+            finally:
+                await conn.close()
+
+    asyncio.run(_run())
+
+
+def test_persist_created_users_appends_without_replacing_existing_users() -> None:
+    async def _run() -> None:
+        conn = await asyncpg.connect(DATABASE_URL_SIMULATOR)
+        ring_id = UUID("00000000-0000-0000-0000-000000000301")
+        existing_user_ids: list[UUID] = [
+            UUID("00000000-0000-0000-0000-000000000401"),
+            UUID("00000000-0000-0000-0000-000000000402"),
+        ]
+        new_user_id = UUID("00000000-0000-0000-0000-000000000403")
+        try:
+            await conn.execute(
+                "DELETE FROM sim.fraud_promo_rings WHERE ring_id = $1",
+                ring_id,
+            )
+            await conn.execute(
+                """
+                INSERT INTO sim.fraud_promo_rings
+                    (
+                        ring_id,
+                        device_id,
+                        base_address,
+                        payment_pool,
+                        email_pattern,
+                        created_user_ids,
+                        base_ip_prefix,
+                        created_at
+                    )
+                VALUES ($1, $2, $3, $4, $5, $6, $7, TIMESTAMPTZ '1900-01-01')
+                """,
+                ring_id,
+                UUID("00000000-0000-0000-0000-000000000302"),
+                json.dumps(
+                    {
+                        "lat": 51.50,
+                        "lon": -0.10,
+                        "postcode": "W100 0AA",
+                        "city": "London",
+                    }
+                ),
+                json.dumps(
+                    [
+                        {
+                            "card_bin": "400001",
+                            "last4": "1001",
+                            "funding": "PREPAID",
+                        }
+                    ]
+                ),
+                "persist_test_{n}@mailinator.com",
+                existing_user_ids,
+                "192.168.10",
+            )
+
+            await _persist_created_users(conn, new_user_id, ring_id)
+
+            persisted_user_ids = [
+                UUID(str(user_id))
+                for user_id in await conn.fetchval(
+                    """
+                    SELECT created_user_ids
+                    FROM sim.fraud_promo_rings
+                    WHERE ring_id = $1
+                    """,
+                    ring_id,
+                )
+            ]
+
+            assert persisted_user_ids == [*existing_user_ids, new_user_id]
+        finally:
+            try:
+                await conn.execute(
+                    "DELETE FROM sim.fraud_promo_rings WHERE ring_id = $1",
+                    ring_id,
                 )
             finally:
                 await conn.close()

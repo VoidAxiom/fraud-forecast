@@ -224,19 +224,23 @@ def _select_or_create_user(
 
 async def _persist_created_users(
     conn: asyncpg.Connection,
-    ring: PromoAbuseRing,
+    user_id: UUID,
+    ring_id: UUID,
 ) -> None:
     status = await conn.execute(
         """
         UPDATE sim.fraud_promo_rings
-        SET created_user_ids = $1
+        SET created_user_ids = array_append(
+            COALESCE(created_user_ids, ARRAY[]::uuid[]),
+            $1::uuid
+        )
         WHERE ring_id = $2
         """,
-        ring.created_users,
-        ring.ring_id,
+        user_id,
+        ring_id,
     )
     if status == "UPDATE 0":
-        raise RuntimeError(f"promo-abuse ring not found in DB: {ring.ring_id}")
+        raise RuntimeError(f"promo-abuse ring not found in DB: {ring_id}")
 
 
 @register("promo_abuse", 0.25)
@@ -253,8 +257,10 @@ async def generate_promo_abuse_fraud(
     ring = ctx.rng.choice(PROMO_ABUSE_RINGS)
     created_users_before = len(ring.created_users)
     order_dict, _ = ring.generate_next_order(ctx.rng)
-    if ctx.conn is not None and len(ring.created_users) > created_users_before:
-        await _persist_created_users(ctx.conn, ring)
+    new_user_ids = ring.created_users[created_users_before:]
+    if ctx.conn is not None and new_user_ids:
+        for user_id in new_user_ids:
+            await _persist_created_users(ctx.conn, user_id, ring.ring_id)
 
     return order_dict, GroundTruth(
         order_id=order_dict["order_id"],
