@@ -14,3 +14,4 @@ xgboost==1.2.0
 scikit-learn==0.23.2
 matplotlib==3.3.4
 apache-beam[gcp]==2.24.0
+PyYAML~=6.0

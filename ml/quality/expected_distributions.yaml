@@ -1,0 +1,29 @@
+# Each entry must have a `source:` URL -- no LLM-invented heuristics.
+version: "1"
+columns:
+  subtotal_pence:
+    description: "UK food delivery order subtotal in pence. Typical order £8–£25 (p50 £12–£18)."
+    source: "https://www.deliveroo.co.uk/news/2023-report-uk-food-delivery"
+    p50_min: 800
+    p50_max: 2500
+    p95_min: 3000
+    p95_max: 8000
+  delivery_distance_km:
+    description: "UK food delivery distance. Typical 1–5 km, p95 ~8 km."
+    source: "https://blog.uber.com/ubereats-delivery-range/"
+    p50_min: 1.0
+    p50_max: 5.0
+    p95_min: 5.0
+    p95_max: 12.0
+  user_account_age_days:
+    description: "Account age in days. Fraudsters often have very new accounts; p50 >30 days expected for real population."
+    source: "https://stripe.com/radar/guide"
+    p50_min: 30
+    p50_max: null
+    p95_min: null
+    p95_max: null
+  gt_is_fraud:
+    description: "Ground truth fraud label. UK food delivery fraud rate ~1.5-3% of orders."
+    source: "https://arxiv.org/abs/2312.13896"
+    expected_fraud_rate_min: 0.01
+    expected_fraud_rate_max: 0.05
