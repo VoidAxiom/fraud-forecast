@@ -511,7 +511,7 @@ async def test_lifecycle_bulk_orders_reach_terminal_state() -> None:
         )
         await conn.executemany(
             """
-            INSERT INTO simulator_ground_truth (order_id, is_fraud, fraud_category)
+            INSERT INTO sim.simulator_ground_truth (order_id, is_fraud, fraud_category)
             VALUES ($1, false, NULL)
             """,
             [(order_id,) for order_id in order_ids],
@@ -592,7 +592,7 @@ async def test_lifecycle_bulk_orders_reach_terminal_state() -> None:
                 order_ids,
             )
             await conn.execute(
-                "DELETE FROM simulator_ground_truth WHERE order_id = ANY($1::uuid[])",
+                "DELETE FROM sim.simulator_ground_truth WHERE order_id = ANY($1::uuid[])",
                 order_ids,
             )
             await conn.execute(
@@ -728,7 +728,7 @@ async def test_lifecycle_delivered_orders_have_full_event_chain() -> None:
         )
         await conn.executemany(
             """
-            INSERT INTO simulator_ground_truth (order_id, is_fraud, fraud_category)
+            INSERT INTO sim.simulator_ground_truth (order_id, is_fraud, fraud_category)
             VALUES ($1, false, NULL)
             """,
             [(order_id,) for order_id in order_ids],
@@ -808,7 +808,7 @@ async def test_lifecycle_delivered_orders_have_full_event_chain() -> None:
                 order_ids,
             )
             await conn.execute(
-                "DELETE FROM simulator_ground_truth WHERE order_id = ANY($1::uuid[])",
+                "DELETE FROM sim.simulator_ground_truth WHERE order_id = ANY($1::uuid[])",
                 order_ids,
             )
             await conn.execute(

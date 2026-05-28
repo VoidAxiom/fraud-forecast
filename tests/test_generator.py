@@ -431,7 +431,7 @@ def test_generator_creates_valid_order() -> None:
                 gt_count = await conn.fetchval(
                     """
                     SELECT COUNT(*)
-                    FROM simulator_ground_truth
+                    FROM sim.simulator_ground_truth
                     WHERE order_id = ANY($1::uuid[])
                     """,
                     order_ids,

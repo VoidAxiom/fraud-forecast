@@ -634,7 +634,7 @@ async def test_throughput() -> None:
                 order_ids,
             )
             await setup_conn.execute(
-                "DELETE FROM simulator_ground_truth WHERE order_id = ANY($1::uuid[])",
+                "DELETE FROM sim.simulator_ground_truth WHERE order_id = ANY($1::uuid[])",
                 order_ids,
             )
             await setup_conn.execute("DELETE FROM orders WHERE user_id = $1", user_id)
