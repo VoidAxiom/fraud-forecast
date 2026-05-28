@@ -351,10 +351,14 @@ async def advance_order(
     next_param = 4
 
     if status_timestamp is not None:
-        update_parts.append(f"{status_timestamp} = NOW()")
+        update_parts.append(f"{status_timestamp} = ${next_param}")
+        update_values.append(now)
+        next_param += 1
 
     if is_terminal:
-        update_parts.append("terminal_state_reached_at = NOW()")
+        update_parts.append(f"terminal_state_reached_at = ${next_param}")
+        update_values.append(now)
+        next_param += 1
 
     driver_id: uuid.UUID | None = None
     if next_status == "ACCEPTED" and order_type.upper() == "DELIVERY":
@@ -423,7 +427,7 @@ async def advance_order(
             INSERT INTO order_events (
                 order_id, order_placed_at, event_type, event_data,
                 actor_type, actor_id, created_at
-            ) VALUES ($1, $2, $3, $4::jsonb, $5, $6, NOW())
+            ) VALUES ($1, $2, $3, $4::jsonb, $5, $6, $7)
             """,
             order_id,
             placed_at,
@@ -431,6 +435,7 @@ async def advance_order(
             json.dumps(event_payload),
             event_actor_type,
             event_actor_id,
+            now,
         )
 
     logger.info(
