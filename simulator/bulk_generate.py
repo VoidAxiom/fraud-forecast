@@ -195,6 +195,46 @@ async def bulk_generate(
         async with pool.acquire() as conn, conn.transaction():
             await conn.execute(
                 """
+                DELETE FROM payment_methods
+                WHERE payment_method_id IN (
+                    SELECT DISTINCT o.payment_method_id
+                    FROM (
+                        SELECT payment_method_id
+                        FROM orders
+                        WHERE placed_at >= $1
+                          AND placed_at < $2
+                          AND payment_method_id IS NOT NULL
+                        UNION ALL
+                        SELECT payment_method_id
+                        FROM orders_archive
+                        WHERE placed_at >= $1
+                          AND placed_at < $2
+                          AND payment_method_id IS NOT NULL
+                    ) o
+                    WHERE NOT EXISTS (
+                        SELECT 1
+                        FROM orders o2
+                        WHERE o2.payment_method_id = o.payment_method_id
+                          AND (o2.placed_at < $1 OR o2.placed_at >= $2)
+                    )
+                    AND NOT EXISTS (
+                        SELECT 1
+                        FROM orders_archive o2
+                        WHERE o2.payment_method_id = o.payment_method_id
+                          AND (o2.placed_at < $1 OR o2.placed_at >= $2)
+                    )
+                )
+                """,
+                window_start,
+                window_end,
+            )
+            await conn.execute(
+                """
+                UPDATE sim.fraud_promo_rings SET created_user_ids = ARRAY[]::uuid[]
+                """
+            )
+            await conn.execute(
+                """
                 DELETE FROM chargebacks
                 WHERE order_id IN (
                     SELECT order_id

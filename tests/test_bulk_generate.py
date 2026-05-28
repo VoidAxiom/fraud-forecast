@@ -422,6 +422,173 @@ def test_bulk_generate_reproducibility() -> None:
     assert first == second
 
 
+def test_bulk_generate_force_rerun_cleans_ephemeral_state() -> None:
+    async def _run() -> None:
+        config = BulkRunConfig(
+            days=_BULK_DAYS,
+            end_at=_fixed_end_at(),
+            seed=292,
+            rate_multiplier=_BULK_RATE_MULTIPLIER,
+        )
+        force_config = BulkRunConfig(
+            days=_BULK_DAYS,
+            end_at=_fixed_end_at(),
+            seed=292,
+            force=True,
+            rate_multiplier=_BULK_RATE_MULTIPLIER,
+        )
+        window_start = _window_start(force_config)
+        timestamps = [
+            window_start + timedelta(seconds=1),
+            window_start + timedelta(seconds=2),
+        ]
+
+        class _FakeTransaction:
+            async def __aenter__(self) -> _FakeTransaction:
+                return self
+
+            async def __aexit__(
+                self,
+                _exc_type: type[BaseException] | None,
+                _exc: BaseException | None,
+                _traceback: object,
+            ) -> None:
+                return None
+
+        class _RecordingConnection:
+            def __init__(self) -> None:
+                self.executed: list[tuple[str, tuple[object, ...]]] = []
+
+            def transaction(self) -> _FakeTransaction:
+                return _FakeTransaction()
+
+            async def execute(self, sql: str, *args: object) -> str:
+                self.executed.append((sql, args))
+                return "OK"
+
+            async def fetchval(self, _sql: str, *_args: object) -> str:
+                return "DELIVERED"
+
+            async def fetchrow(self, _sql: str, *_args: object) -> None:
+                return None
+
+        class _FakeAcquire:
+            def __init__(self, conn: _RecordingConnection) -> None:
+                self._conn = conn
+
+            async def __aenter__(self) -> _RecordingConnection:
+                return self._conn
+
+            async def __aexit__(
+                self,
+                _exc_type: type[BaseException] | None,
+                _exc: BaseException | None,
+                _traceback: object,
+            ) -> None:
+                return None
+
+        class _RecordingPool:
+            def __init__(self, conn: _RecordingConnection) -> None:
+                self._conn = conn
+                self._existing_counts = [0, len(timestamps)]
+
+            async def fetchval(self, _sql: str, *_args: object) -> int:
+                if self._existing_counts:
+                    return self._existing_counts.pop(0)
+                return 0
+
+            def acquire(self) -> _FakeAcquire:
+                return _FakeAcquire(self._conn)
+
+        class _FakeWeightedUserPicker:
+            def __init__(self, *_args: object) -> None:
+                return None
+
+            async def refresh(self) -> None:
+                return None
+
+        async def fake_load_stores_by_city(
+            _pool: object,
+        ) -> dict[str, list[dict[str, Any]]]:
+            return {}
+
+        async def fake_load_store_hours(_pool: object) -> dict[uuid.UUID, list[object]]:
+            return {}
+
+        async def fake_load_active_promos(_pool: object) -> list[dict[str, object]]:
+            return []
+
+        def fake_synthesize_chronological_timestamps(**_kwargs: object) -> list[datetime]:
+            return list(timestamps)
+
+        generated_order_ids: list[uuid.UUID] = []
+
+        async def fake_generate_order(*_args: object, **_kwargs: object) -> uuid.UUID:
+            order_id = uuid.UUID(int=len(generated_order_ids) + 1)
+            generated_order_ids.append(order_id)
+            return order_id
+
+        conn = _RecordingConnection()
+        pool = _RecordingPool(conn)
+
+        with ExitStack() as stack:
+            stack.enter_context(patch.dict(os.environ, {"FRAUD_INJECTION_RATE": "1.0"}))
+            stack.enter_context(
+                patch("simulator.bulk_generate.load_stores_by_city", fake_load_stores_by_city)
+            )
+            stack.enter_context(
+                patch("simulator.bulk_generate.load_store_hours", fake_load_store_hours)
+            )
+            stack.enter_context(
+                patch("simulator.bulk_generate.load_active_promos", fake_load_active_promos)
+            )
+            stack.enter_context(
+                patch("simulator.bulk_generate.WeightedUserPicker", _FakeWeightedUserPicker)
+            )
+            stack.enter_context(
+                patch(
+                    "simulator.bulk_generate.ensure_fraud_pattern_state",
+                    _noop_ensure_fraud_pattern_state,
+                )
+            )
+            stack.enter_context(
+                patch(
+                    "simulator.bulk_generate.synthesize_chronological_timestamps",
+                    fake_synthesize_chronological_timestamps,
+                )
+            )
+            stack.enter_context(
+                patch("simulator.bulk_generate.generate_order", fake_generate_order)
+            )
+            stack.enter_context(
+                patch("simulator.bulk_generate._write_bulk_metadata", _noop_write_bulk_metadata)
+            )
+
+            first = await bulk_generate(config, pool, redis_conn=_EmptyRedis())
+            second = await bulk_generate(force_config, pool, redis_conn=_EmptyRedis())
+
+        expected_generated = len(timestamps)
+        assert int(first["orders_generated"]) == expected_generated
+        assert int(second["orders_generated"]) == expected_generated
+
+        normalized_sql = [" ".join(sql.split()) for sql, _args in conn.executed]
+        assert normalized_sql[0].startswith("DELETE FROM payment_methods")
+        assert (
+            normalized_sql[1]
+            == "UPDATE sim.fraud_promo_rings SET created_user_ids = ARRAY[]::uuid[]"
+        )
+        fraud_decisions_index = next(
+            index
+            for index, sql in enumerate(normalized_sql)
+            if sql.startswith("DELETE FROM fraud_decisions")
+        )
+        assert fraud_decisions_index > 1
+        assert conn.executed[0][1] == (window_start, force_config.end_at)
+        assert conn.executed[1][1] == ()
+
+    asyncio.run(_run())
+
+
 def test_bulk_seeded_uuids_deterministic() -> None:
     def _derive_uuids(seed: int) -> tuple[uuid.UUID, uuid.UUID]:
         rng = random.Random(seed)
