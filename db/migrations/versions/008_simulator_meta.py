@@ -22,6 +22,7 @@ CREATE TABLE sim.simulator_meta (
     )
     op.execute("GRANT SELECT, INSERT, UPDATE ON sim.simulator_meta TO simulator_user")
     op.execute("GRANT SELECT ON sim.simulator_meta TO training_user")
+    op.execute("REVOKE DELETE ON sim.simulator_meta FROM simulator_user")
 
 
 def downgrade() -> None:
