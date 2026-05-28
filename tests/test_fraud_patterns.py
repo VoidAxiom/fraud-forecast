@@ -8,6 +8,7 @@ import sys
 import uuid
 from datetime import datetime, timedelta, timezone
 from statistics import NormalDist
+from unittest.mock import AsyncMock
 
 import asyncpg
 
@@ -122,6 +123,14 @@ def _ctx(seed: int | float) -> FraudPatternContext:
         now=datetime.now(tz=LONDON_TZ_TEST),
         rng=random.Random(seed),
     )
+
+
+def _init_triangulation_accounts_for_test(rng: random.Random, n: int = 30) -> None:
+    conn = AsyncMock()
+    conn.fetchval.return_value = 0
+    conn.execute.return_value = "DELETE 0"
+    conn.executemany.return_value = None
+    asyncio.run(init_accounts(rng, conn, n=n))
 
 
 def _assert_uuid(value: object, field_name: str) -> uuid.UUID:
@@ -290,7 +299,7 @@ def test_collusive_merchant_signals_present() -> None:
 
 
 def test_triangulation_signals_present() -> None:
-    init_accounts(rng=random.Random(7), n=30)
+    _init_triangulation_accounts_for_test(rng=random.Random(7), n=30)
     ctx = _ctx(seed=0)
     delivery_address_ids: set[uuid.UUID] = set()
 
@@ -688,7 +697,7 @@ def test_collusive_merchant_ground_truth_recorded(db_engine: Engine) -> None:
 
 
 def test_triangulation_ground_truth_recorded(db_engine: Engine) -> None:
-    init_accounts(rng=random.Random(7), n=30)
+    _init_triangulation_accounts_for_test(rng=random.Random(7), n=30)
     rows: list[uuid.UUID] = []
     min_placed_at: datetime | None = None
     expected = "triangulation"
@@ -837,7 +846,7 @@ def test_fraud_distribution() -> None:
             n=10,
         )
     )
-    init_accounts(rng=random.Random(42), n=30)
+    _init_triangulation_accounts_for_test(rng=random.Random(42), n=30)
     init_reseller_accounts(
         rng=random.Random(42),
         store_id_pool=[uuid.UUID(int=i + 1) for i in range(5)],
@@ -938,7 +947,7 @@ def test_collusive_store_concentration() -> None:
         )
     )
     init_rings(rng=random.Random(7), n_rings=50)
-    init_accounts(rng=random.Random(7), n=30)
+    _init_triangulation_accounts_for_test(rng=random.Random(7), n=30)
     init_reseller_accounts(
         rng=random.Random(7),
         store_id_pool=[uuid.UUID(int=i + 1) for i in range(5)],

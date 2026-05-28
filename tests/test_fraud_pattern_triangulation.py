@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import random
 import sys
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
+from unittest.mock import AsyncMock
 from uuid import UUID
+
+import asyncpg
 
 if sys.version_info >= (3, 9):
     from zoneinfo import ZoneInfo
@@ -23,6 +27,10 @@ from simulator.fraud_patterns.triangulation import (
 )
 from simulator.fraud_patterns.stolen_card import FraudPatternContext
 
+DATABASE_URL_SIMULATOR = os.getenv(
+    "DATABASE_URL_SIMULATOR",
+    "postgresql://simulator_user:simulator_dev_password@postgres:5432/fraud_platform",
+)
 LONDON_TZ_TEST: ZoneInfo = ZoneInfo("Europe/London")
 
 
@@ -33,10 +41,87 @@ def _make_ctx(seed: int = 42) -> FraudPatternContext:
     )
 
 
+def _init_accounts_with_mock_db(rng: random.Random, n: int = 30) -> None:
+    conn = AsyncMock()
+    conn.fetchval.return_value = 0
+    conn.execute.return_value = "DELETE 0"
+    conn.executemany.return_value = None
+    asyncio.run(init_accounts(rng, conn, n=n))
+
+
+def test_init_accounts_idempotent() -> None:
+    """init_accounts loads persisted identities instead of reseeding when row count matches."""
+
+    async def _run() -> None:
+        conn = await asyncpg.connect(DATABASE_URL_SIMULATOR)
+        try:
+            await conn.execute("DELETE FROM sim.fraud_triangulation_accounts")
+
+            await init_accounts(random.Random(31), conn, n=5)
+            first_account_ids = {acc.account_id for acc in TRIANGULATION_ACCOUNTS}
+            assert len(first_account_ids) == 5
+
+            await init_accounts(random.Random(31), conn, n=5)
+            second_account_ids = {acc.account_id for acc in TRIANGULATION_ACCOUNTS}
+
+            assert second_account_ids == first_account_ids
+            row_count = await conn.fetchval(
+                "SELECT count(*) FROM sim.fraud_triangulation_accounts"
+            )
+            assert row_count == 5
+        finally:
+            await conn.execute("DELETE FROM sim.fraud_triangulation_accounts")
+            await conn.close()
+            TRIANGULATION_ACCOUNTS.clear()
+
+    asyncio.run(_run())
+
+
+def test_init_accounts_load_from_db() -> None:
+    """init_accounts populates TRIANGULATION_ACCOUNTS from persisted DB rows."""
+
+    async def _run() -> None:
+        conn = await asyncpg.connect(DATABASE_URL_SIMULATOR)
+        base_created_at = datetime(2024, 6, 1, 12, 0, tzinfo=LONDON_TZ_TEST)
+        seed_rows = [
+            (
+                UUID(int=100 + i),
+                UUID(int=200 + i),
+                base_created_at + timedelta(minutes=i),
+            )
+            for i in range(3)
+        ]
+        try:
+            await conn.execute("DELETE FROM sim.fraud_triangulation_accounts")
+            await conn.executemany(
+                """
+                INSERT INTO sim.fraud_triangulation_accounts (account_id, device_id, created_at)
+                VALUES ($1, $2, $3)
+                """,
+                seed_rows,
+            )
+
+            await init_accounts(random.Random(999), conn, n=len(seed_rows))
+
+            expected_pairs = [(account_id, device_id) for account_id, device_id, _ in seed_rows]
+            loaded_pairs = [
+                (acc.account_id, acc.device_id) for acc in TRIANGULATION_ACCOUNTS
+            ]
+            assert loaded_pairs == expected_pairs
+            assert all(acc.cards_used_count == 0 for acc in TRIANGULATION_ACCOUNTS)
+            assert all(acc.delivery_addresses_used_count == 0 for acc in TRIANGULATION_ACCOUNTS)
+        finally:
+            await conn.execute("DELETE FROM sim.fraud_triangulation_accounts")
+            await conn.close()
+            TRIANGULATION_ACCOUNTS.clear()
+
+    asyncio.run(_run())
+
+
 def test_triangulation_init() -> None:
     """init_accounts(rng, n=30) produces 30 accounts with distinct IDs."""
     rng = random.Random(1)
-    init_accounts(rng, n=30)
+    _init_accounts_with_mock_db(rng, n=30)
 
     assert len(TRIANGULATION_ACCOUNTS) == 30
 
@@ -49,7 +134,7 @@ def test_triangulation_init() -> None:
 
 def test_triangulation_returns_ground_truth() -> None:
     """generate_triangulation_fraud returns is_fraud=True, fraud_category='triangulation'."""
-    init_accounts(random.Random(2), n=30)
+    _init_accounts_with_mock_db(random.Random(2), n=30)
     ctx = _make_ctx(seed=99)
 
     order_dict, gt = asyncio.run(generate_triangulation_fraud(ctx))
@@ -66,7 +151,7 @@ def test_triangulation_returns_ground_truth() -> None:
 
 def test_triangulation_registered() -> None:
     """'triangulation' is in _REGISTRY with weight 0.05."""
-    init_accounts(random.Random(3), n=30)
+    _init_accounts_with_mock_db(random.Random(3), n=30)
 
     assert "triangulation" in _REGISTRY, "'triangulation' must be auto-discovered in _REGISTRY"
     _fn, weight = _REGISTRY["triangulation"]
@@ -75,7 +160,7 @@ def test_triangulation_registered() -> None:
 
 def test_triangulation_device_consistency() -> None:
     """Within one account, multiple orders share the same device_id."""
-    init_accounts(random.Random(4), n=30)
+    _init_accounts_with_mock_db(random.Random(4), n=30)
 
     # Pin to the first account for determinism
     account: TriangulationAccount = TRIANGULATION_ACCOUNTS[0]
@@ -109,7 +194,7 @@ def test_triangulation_device_consistency() -> None:
 
 def test_triangulation_address_diversity() -> None:
     """Across 100 orders from one account, >= 80% have unique delivery addresses."""
-    init_accounts(random.Random(6), n=30)
+    _init_accounts_with_mock_db(random.Random(6), n=30)
 
     account: TriangulationAccount = TRIANGULATION_ACCOUNTS[0]
     account.delivery_addresses_used_count = 0
@@ -139,7 +224,7 @@ def test_triangulation_address_diversity() -> None:
 
 def test_triangulation_card_diversity() -> None:
     """Across 100 orders from one account, >= 80% use unique cards."""
-    init_accounts(random.Random(8), n=30)
+    _init_accounts_with_mock_db(random.Random(8), n=30)
 
     account: TriangulationAccount = TRIANGULATION_ACCOUNTS[0]
     account.delivery_addresses_used_count = 0
@@ -169,7 +254,7 @@ def test_triangulation_card_diversity() -> None:
 
 def test_triangulation_iso2_invariant() -> None:
     """Card/IP countries should always be the same valid ISO-2 code."""
-    init_accounts(random.Random(10), n=30)
+    _init_accounts_with_mock_db(random.Random(10), n=30)
     ctx = _make_ctx(seed=11)
 
     for _ in range(200):
@@ -189,7 +274,7 @@ def test_triangulation_iso2_invariant() -> None:
 def test_triangulation_counter_increments() -> None:
     """Order generation should increment both triangulation counters by one each call."""
     rng = random.Random(12)
-    init_accounts(rng, n=1)
+    _init_accounts_with_mock_db(rng, n=1)
 
     class _PinnedCtx(random.Random):
         def choice(self, seq: Any) -> Any:  # type: ignore[override]

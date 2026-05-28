@@ -696,3 +696,15 @@ class SimulatorMeta(Base):  # type: ignore  # SQLAlchemy 1.4 declarative_base() 
     updated_at = Column(DateTime(timezone=True), nullable=False, server_default=text("NOW()"))
 
     __table_args__ = {"schema": "sim"}
+
+
+class FraudTriangulationAccount(Base):  # type: ignore  # SQLAlchemy 1.4 declarative_base() returns Any
+    """Persistent identity for triangulation fraudster accounts; lives in the `sim` schema."""
+
+    __tablename__ = "fraud_triangulation_accounts"
+
+    account_id = Column(UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()"))
+    device_id = Column(UUID(as_uuid=True), nullable=False)
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=text("NOW()"))
+
+    __table_args__ = {"schema": "sim"}

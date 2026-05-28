@@ -1713,7 +1713,8 @@ async def main() -> None:
                 key=str,
             ),
         )
-        init_triangulation_accounts(rng)
+        async with pool.acquire() as _tri_conn:
+            await init_triangulation_accounts(rng, _tri_conn)
         rng_lock = asyncio.Lock()
         stats_lock = asyncio.Lock()
 
