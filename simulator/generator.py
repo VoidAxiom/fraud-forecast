@@ -18,7 +18,7 @@ if sys.version_info >= (3, 9):
     from zoneinfo import ZoneInfo
 else:
     from backports.zoneinfo import ZoneInfo
-from typing import Any
+from typing import Any, Optional
 
 import asyncpg
 import redis.asyncio as aioredis
@@ -173,8 +173,12 @@ def load_config_from_env() -> GeneratorConfig:
     )
 
 
-async def write_simulator_epoch(conn: asyncpg.Connection) -> str:
+async def write_simulator_epoch(
+    conn: asyncpg.Connection,
+    now: Optional[datetime] = None,
+) -> str:
     """Insert a startup epoch row. Returns the key inserted."""
+    _now = now if now is not None else datetime.now(tz=LONDON_TZ)
     async with conn.transaction():
         await conn.execute("SELECT pg_advisory_xact_lock(1234567890)")
         epoch_raw = await conn.fetchval(
@@ -186,7 +190,7 @@ async def write_simulator_epoch(conn: asyncpg.Connection) -> str:
         epoch_num = int(epoch_raw)
         key = f"simulator_epoch_{epoch_num:06d}_{uuid.uuid4().hex[:8]}"
         value = {
-            "started_at": datetime.now(tz=LONDON_TZ).isoformat(),
+            "started_at": _now.isoformat(),
             "git_commit": os.environ.get("GIT_COMMIT", "unknown"),
             "rng_seed": 42,
             "epoch_num": epoch_num,

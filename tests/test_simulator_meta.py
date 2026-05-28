@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+from datetime import datetime, timezone
 
 import asyncpg
 
@@ -30,7 +31,10 @@ async def _cleanup_admin() -> None:
 
 async def _write_epoch(pool: asyncpg.Pool) -> str:
     async with pool.acquire() as conn:
-        return await write_simulator_epoch(conn)
+        return await write_simulator_epoch(
+            conn,
+            now=datetime(2024, 1, 15, 12, 0, 0, tzinfo=timezone.utc),
+        )
 
 
 def test_epoch_increments() -> None:
@@ -39,8 +43,14 @@ def test_epoch_increments() -> None:
         try:
             await _cleanup_admin()
 
-            key1 = await write_simulator_epoch(conn)
-            key2 = await write_simulator_epoch(conn)
+            key1 = await write_simulator_epoch(
+                conn,
+                now=datetime(2024, 1, 15, 12, 0, 0, tzinfo=timezone.utc),
+            )
+            key2 = await write_simulator_epoch(
+                conn,
+                now=datetime(2024, 1, 15, 12, 0, 0, tzinfo=timezone.utc),
+            )
 
             row1 = await conn.fetchrow(
                 "SELECT value FROM sim.simulator_meta WHERE key = $1",
@@ -68,7 +78,10 @@ def test_epoch_value_shape() -> None:
         try:
             await _cleanup_admin()
 
-            key = await write_simulator_epoch(conn)
+            key = await write_simulator_epoch(
+                conn,
+                now=datetime(2024, 1, 15, 12, 0, 0, tzinfo=timezone.utc),
+            )
             row = await conn.fetchrow(
                 "SELECT value FROM sim.simulator_meta WHERE key = $1",
                 key,
