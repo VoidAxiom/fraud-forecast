@@ -42,6 +42,8 @@ from simulator.user_picker import WeightedUserPicker
 
 logger = logging.getLogger(__name__)
 
+_BULK_LIFECYCLE_STEP_SECONDS = 3600
+
 
 @dataclass(frozen=True)
 class BulkRunConfig:
@@ -268,14 +270,18 @@ async def bulk_generate(
                     promos=promos,
                     scoring_enabled=False,
                 )
-                for _ in range(20):
-                    status = await conn.fetchval(
+                for lifecycle_iter in range(20):
+                    lifecycle_now = min(
+                        ts + timedelta(seconds=(lifecycle_iter + 1) * _BULK_LIFECYCLE_STEP_SECONDS),
+                        window_end,
+                    )
+                    status_before = await conn.fetchval(
                         "SELECT order_status FROM orders WHERE order_id = $1",
                         order_id,
                     )
-                    if status in _TERMINAL_STATES:
+                    if status_before in _TERMINAL_STATES:
                         break
-                    await advance_lifecycle(order_id, conn, now=window_end)
+                    await advance_lifecycle(order_id, conn, now=lifecycle_now)
                 await maybe_emit_chargeback(order_id, conn, now=window_end)
 
             processed += 1
