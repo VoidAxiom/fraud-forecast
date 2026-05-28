@@ -78,6 +78,8 @@ if [ -n "$BASELINE_REPORT_DIR" ]; then
 fi
 
 # docker compose inherits COMPOSE_PROJECT_NAME when the caller sets it.
-docker compose run --rm app "${ARGS[@]}"
+docker compose run --rm \
+  -v "$(pwd)/reports:/app/reports" \
+  app "${ARGS[@]}"
 
 printf '%s\n' "$REPORT_DIR"

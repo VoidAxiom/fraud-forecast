@@ -306,19 +306,21 @@ def _profile_label_leak_sentinels(frame: pd.DataFrame) -> List[Finding]:
             if int(row["nunique"]) != 1:
                 continue
             label_value = int(row["min"])
+            if label_value != 1:
+                continue
             findings.append(
                 _finding(
                     column=column,
                     severity="critical",
                     check_name="sentinel_label_leak",
                     metric="value_has_single_label",
-                    expected="No string value should map exclusively to gt_is_fraud=0 or gt_is_fraud=1.",
+                    expected="No string value should map exclusively to gt_is_fraud=1 (fraud-only sentinel indicates label leakage).",
                     actual={
                         "value": str(value),
                         "gt_is_fraud": label_value,
                         "rows": int(row["count"]),
                     },
-                    recommendation="Remove sentinel shortcuts from generated categorical values and encode fraud through realistic feature interactions.",
+                    recommendation="Remove fraud-only sentinel shortcuts from generated categorical values and encode fraud through realistic feature interactions.",
                 )
             )
 

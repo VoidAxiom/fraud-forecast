@@ -46,7 +46,9 @@ while [ "$#" -gt 0 ]; do
 done
 
 # docker compose inherits COMPOSE_PROJECT_NAME when the caller sets it.
-docker compose run --rm app python -m ml.quality.scanner \
+docker compose run --rm \
+  -v "$(pwd)/reports:/app/reports" \
+  app python -m ml.quality.scanner \
   --input "$INPUT" \
   --config "$CONFIG" \
   --report-dir "$REPORT_DIR"
