@@ -47,11 +47,23 @@ from simulator.fraud_patterns.triangulation import (
 
 
 class _FakeConn:
+    def __init__(self) -> None:
+        self._rows: list[dict[str, uuid.UUID]] = []
+
     async def fetch(self, query: str) -> list[dict[str, uuid.UUID]]:
-        return []
+        _ = query
+        return self._rows
 
     async def executemany(self, query: str, args: list[tuple[uuid.UUID, ...]]) -> None:
-        pass
+        _ = query
+        existing = {row["store_id"] for row in self._rows}
+        for (store_id,) in args:
+            normalized_store_id = (
+                store_id if isinstance(store_id, uuid.UUID) else uuid.UUID(str(store_id))
+            )
+            if normalized_store_id not in existing:
+                self._rows.append({"store_id": normalized_store_id})
+                existing.add(normalized_store_id)
 
 
 _SCORING_URL: str = "postgresql://scoring_user:scoring_dev_password@postgres:5432/fraud_platform"
