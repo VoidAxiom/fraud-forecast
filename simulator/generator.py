@@ -1306,11 +1306,12 @@ async def insert_order(
             INSERT INTO order_events (
                 order_id, order_placed_at, event_type, event_data, actor_type, created_at
             )
-            VALUES ($1, $2, 'ORDER_PLACED', $3::jsonb, 'SIMULATOR', NOW())
+            VALUES ($1, $2, 'ORDER_PLACED', $3::jsonb, 'SIMULATOR', $4)
             """,
             order_id,
             placed_at,
             json.dumps(_event_payload({**snapshot, "order_id": str(order_id)})),
+            placed_at,
         )
 
         await conn.execute(
