@@ -169,7 +169,8 @@ async def _fake_ephemeral_payment_method(
     _conn: asyncpg.Connection,
     user_id: uuid.UUID,
     _rng: random.Random,
-) -> dict[str, Any]:
+    _payment_method_id: Optional[uuid.UUID] = None,
+) -> tuple[dict[str, Any], bool]:
     return {
         "payment_method_id": uuid.uuid5(uuid.NAMESPACE_DNS, f"bulk-test-payment-{user_id}"),
         "payment_type": "CREDIT_CARD",
@@ -180,7 +181,7 @@ async def _fake_ephemeral_payment_method(
         "card_issuer_country": "GB",
         "is_digital_native_bank": False,
         "unique_users_count": 1,
-    }
+    }, True
 
 
 async def _run_bulk_with_test_patches(
@@ -442,7 +443,9 @@ def test_bulk_generate_force_rerun_cleans_ephemeral_state() -> None:
             window_start + timedelta(seconds=1),
             window_start + timedelta(seconds=2),
         ]
-        window_only_pm_ids = [uuid.UUID(int=100), uuid.UUID(int=101)]
+        tracked_pm_ids = [uuid.UUID(int=100), uuid.UUID(int=101), uuid.UUID(int=102)]
+        deletable_tracked_pm_ids = tracked_pm_ids[:2]
+        stable_metadata_key = f"bulk_window_{force_config.seed}_{int(window_start.timestamp())}"
 
         class _FakeTransaction:
             async def __aenter__(self) -> _FakeTransaction:
@@ -470,12 +473,28 @@ def test_bulk_generate_force_rerun_cleans_ephemeral_state() -> None:
                 self.executed.append((sql, args))
                 return "OK"
 
-            async def fetch(self, sql: str, *args: object) -> list[dict[str, uuid.UUID]]:
+            async def fetch(self, sql: str, *args: object) -> list[dict[str, object]]:
                 self.calls.append(("fetch", sql, args))
                 self.fetched.append((sql, args))
+                normalized_sql = " ".join(sql.split())
+                if normalized_sql == "SELECT value FROM sim.simulator_meta WHERE key = $1":
+                    return [
+                        {
+                            "value": {
+                                "ephemeral_pm_ids": [
+                                    str(payment_method_id) for payment_method_id in tracked_pm_ids
+                                ]
+                            }
+                        }
+                    ]
+                if normalized_sql.startswith("SELECT tracked_pm.payment_method_id"):
+                    return [
+                        {"payment_method_id": payment_method_id}
+                        for payment_method_id in deletable_tracked_pm_ids
+                    ]
                 return [
                     {"payment_method_id": payment_method_id}
-                    for payment_method_id in window_only_pm_ids
+                    for payment_method_id in tracked_pm_ids
                 ]
 
             async def fetchval(self, _sql: str, *_args: object) -> str:
@@ -587,24 +606,27 @@ def test_bulk_generate_force_rerun_cleans_ephemeral_state() -> None:
         normalized_calls = [
             (kind, " ".join(sql.split()), args) for kind, sql, args in conn.calls
         ]
-        payment_collection_kind, payment_collection_sql, payment_collection_args = (
+        metadata_lookup_kind, metadata_lookup_sql, metadata_lookup_args = (
             normalized_calls[0]
         )
-        assert payment_collection_kind == "fetch"
-        assert payment_collection_sql.startswith(
-            "SELECT DISTINCT window_orders.payment_method_id"
-        )
-        assert "FROM orders_archive" in payment_collection_sql
-        assert "NOT EXISTS ( SELECT 1 FROM orders surviving_orders" in payment_collection_sql
-        assert (
-            "NOT EXISTS ( SELECT 1 FROM orders_archive surviving_archive_orders"
-            in payment_collection_sql
-        )
-        assert payment_collection_args == (window_start, force_config.end_at)
+        assert metadata_lookup_kind == "fetch"
+        assert metadata_lookup_sql == "SELECT value FROM sim.simulator_meta WHERE key = $1"
+        assert metadata_lookup_args == (stable_metadata_key,)
+
+        pm_survivor_kind, pm_survivor_sql, pm_survivor_args = normalized_calls[1]
+        assert pm_survivor_kind == "fetch"
+        assert pm_survivor_sql.startswith("SELECT tracked_pm.payment_method_id")
+        assert "payment_method_id = ANY($1::uuid[])" in pm_survivor_sql
+        assert "FROM orders_archive" in pm_survivor_sql
+        assert "SELECT DISTINCT window_orders.payment_method_id" not in pm_survivor_sql
+        assert pm_survivor_args == (tracked_pm_ids, window_start, force_config.end_at)
 
         ring_cleanup_sql = normalized_sql[0]
         assert ring_cleanup_sql.startswith("UPDATE sim.fraud_promo_rings")
         assert "ARRAY_AGG(DISTINCT u.user_id)" in ring_cleanup_sql
+        assert "SELECT o.user_id FROM sim.simulator_ground_truth sgt" in ring_cleanup_sql
+        assert "SELECT oa.user_id FROM sim.simulator_ground_truth sgt" in ring_cleanup_sql
+        assert "sgt.user_id" not in ring_cleanup_sql
         assert "JOIN orders o ON o.order_id = sgt.order_id" in ring_cleanup_sql
         assert "JOIN orders_archive oa ON oa.order_id = sgt.order_id" in ring_cleanup_sql
         assert (
@@ -633,7 +655,7 @@ def test_bulk_generate_force_rerun_cleans_ephemeral_state() -> None:
             payment_delete_sql
             == "DELETE FROM payment_methods WHERE payment_method_id = ANY($1::uuid[])"
         )
-        assert payment_delete_args == (window_only_pm_ids,)
+        assert payment_delete_args == (deletable_tracked_pm_ids,)
         orders_delete_index = next(
             index
             for index, (kind, sql, _args) in enumerate(normalized_calls)

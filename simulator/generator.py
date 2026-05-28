@@ -776,7 +776,7 @@ async def _insert_ephemeral_payment_method(
     user_id: uuid.UUID,
     rng: random.Random,
     payment_method_id: Optional[uuid.UUID] = None,
-) -> dict[str, Any]:
+) -> tuple[dict[str, Any], bool]:
     if payment_method_id is None:
         payment_method_id = uuid.UUID(bytes=bytes(rng.getrandbits(8) for _ in range(16)))
 
@@ -789,8 +789,7 @@ async def _insert_ephemeral_payment_method(
             payment_method_id, user_id, payment_type, card_bin, card_last_four,
             card_brand, card_funding_type, card_issuer_country, is_digital_native_bank
         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-        ON CONFLICT (payment_method_id) DO UPDATE
-            SET payment_method_id = EXCLUDED.payment_method_id
+        ON CONFLICT (payment_method_id) DO NOTHING
         RETURNING payment_method_id, payment_type, card_bin, card_last_four, card_brand,
                   card_funding_type, card_issuer_country, is_digital_native_bank,
                   unique_users_count
@@ -806,9 +805,21 @@ async def _insert_ephemeral_payment_method(
         False,
     )
     if row is None:
-        raise RuntimeError("payment method insert returned no row")
+        row = await conn.fetchrow(
+            """
+            SELECT payment_method_id, payment_type, card_bin, card_last_four, card_brand,
+                   card_funding_type, card_issuer_country, is_digital_native_bank,
+                   unique_users_count
+            FROM payment_methods
+            WHERE payment_method_id=$1
+            """,
+            payment_method_id,
+        )
+        if row is None:
+            raise RuntimeError("payment method insert returned no row")
+        return dict(row), False
 
-    return dict(row)
+    return dict(row), True
 
 
 async def _load_menu_items(
@@ -1595,6 +1606,7 @@ async def generate_order(
     scoring_enabled: bool = False,
     order_id_override: uuid.UUID | None = None,
     device_id_override: uuid.UUID | None = None,
+    bulk_pm_tracker: Optional[set[uuid.UUID]] = None,
 ) -> uuid.UUID:
     user_id = user_picker.pick(rng)
     fraud_roll = rng.random()
@@ -1651,7 +1663,13 @@ async def generate_order(
     elif payment_methods and roll < 0.95:
         payment_method = rng.choice(payment_methods)
     else:
-        payment_method = await _insert_ephemeral_payment_method(conn, user_id, rng)
+        payment_method, is_new_ephemeral_payment_method = await _insert_ephemeral_payment_method(
+            conn,
+            user_id,
+            rng,
+        )
+        if is_new_ephemeral_payment_method and bulk_pm_tracker is not None:
+            bulk_pm_tracker.add(payment_method["payment_method_id"])
 
     is_new_payment_method = await _is_new_payment_method(
         conn,

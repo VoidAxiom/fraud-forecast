@@ -159,6 +159,7 @@ async def _write_bulk_metadata(
     run_id: str,
     value: dict[str, Any],
 ) -> None:
+    metadata_key = f"bulk_{run_id}" if run_id.startswith("window_") else f"bulk_run_{run_id}"
     await pool.execute(
         """
         INSERT INTO sim.simulator_meta (key, value)
@@ -167,7 +168,7 @@ async def _write_bulk_metadata(
         SET value = EXCLUDED.value,
             updated_at = NOW()
         """,
-        f"bulk_run_{run_id}",
+        metadata_key,
         json.dumps(value),
     )
 
@@ -180,6 +181,8 @@ async def bulk_generate(
     """Generate historical orders in chronological order for the configured window."""
     window_end = _as_london_aware(config.end_at)
     window_start = window_end - timedelta(days=config.days)
+    window_start_epoch = int(window_start.timestamp())
+    bulk_window_key = f"bulk_window_{config.seed}_{window_start_epoch}"
     existing_count = await _existing_order_count(
         pool,
         window_start=window_start,
@@ -193,51 +196,64 @@ async def bulk_generate(
 
     if config.force:
         async with pool.acquire() as conn, conn.transaction():
-            window_only_payment_method_rows = await conn.fetch(
+            deletable_tracked_pm_ids: list[uuid.UUID] = []
+            metadata_rows = await conn.fetch(
                 """
-                SELECT DISTINCT window_orders.payment_method_id
-                FROM (
-                    SELECT payment_method_id
-                    FROM orders
-                    WHERE placed_at >= $1
-                      AND placed_at < $2
-                    UNION ALL
-                    SELECT payment_method_id
-                    FROM orders_archive
-                    WHERE placed_at >= $1
-                      AND placed_at < $2
-                ) window_orders
-                WHERE window_orders.payment_method_id IS NOT NULL
-                  AND NOT EXISTS (
-                      SELECT 1
-                      FROM orders surviving_orders
-                      WHERE surviving_orders.payment_method_id = window_orders.payment_method_id
-                        AND (
-                            surviving_orders.placed_at < $1
-                            OR surviving_orders.placed_at >= $2
-                        )
-                  )
-                  AND NOT EXISTS (
-                      SELECT 1
-                      FROM orders_archive surviving_archive_orders
-                      WHERE surviving_archive_orders.payment_method_id =
-                            window_orders.payment_method_id
-                        AND (
-                            surviving_archive_orders.placed_at < $1
-                            OR surviving_archive_orders.placed_at >= $2
-                        )
-                  )
+                SELECT value
+                FROM sim.simulator_meta
+                WHERE key = $1
                 """,
-                window_start,
-                window_end,
+                bulk_window_key,
             )
-            window_only_pm_ids: list[uuid.UUID] = []
-            for row in window_only_payment_method_rows:
-                payment_method_id = row["payment_method_id"]
-                if isinstance(payment_method_id, uuid.UUID):
-                    window_only_pm_ids.append(payment_method_id)
-                else:
-                    window_only_pm_ids.append(uuid.UUID(str(payment_method_id)))
+            if not metadata_rows:
+                logger.warning("bulk_force_metadata_missing key=%s", bulk_window_key)
+            else:
+                metadata_value = metadata_rows[0]["value"]
+                prior_metadata: dict[str, Any] = {}
+                if isinstance(metadata_value, str):
+                    parsed_metadata = json.loads(metadata_value)
+                    if isinstance(parsed_metadata, dict):
+                        prior_metadata = parsed_metadata
+                elif isinstance(metadata_value, dict):
+                    prior_metadata = metadata_value
+
+                tracked_ephemeral_pm_ids: list[uuid.UUID] = []
+                raw_ephemeral_pm_ids = prior_metadata.get("ephemeral_pm_ids")
+                if isinstance(raw_ephemeral_pm_ids, list):
+                    tracked_ephemeral_pm_ids = sorted(
+                        uuid.UUID(str(payment_method_id))
+                        for payment_method_id in raw_ephemeral_pm_ids
+                    )
+
+                if tracked_ephemeral_pm_ids:
+                    deletable_tracked_pm_rows = await conn.fetch(
+                        """
+                        SELECT tracked_pm.payment_method_id
+                        FROM UNNEST($1::uuid[]) AS tracked_pm(payment_method_id)
+                        WHERE NOT EXISTS (
+                            SELECT 1
+                            FROM orders
+                            WHERE payment_method_id = ANY($1::uuid[])
+                              AND payment_method_id = tracked_pm.payment_method_id
+                              AND (placed_at < $2 OR placed_at >= $3)
+                            UNION ALL
+                            SELECT 1
+                            FROM orders_archive
+                            WHERE payment_method_id = ANY($1::uuid[])
+                              AND payment_method_id = tracked_pm.payment_method_id
+                              AND (placed_at < $2 OR placed_at >= $3)
+                        )
+                        """,
+                        tracked_ephemeral_pm_ids,
+                        window_start,
+                        window_end,
+                    )
+                    for row in deletable_tracked_pm_rows:
+                        payment_method_id = row["payment_method_id"]
+                        if isinstance(payment_method_id, uuid.UUID):
+                            deletable_tracked_pm_ids.append(payment_method_id)
+                        else:
+                            deletable_tracked_pm_ids.append(uuid.UUID(str(payment_method_id)))
 
             await conn.execute(
                 """
@@ -246,14 +262,14 @@ async def bulk_generate(
                     (
                         SELECT ARRAY_AGG(DISTINCT u.user_id)
                         FROM (
-                            SELECT sgt.user_id
+                            SELECT o.user_id
                             FROM sim.simulator_ground_truth sgt
                             JOIN orders o ON o.order_id = sgt.order_id
                             WHERE sgt.fraud_category = 'promo_abuse'
                               AND sgt.ring_id = r.ring_id
                               AND (o.placed_at < $1 OR o.placed_at >= $2)
                             UNION
-                            SELECT sgt.user_id
+                            SELECT oa.user_id
                             FROM sim.simulator_ground_truth sgt
                             JOIN orders_archive oa ON oa.order_id = sgt.order_id
                             WHERE sgt.fraud_category = 'promo_abuse'
@@ -429,10 +445,10 @@ async def bulk_generate(
                 window_start,
                 window_end,
             )
-            if window_only_pm_ids:
+            if deletable_tracked_pm_ids:
                 await conn.execute(
                     "DELETE FROM payment_methods WHERE payment_method_id = ANY($1::uuid[])",
-                    window_only_pm_ids,
+                    deletable_tracked_pm_ids,
                 )
 
     rng = random.Random(config.seed)
@@ -473,6 +489,7 @@ async def bulk_generate(
         started_monotonic = time.perf_counter()
         processed = 0
         total = len(timestamps)
+        bulk_pm_ids: set[uuid.UUID] = set()
         for ts in timestamps:
             order_rng = random.Random(rng.randint(0, 2**63 - 1))
             order_id_bytes = bytes(rng.getrandbits(8) for _ in range(16))
@@ -488,6 +505,7 @@ async def bulk_generate(
                     promos=promos,
                     scoring_enabled=False,
                     order_id_override=bulk_order_id,
+                    bulk_pm_tracker=bulk_pm_ids,
                 )
                 for lifecycle_iter in range(20):
                     lifecycle_now = min(
@@ -579,8 +597,14 @@ ON CONFLICT (order_id) DO NOTHING
             "orders_generated": processed,
             "timestamps_synthesized": total,
             "elapsed_seconds": round(elapsed_seconds, 3),
+            "ephemeral_pm_ids": [str(pm_id) for pm_id in sorted(bulk_pm_ids)],
         }
         await _write_bulk_metadata(pool, run_id=run_id, value=metadata)
+        await _write_bulk_metadata(
+            pool,
+            run_id=f"window_{config.seed}_{window_start_epoch}",
+            value=metadata,
+        )
 
         result: dict[str, Any] = {
             "run_id": run_id,
