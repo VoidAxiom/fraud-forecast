@@ -1424,3 +1424,169 @@ def test_generator_notify_fires() -> None:
 
     asyncio.run(_run())
 
+
+def test_live_rate_multiplier_preserved_across_report_boundary(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _StopMain(Exception):
+        pass
+
+    class _FakeAcquire:
+        async def __aenter__(self) -> object:
+            return object()
+
+        async def __aexit__(
+            self,
+            _exc_type: type[BaseException] | None,
+            _exc: BaseException | None,
+            _traceback: object,
+        ) -> None:
+            return None
+
+    class _FakePool:
+        def acquire(self) -> _FakeAcquire:
+            return _FakeAcquire()
+
+        async def close(self) -> None:
+            return None
+
+    class _FakeRedis:
+        async def close(self) -> None:
+            return None
+
+    class _FakeUserPicker:
+        def __init__(self, *_args: object, **_kwargs: object) -> None:
+            return None
+
+        async def refresh(self) -> None:
+            return None
+
+    async def _run() -> None:
+        fake_pool = _FakePool()
+        fake_redis = _FakeRedis()
+        runtime_rate_mock = AsyncMock(return_value=999.0)
+        original_sleep = asyncio.sleep
+        report_seen = False
+        sleep_calls = 0
+        seen_multipliers: list[float] = []
+
+        async def _sleep(_delay: float) -> None:
+            nonlocal sleep_calls
+            sleep_calls += 1
+            await original_sleep(0)
+            if report_seen:
+                raise _StopMain
+            if sleep_calls > 200:
+                raise AssertionError("throughput report block was not reached")
+
+        def _record_report(_message: str) -> None:
+            nonlocal report_seen
+            report_seen = True
+
+        def _current_rate(
+            *,
+            now: object,
+            multiplier: float,
+            day_multiplier_cache: object,
+        ) -> float:
+            del now, day_multiplier_cache
+            seen_multipliers.append(multiplier)
+            return 1000.0
+
+        monkeypatch.setenv("LIVE_RATE_MULTIPLIER", "2.0")
+        monkeypatch.setenv("ORDERS_PER_SECOND", "1")
+        config = load_config_from_env()
+
+        with ExitStack() as stack:
+            stack.enter_context(
+                patch("simulator.generator.load_config_from_env", return_value=config)
+            )
+            stack.enter_context(
+                patch(
+                    "simulator.generator.asyncpg.create_pool",
+                    new=AsyncMock(return_value=fake_pool),
+                )
+            )
+            stack.enter_context(
+                patch("simulator.generator.aioredis.from_url", return_value=fake_redis)
+            )
+            stack.enter_context(
+                patch(
+                    "simulator.generator.load_stores_by_city",
+                    new=AsyncMock(
+                        return_value={"London": [{"store_id": uuid.uuid4()}]},
+                    ),
+                )
+            )
+            stack.enter_context(
+                patch(
+                    "simulator.generator.load_store_hours",
+                    new=AsyncMock(return_value={}),
+                )
+            )
+            stack.enter_context(
+                patch(
+                    "simulator.generator.load_active_promos",
+                    new=AsyncMock(return_value=[]),
+                )
+            )
+            stack.enter_context(
+                patch("simulator.generator.WeightedUserPicker", new=_FakeUserPicker)
+            )
+            stack.enter_context(
+                patch(
+                    "simulator.generator.write_simulator_epoch",
+                    new=AsyncMock(return_value="epoch"),
+                )
+            )
+            stack.enter_context(
+                patch(
+                    "simulator.generator.init_collusive_stores",
+                    new=AsyncMock(return_value=None),
+                )
+            )
+            stack.enter_context(
+                patch(
+                    "simulator.generator.init_promo_abuse_rings",
+                    new=AsyncMock(return_value=None),
+                )
+            )
+            stack.enter_context(
+                patch(
+                    "simulator.generator.init_reseller_accounts",
+                    new=AsyncMock(return_value=None),
+                )
+            )
+            stack.enter_context(
+                patch(
+                    "simulator.generator.init_triangulation_accounts",
+                    new=AsyncMock(return_value=None),
+                )
+            )
+            stack.enter_context(
+                patch(
+                    "simulator.generator.create_one_order",
+                    new=AsyncMock(return_value=None),
+                )
+            )
+            stack.enter_context(
+                patch("simulator.generator._read_runtime_rate", new=runtime_rate_mock)
+            )
+            stack.enter_context(
+                patch("simulator.generator.current_rate", side_effect=_current_rate)
+            )
+            stack.enter_context(
+                patch("simulator.generator.logger.info", side_effect=_record_report)
+            )
+            stack.enter_context(
+                patch("simulator.generator.asyncio.sleep", side_effect=_sleep)
+            )
+
+            with pytest.raises(_StopMain):
+                await main()
+
+        assert report_seen is True
+        assert seen_multipliers[-1] == 2.0
+        runtime_rate_mock.assert_not_awaited()
+
+    asyncio.run(_run())
