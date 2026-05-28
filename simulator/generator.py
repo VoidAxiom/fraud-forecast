@@ -1706,13 +1706,15 @@ async def main() -> None:
                 n=10,
             )
         init_promo_abuse_rings(rng)
-        init_reseller_accounts(
-            rng,
-            store_id_pool=sorted(
-                [s["store_id"] for stores in stores_by_city.values() for s in stores],
-                key=str,
-            ),
-        )
+        async with pool.acquire() as _reseller_conn:
+            await init_reseller_accounts(
+                rng,
+                _reseller_conn,
+                store_id_pool=sorted(
+                    [s["store_id"] for stores in stores_by_city.values() for s in stores],
+                    key=str,
+                ),
+            )
         async with pool.acquire() as _tri_conn:
             await init_triangulation_accounts(rng, _tri_conn)
         rng_lock = asyncio.Lock()

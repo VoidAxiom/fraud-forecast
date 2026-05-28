@@ -3,10 +3,15 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import random
 import sys
+import unittest.mock
 from datetime import datetime
+from typing import Any
 from uuid import UUID
+
+import pytest
 
 if sys.version_info >= (3, 9):
     from zoneinfo import ZoneInfo
@@ -31,16 +36,120 @@ def _ctx(now: datetime | None = None, rng_seed: int = 99) -> FraudPatternContext
     )
 
 
-def test_reseller_init() -> None:
-    init_reseller_accounts(
-        rng=random.Random(42),
-        store_id_pool=[UUID(int=i + 1) for i in range(5)],
-        n=50,
+@pytest.fixture
+def mock_conn() -> unittest.mock.AsyncMock:
+    conn = unittest.mock.AsyncMock()
+    conn.fetch.return_value = []
+    conn.executemany.return_value = None
+    return conn
+
+
+def _fake_row(i: int) -> dict[str, Any]:
+    return {
+        "account_id": UUID(int=i + 1),
+        "reseller_address": {
+            "lat": 51.5,
+            "lon": -0.1,
+            "postcode": "E1 1AA",
+            "city": "London",
+        },
+        "delivery_address_uuid": UUID(int=i + 1001),
+        "device_uuid": UUID(int=i + 2001),
+        "preferred_store_ids": [UUID(int=i + 3001)],
+    }
+
+
+def _prime_empty_persistent_db(conn: unittest.mock.AsyncMock) -> None:
+    rows: list[dict[str, Any]] = []
+
+    async def _fetch(_query: str) -> list[dict[str, Any]]:
+        return list(rows)
+
+    async def _executemany(
+        _query: str,
+        values: list[tuple[UUID, str, UUID, UUID, list[UUID]]],
+    ) -> None:
+        for (
+            account_id,
+            reseller_address,
+            delivery_address_uuid,
+            device_uuid,
+            preferred_store_ids,
+        ) in values:
+            rows.append(
+                {
+                    "account_id": account_id,
+                    "reseller_address": json.loads(reseller_address),
+                    "delivery_address_uuid": delivery_address_uuid,
+                    "device_uuid": device_uuid,
+                    "preferred_store_ids": list(preferred_store_ids),
+                }
+            )
+
+    conn.fetch.side_effect = _fetch
+    conn.executemany.side_effect = _executemany
+
+
+def test_reseller_init(mock_conn: unittest.mock.AsyncMock) -> None:
+    _prime_empty_persistent_db(mock_conn)
+    asyncio.run(
+        init_reseller_accounts(
+            rng=random.Random(42),
+            conn=mock_conn,
+            store_id_pool=[UUID(int=i + 1) for i in range(5)],
+            n=50,
+        )
     )
 
     assert len(RESELLER_ACCOUNTS) == 50
     account_ids = {account.account_id for account in RESELLER_ACCOUNTS}
     assert len(account_ids) == 50
+
+
+def test_init_idempotent_across_restarts(mock_conn: unittest.mock.AsyncMock) -> None:
+    rows_50 = [_fake_row(i) for i in range(50)]
+    mock_conn.fetch.return_value = rows_50
+
+    asyncio.run(
+        init_reseller_accounts(
+            rng=random.Random(42),
+            conn=mock_conn,
+            store_id_pool=[UUID(int=i + 1) for i in range(5)],
+            n=50,
+        )
+    )
+    first_account_ids = [account.account_id for account in RESELLER_ACCOUNTS]
+
+    asyncio.run(
+        init_reseller_accounts(
+            rng=random.Random(999),
+            conn=mock_conn,
+            store_id_pool=[UUID(int=i + 1) for i in range(5)],
+            n=50,
+        )
+    )
+    second_account_ids = [account.account_id for account in RESELLER_ACCOUNTS]
+
+    assert second_account_ids == first_account_ids
+    mock_conn.executemany.assert_not_called()
+
+
+def test_init_loads_existing_from_db(mock_conn: unittest.mock.AsyncMock) -> None:
+    rows_30 = [_fake_row(i) for i in range(30)]
+    rows_50 = [_fake_row(i) for i in range(50)]
+    mock_conn.fetch.side_effect = [rows_30, rows_50]
+
+    asyncio.run(
+        init_reseller_accounts(
+            rng=random.Random(42),
+            conn=mock_conn,
+            store_id_pool=[UUID(int=i + 1) for i in range(5)],
+            n=50,
+        )
+    )
+
+    assert len(RESELLER_ACCOUNTS) == 50
+    mock_conn.executemany.assert_called_once()
 
 
 def test_registered() -> None:
@@ -49,10 +158,14 @@ def test_registered() -> None:
     assert abs(weight - 0.05) < 1e-9
 
 
-def test_returns_ground_truth() -> None:
-    init_reseller_accounts(
-        rng=random.Random(42),
-        store_id_pool=[UUID(int=i + 1) for i in range(5)],
+def test_returns_ground_truth(mock_conn: unittest.mock.AsyncMock) -> None:
+    _prime_empty_persistent_db(mock_conn)
+    asyncio.run(
+        init_reseller_accounts(
+            rng=random.Random(42),
+            conn=mock_conn,
+            store_id_pool=[UUID(int=i + 1) for i in range(5)],
+        )
     )
 
     order_dict, gt = asyncio.run(generate_reseller_fraud(_ctx()))
@@ -68,10 +181,14 @@ def test_returns_ground_truth() -> None:
     assert isinstance(order_dict["store_id"], UUID)
 
 
-def test_bulk_cart() -> None:
-    init_reseller_accounts(
-        rng=random.Random(42),
-        store_id_pool=[UUID(int=i + 1) for i in range(5)],
+def test_bulk_cart(mock_conn: unittest.mock.AsyncMock) -> None:
+    _prime_empty_persistent_db(mock_conn)
+    asyncio.run(
+        init_reseller_accounts(
+            rng=random.Random(42),
+            conn=mock_conn,
+            store_id_pool=[UUID(int=i + 1) for i in range(5)],
+        )
     )
     rng: random.Random = random.Random(123)
     item_counts: list[int] = []
@@ -90,10 +207,14 @@ def test_bulk_cart() -> None:
     assert 16.0 <= mean_item_count <= 19.0
 
 
-def test_delivery_address_stable() -> None:
-    init_reseller_accounts(
-        rng=random.Random(42),
-        store_id_pool=[UUID(int=i + 1) for i in range(5)],
+def test_delivery_address_stable(mock_conn: unittest.mock.AsyncMock) -> None:
+    _prime_empty_persistent_db(mock_conn)
+    asyncio.run(
+        init_reseller_accounts(
+            rng=random.Random(42),
+            conn=mock_conn,
+            store_id_pool=[UUID(int=i + 1) for i in range(5)],
+        )
     )
 
     original_accounts = list(RESELLER_ACCOUNTS)
@@ -124,10 +245,14 @@ def test_delivery_address_stable() -> None:
         RESELLER_ACCOUNTS.extend(original_accounts)
 
 
-def test_value_scales_with_items() -> None:
-    init_reseller_accounts(
-        rng=random.Random(42),
-        store_id_pool=[UUID(int=i + 1) for i in range(5)],
+def test_value_scales_with_items(mock_conn: unittest.mock.AsyncMock) -> None:
+    _prime_empty_persistent_db(mock_conn)
+    asyncio.run(
+        init_reseller_accounts(
+            rng=random.Random(42),
+            conn=mock_conn,
+            store_id_pool=[UUID(int=i + 1) for i in range(5)],
+        )
     )
     ctx_time = datetime(2026, 1, 4, 9, 0, tzinfo=LONDON_TZ_TEST)
     low_totals: list[int] = []

@@ -708,3 +708,17 @@ class FraudTriangulationAccount(Base):  # type: ignore  # SQLAlchemy 1.4 declara
     created_at = Column(DateTime(timezone=True), nullable=False, server_default=text("NOW()"))
 
     __table_args__ = {"schema": "sim"}
+
+
+class FraudResellerAccount(Base):  # type: ignore  # SQLAlchemy 1.4 declarative_base() returns Any
+    __tablename__ = "fraud_reseller_accounts"
+
+    account_id = Column(UUID(as_uuid=True), primary_key=True)
+    reseller_address = Column(JSONB, nullable=False)
+    delivery_address_uuid = Column(UUID(as_uuid=True), nullable=False)
+    device_uuid = Column(UUID(as_uuid=True), nullable=False)
+    preferred_store_ids = Column(ARRAY(UUID(as_uuid=True)), nullable=False)
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=text("NOW()"))
+    epoch = Column(Integer, nullable=False, server_default=text("1"))
+
+    __table_args__ = {"schema": "sim"}
