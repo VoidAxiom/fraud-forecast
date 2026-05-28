@@ -20,7 +20,6 @@ from simulator.generator import (
     _apply_fraud_identity_overrides,
     _apply_fraud_order_attrs,
     _parse_fraud_rate,
-    _read_runtime_rate,
     _resolve_card_country,
     _select_order_type,
     apply_promo,
@@ -1425,26 +1424,3 @@ def test_generator_notify_fires() -> None:
 
     asyncio.run(_run())
 
-
-def test_generator_rate_runtime_override() -> None:
-    async def _run() -> None:
-        redis_conn = aioredis.from_url(REDIS_URL)
-        previous_rate = await redis_conn.get("simulator:rate_per_second")
-        try:
-            assert asyncio.iscoroutinefunction(main)
-            config = load_config_from_env()
-            await redis_conn.set("simulator:rate_per_second", "5")
-            assert await _read_runtime_rate(redis_conn, fallback=1) == 5
-            await redis_conn.delete("simulator:rate_per_second")
-            assert (
-                await _read_runtime_rate(redis_conn, fallback=config.orders_per_second)
-                == config.orders_per_second
-            )
-        finally:
-            if previous_rate is None:
-                await redis_conn.delete("simulator:rate_per_second")
-            else:
-                await redis_conn.set("simulator:rate_per_second", previous_rate)
-            await redis_conn.close()
-
-    asyncio.run(_run())

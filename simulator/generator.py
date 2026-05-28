@@ -1334,25 +1334,6 @@ async def notify_order_placed(conn: asyncpg.Connection, order_id: uuid.UUID) -> 
     await conn.execute("SELECT pg_notify('order_placed', $1)", str(order_id))
 
 
-async def _read_runtime_rate(
-    redis_conn: aioredis.Redis[Any],
-    fallback: int,
-) -> int:
-    raw = await redis_conn.get("simulator:rate_per_second")
-    if raw is None:
-        return fallback
-
-    if isinstance(raw, bytes):
-        raw = raw.decode()
-
-    try:
-        parsed = int(raw)
-    except (TypeError, ValueError):
-        return fallback
-
-    return parsed if parsed > 0 else fallback
-
-
 def _apply_fraud_order_attrs(
     snapshot: dict[str, Any],
     fraud_dict: dict[str, Any],
