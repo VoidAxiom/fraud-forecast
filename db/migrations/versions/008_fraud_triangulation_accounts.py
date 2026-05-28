@@ -19,7 +19,7 @@ def upgrade() -> None:
         """
     )
     op.execute(
-        "GRANT SELECT, INSERT, UPDATE ON sim.fraud_triangulation_accounts TO simulator_user"
+        "GRANT SELECT, INSERT, UPDATE, DELETE ON sim.fraud_triangulation_accounts TO simulator_user"
     )
     op.execute("GRANT SELECT ON sim.fraud_triangulation_accounts TO training_user")
 
