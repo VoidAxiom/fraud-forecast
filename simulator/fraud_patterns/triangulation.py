@@ -11,11 +11,14 @@ from __future__ import annotations
 import math
 import random
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
 from simulator.fraud_patterns import GroundTruth, register
 from simulator.fraud_patterns.stolen_card import FraudPatternContext
+
+if TYPE_CHECKING:
+    import asyncpg
 
 # Pool of triangulation fraudster accounts (stateful across invocations).
 TRIANGULATION_ACCOUNTS: list[TriangulationAccount] = []
@@ -97,18 +100,91 @@ def _new_delivery_address(rng: random.Random) -> UUID:
     return _uuid_from_rng(rng)
 
 
-def init_accounts(rng: random.Random, n: int = 30) -> None:
+async def init_accounts(rng: random.Random, conn: asyncpg.Connection, n: int = 30) -> None:
     """Initialize the pool of triangulation fraudster accounts.
 
     Must be called at simulator startup (and in tests) before dispatch.
     P3-B no-default convention: no implicit fallback.
     """
-    TRIANGULATION_ACCOUNTS.clear()
-    for _ in range(n):
-        TRIANGULATION_ACCOUNTS.append(
+    count: int = await conn.fetchval(
+        "SELECT count(*) FROM sim.fraud_triangulation_accounts"
+    )
+    if count == n:
+        rows = await conn.fetch(
+            "SELECT account_id, device_id FROM sim.fraud_triangulation_accounts ORDER BY account_id"
+        )
+        TRIANGULATION_ACCOUNTS.clear()
+        for row in rows:
+            TRIANGULATION_ACCOUNTS.append(
+                TriangulationAccount(
+                    account_id=row["account_id"],
+                    device_id=row["device_id"],
+                )
+            )
+        for _ in range(2 * n):
+            rng.getrandbits(128)
+        return
+
+    if count > n:
+        rows = await conn.fetch(
+            "SELECT account_id, device_id FROM sim.fraud_triangulation_accounts ORDER BY account_id LIMIT $1",
+            n,
+        )
+        TRIANGULATION_ACCOUNTS.clear()
+        for row in rows:
+            TRIANGULATION_ACCOUNTS.append(
+                TriangulationAccount(
+                    account_id=row["account_id"],
+                    device_id=row["device_id"],
+                )
+            )
+        for _ in range(2 * n):
+            rng.getrandbits(128)
+        return
+
+    if count == 0:
+        new_accounts = [
             TriangulationAccount(
                 account_id=_uuid_from_rng(rng),
                 device_id=_uuid_from_rng(rng),
+            )
+            for _ in range(n)
+        ]
+        await conn.executemany(
+            "INSERT INTO sim.fraud_triangulation_accounts (account_id, device_id) VALUES ($1, $2)",
+            [(acc.account_id, acc.device_id) for acc in new_accounts],
+        )
+        new_accounts.sort(key=lambda acc: acc.account_id)
+        TRIANGULATION_ACCOUNTS.clear()
+        TRIANGULATION_ACCOUNTS.extend(new_accounts)
+        return
+
+    rows = await conn.fetch(
+        "SELECT account_id, device_id FROM sim.fraud_triangulation_accounts ORDER BY account_id"
+    )
+    for _ in rows:
+        rng.getrandbits(128)
+        rng.getrandbits(128)
+    new_accounts = [
+        TriangulationAccount(
+            account_id=_uuid_from_rng(rng),
+            device_id=_uuid_from_rng(rng),
+        )
+        for _ in range(n - count)
+    ]
+    await conn.executemany(
+        "INSERT INTO sim.fraud_triangulation_accounts (account_id, device_id) VALUES ($1, $2)",
+        [(acc.account_id, acc.device_id) for acc in new_accounts],
+    )
+    rows = await conn.fetch(
+        "SELECT account_id, device_id FROM sim.fraud_triangulation_accounts ORDER BY account_id"
+    )
+    TRIANGULATION_ACCOUNTS.clear()
+    for row in rows:
+        TRIANGULATION_ACCOUNTS.append(
+            TriangulationAccount(
+                account_id=row["account_id"],
+                device_id=row["device_id"],
             )
         )
 
@@ -124,7 +200,7 @@ async def generate_triangulation_fraud(
     """
     if not TRIANGULATION_ACCOUNTS:
         raise RuntimeError(
-            "TRIANGULATION_ACCOUNTS is empty — call init_accounts(rng) at simulator startup"
+            "TRIANGULATION_ACCOUNTS is empty — call init_accounts(rng, conn) at simulator startup"
         )
 
     # Pick a fraudster account
