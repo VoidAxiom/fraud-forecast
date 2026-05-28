@@ -1337,6 +1337,22 @@ async def notify_order_placed(conn: asyncpg.Connection, order_id: uuid.UUID) -> 
     await conn.execute("SELECT pg_notify('order_placed', $1)", str(order_id))
 
 
+async def _read_runtime_rate(
+    redis_conn: aioredis.Redis[Any],
+    fallback: int,
+) -> int:
+    raw = await redis_conn.get("simulator:rate_per_second")
+    if raw is None:
+        return fallback
+    if isinstance(raw, bytes):
+        raw = raw.decode()
+    try:
+        parsed = int(raw)
+    except (TypeError, ValueError):
+        return fallback
+    return parsed if parsed > 0 else fallback
+
+
 def _apply_fraud_order_attrs(
     snapshot: dict[str, Any],
     fraud_dict: dict[str, Any],
@@ -1830,26 +1846,26 @@ async def main() -> None:
         async def _run_order(order_rng: random.Random, start: float) -> None:
             nonlocal orders_since_report, successful_orders, window_errors, window_create_ms
 
-            async with semaphore:
-                try:
-                    await create_one_order(
-                        pool=pool,
-                        user_picker=user_picker,
-                        stores_by_city=stores_by_city,
-                        store_hours_by_store_id=store_hours_by_store_id,
-                        promos=promos,
-                        rng=order_rng,
-                        scoring_enabled=config.scoring_enabled,
-                        now=datetime.now(tz=LONDON_TZ),
-                    )
-                except Exception:
-                    logger.exception("order_gen_failed")
-                    window_errors += 1
-                else:
-                    successful_orders += 1
-                    orders_since_report += 1
-                finally:
-                    window_create_ms += (time.perf_counter() - start) * 1000
+            try:
+                await create_one_order(
+                    pool=pool,
+                    user_picker=user_picker,
+                    stores_by_city=stores_by_city,
+                    store_hours_by_store_id=store_hours_by_store_id,
+                    promos=promos,
+                    rng=order_rng,
+                    scoring_enabled=config.scoring_enabled,
+                    now=datetime.now(tz=LONDON_TZ),
+                )
+            except Exception:
+                logger.exception("order_gen_failed")
+                window_errors += 1
+            else:
+                successful_orders += 1
+                orders_since_report += 1
+            finally:
+                window_create_ms += (time.perf_counter() - start) * 1000
+                semaphore.release()
 
         while True:
             now = datetime.now(tz=LONDON_TZ)
@@ -1874,6 +1890,7 @@ async def main() -> None:
             order_rng = random.Random(rng.randint(0, 2**63 - 1))
             start = time.perf_counter()
 
+            await semaphore.acquire()
             asyncio.create_task(_run_order(order_rng, start))
 
             if orders_since_report >= 100:
@@ -1899,6 +1916,9 @@ async def main() -> None:
                         }
                     )
                 )
+                rate_multiplier = (
+                    await _read_runtime_rate(redis_conn, config.orders_per_second)
+                ) / _MEAN_HOURLY_RATE
                 orders_since_report = 0
                 successful_orders = 0
                 window_errors = 0
