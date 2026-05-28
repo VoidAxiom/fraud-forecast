@@ -158,7 +158,6 @@ thresholds = {
 }
 
 failures = []
-recalls_present = 0
 for key, threshold in thresholds.items():
     value = metrics.get(key)
     if value is None:
@@ -169,13 +168,8 @@ for key, threshold in thresholds.items():
     except (TypeError, ValueError):
         failures.append(f"{key} has non-numeric value {value!r} (target >= {threshold:.2f})")
         continue
-    if key.startswith("recall_"):
-        recalls_present += 1
     if numeric_value < threshold:
         failures.append(f"{key} {numeric_value:.6f} < {threshold:.2f}")
-
-if recalls_present == 0 and any(key.startswith("recall_") for key in thresholds):
-    failures.append("No per-category recall metrics found in metrics.json — evaluate.py may have been run against TFRecord test data lacking fraud_category (transformed schema). Per-category recall acceptance cannot be verified.")
 
 if failures:
     print("Phase 5 acceptance threshold failures:")
