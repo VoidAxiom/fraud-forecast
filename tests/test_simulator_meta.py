@@ -9,14 +9,23 @@ import asyncpg
 from simulator.generator import write_simulator_epoch
 
 
+DATABASE_URL = os.environ.get(
+    "DATABASE_URL",
+    "postgresql://app:app_dev_password@postgres:5432/fraud_platform",
+)
+
 DATABASE_URL_SIMULATOR = os.environ.get(
     "DATABASE_URL_SIMULATOR",
     "postgresql://simulator_user:simulator_dev_password@postgres:5432/fraud_platform",
 )
 
 
-async def _cleanup(conn: asyncpg.Connection) -> None:
-    await conn.execute("DELETE FROM sim.simulator_meta WHERE key LIKE 'simulator_epoch_%'")
+async def _cleanup_admin() -> None:
+    conn = await asyncpg.connect(DATABASE_URL)
+    try:
+        await conn.execute("DELETE FROM sim.simulator_meta WHERE key LIKE 'simulator_epoch_%'")
+    finally:
+        await conn.close()
 
 
 async def _write_epoch(pool: asyncpg.Pool) -> str:
@@ -28,7 +37,7 @@ def test_epoch_increments() -> None:
     async def _run() -> None:
         conn = await asyncpg.connect(DATABASE_URL_SIMULATOR)
         try:
-            await _cleanup(conn)
+            await _cleanup_admin()
 
             key1 = await write_simulator_epoch(conn)
             key2 = await write_simulator_epoch(conn)
@@ -47,7 +56,7 @@ def test_epoch_increments() -> None:
             assert json.loads(row1["value"])["epoch_num"] == 1
             assert json.loads(row2["value"])["epoch_num"] == 2
         finally:
-            await _cleanup(conn)
+            await _cleanup_admin()
             await conn.close()
 
     asyncio.run(_run())
@@ -57,7 +66,7 @@ def test_epoch_value_shape() -> None:
     async def _run() -> None:
         conn = await asyncpg.connect(DATABASE_URL_SIMULATOR)
         try:
-            await _cleanup(conn)
+            await _cleanup_admin()
 
             key = await write_simulator_epoch(conn)
             row = await conn.fetchrow(
@@ -72,7 +81,7 @@ def test_epoch_value_shape() -> None:
             assert "rng_seed" in value
             assert "epoch_num" in value
         finally:
-            await _cleanup(conn)
+            await _cleanup_admin()
             await conn.close()
 
     asyncio.run(_run())
@@ -82,7 +91,7 @@ def test_concurrent_no_pk_collision() -> None:
     async def _run() -> None:
         pool = await asyncpg.create_pool(DATABASE_URL_SIMULATOR, min_size=5, max_size=10)
         try:
-            await pool.execute("DELETE FROM sim.simulator_meta WHERE key LIKE 'simulator_epoch_%'")
+            await _cleanup_admin()
 
             await asyncio.gather(*(_write_epoch(pool) for _ in range(5)))
             count = await pool.fetchval(
@@ -91,7 +100,7 @@ def test_concurrent_no_pk_collision() -> None:
 
             assert count == 5
         finally:
-            await pool.execute("DELETE FROM sim.simulator_meta WHERE key LIKE 'simulator_epoch_%'")
+            await _cleanup_admin()
             await pool.close()
 
     asyncio.run(_run())
