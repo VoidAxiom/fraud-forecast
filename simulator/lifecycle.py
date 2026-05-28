@@ -10,7 +10,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any, Mapping
 
-import asyncpg
+import asyncpg  # type: ignore[import]  # asyncpg 0.28 lacks type stubs in tool env.
 
 logger = logging.getLogger(__name__)
 
@@ -477,6 +477,52 @@ async def _safe_advance_one_order(
             )
         )
         return False
+
+
+async def advance_lifecycle(
+    order_id: uuid.UUID,
+    conn: asyncpg.Connection,
+    *,
+    now: datetime,
+) -> None:
+    row = await conn.fetchrow(
+        """
+        SELECT *
+        FROM orders
+        WHERE order_id = $1
+        """,
+        order_id,
+    )
+    if row is None:
+        return
+
+    order: dict[str, Any] = dict(row)
+    last_state_at = await conn.fetchval(
+        """
+        SELECT MAX(created_at)
+        FROM order_events
+        WHERE order_id = $1
+        """,
+        order_id,
+    )
+    if not isinstance(last_state_at, datetime):
+        placed_at = order.get("placed_at")
+        last_state_at = placed_at if isinstance(placed_at, datetime) else now
+
+    store_avg_prep_time_min_by_store_id: dict[uuid.UUID, float] = {}
+    store_id = _coerce_uuid(order.get("store_id"))
+    if store_id is not None:
+        store_avg_prep_time_min_by_store_id = await _fetch_store_prep_times(conn, [store_id])
+
+    await advance_order(
+        conn,
+        order,
+        last_state_at=last_state_at,
+        rng=_seeded_rng(order_id, "advance_lifecycle"),
+        simulation_time_compression=SIMULATION_TIME_COMPRESSION,
+        store_avg_prep_time_min_by_store_id=store_avg_prep_time_min_by_store_id,
+        now=now,
+    )
 
 
 async def run_once(

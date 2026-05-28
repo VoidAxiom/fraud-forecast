@@ -10,7 +10,7 @@ import sys
 import uuid
 from typing import Any
 
-import asyncpg  # type: ignore[import]
+import asyncpg  # type: ignore[import]  # asyncpg 0.28 lacks type stubs in tool env.
 
 LOGGER: logging.Logger = logging.getLogger(__name__)
 DATABASE_URL: str | None = os.environ.get("DATABASE_URL")
@@ -35,6 +35,30 @@ UPDATE orders_archive
 SET chargeback_received_at = NOW(),
     chargeback_amount_pence = $3,
     fraud_outcome = $4
+WHERE order_id = $1
+  AND placed_at = $2
+"""
+
+_CHARGEBACK_INSERT_AT_SQL = """
+INSERT INTO chargebacks (order_id, order_placed_at, reason_code, reason_category, amount_pence, received_at)
+VALUES ($1, $2, 'CB001', $3, $4, $5)
+ON CONFLICT DO NOTHING
+"""
+
+_CHARGEBACK_ORDERS_UPDATE_AT_SQL = """
+UPDATE orders
+SET chargeback_received_at = $3,
+    chargeback_amount_pence = $4,
+    fraud_outcome = $5
+WHERE order_id = $1
+  AND placed_at = $2
+"""
+
+_CHARGEBACK_ARCHIVE_UPDATE_AT_SQL = """
+UPDATE orders_archive
+SET chargeback_received_at = $3,
+    chargeback_amount_pence = $4,
+    fraud_outcome = $5
 WHERE order_id = $1
   AND placed_at = $2
 """
@@ -110,9 +134,9 @@ def _chargeback_probability(is_fraud: bool, fraud_category: str | None) -> float
 
 def _days_to_chargeback_threshold(rng: random.Random, is_fraud: bool) -> float:
     if is_fraud:
-        mu = math.log(14) - 0.7 ** 2 / 2
+        mu = math.log(14) - 0.7**2 / 2
         return min(rng.lognormvariate(mu, 0.7), 59.0)
-    mu = math.log(30) - 0.8 ** 2 / 2
+    mu = math.log(30) - 0.8**2 / 2
     return min(rng.lognormvariate(mu, 0.8), 59.0)
 
 
@@ -132,6 +156,112 @@ def _refund_due_at_hours(order_id: uuid.UUID) -> float:
 
 def _refund_age_allowed(delivered_age_hours: float) -> bool:
     return delivered_age_hours <= 120.0
+
+
+async def maybe_emit_chargeback(
+    order_id: uuid.UUID,
+    conn: asyncpg.Connection,
+    *,
+    now: datetime.datetime,
+) -> None:
+    row = await conn.fetchrow(
+        """
+        SELECT * FROM (
+            SELECT
+              o.order_id,
+              o.placed_at AS order_placed_at,
+              o.delivered_at,
+              o.total_pence,
+              gt.is_fraud,
+              gt.fraud_category
+            FROM orders o
+            JOIN sim.simulator_ground_truth gt USING (order_id)
+            WHERE o.order_id = $1
+              AND o.delivered_at IS NOT NULL
+              AND o.chargeback_received_at IS NULL
+              AND o.fraud_outcome IS NULL
+              AND NOT EXISTS (SELECT 1 FROM chargebacks cb WHERE cb.order_id = o.order_id)
+            UNION ALL
+            SELECT
+              o.order_id,
+              o.placed_at AS order_placed_at,
+              o.delivered_at,
+              o.total_pence,
+              gt.is_fraud,
+              gt.fraud_category
+            FROM orders_archive o
+            JOIN sim.simulator_ground_truth gt USING (order_id)
+            WHERE o.order_id = $1
+              AND o.delivered_at IS NOT NULL
+              AND o.chargeback_received_at IS NULL
+              AND o.fraud_outcome IS NULL
+              AND NOT EXISTS (SELECT 1 FROM chargebacks cb WHERE cb.order_id = o.order_id)
+        ) _candidate
+        LIMIT 1
+        """,
+        order_id,
+    )
+    if row is None:
+        return
+
+    candidate_order_id = _coerce_order_id(row["order_id"])
+    order_placed_at = row["order_placed_at"]
+    delivered_at = row["delivered_at"]
+    if not isinstance(delivered_at, datetime.datetime):
+        return
+
+    reference_now = now
+    if reference_now.tzinfo is None:
+        reference_now = reference_now.replace(tzinfo=datetime.timezone.utc)
+    if delivered_at.tzinfo is None:
+        delivered_at = delivered_at.replace(tzinfo=datetime.timezone.utc)
+
+    is_fraud = bool(row["is_fraud"])
+    raw_fraud_category = row["fraud_category"]
+    fraud_category = str(raw_fraud_category) if raw_fraud_category is not None else None
+    total_pence = int(row["total_pence"])
+
+    rng = random.Random(int(candidate_order_id.bytes[:8].hex(), 16))
+    days_to_chargeback = _days_to_chargeback_threshold(rng, is_fraud)
+    delivered_age_days = (reference_now - delivered_at).total_seconds() / 86400
+    if not _chargeback_age_allowed(delivered_age_days):
+        return
+
+    chargeback_probability = _chargeback_probability(is_fraud, fraud_category)
+    should_chargeback_now = (delivered_age_days >= days_to_chargeback) and (
+        rng.random() < chargeback_probability
+    )
+    if not should_chargeback_now:
+        return
+
+    reason_category = "FRAUD" if is_fraud else "OTHER"
+    fraud_outcome = "CHARGEBACK" if is_fraud else "LEGIT"
+
+    async with conn.transaction():
+        await conn.execute(
+            _CHARGEBACK_INSERT_AT_SQL,
+            candidate_order_id,
+            order_placed_at,
+            reason_category,
+            total_pence,
+            reference_now,
+        )
+        await conn.execute(
+            _CHARGEBACK_ORDERS_UPDATE_AT_SQL,
+            candidate_order_id,
+            order_placed_at,
+            reference_now,
+            total_pence,
+            fraud_outcome,
+        )
+        await conn.execute(
+            _CHARGEBACK_ARCHIVE_UPDATE_AT_SQL,
+            candidate_order_id,
+            order_placed_at,
+            reference_now,
+            total_pence,
+            fraud_outcome,
+        )
 
 
 async def generate_chargebacks(pool: Any) -> None:
@@ -195,9 +325,9 @@ async def generate_chargebacks(pool: Any) -> None:
                 if not _chargeback_age_allowed(delivered_age_days):
                     continue
                 chargeback_probability = _chargeback_probability(is_fraud, fraud_category)
-                should_chargeback_now = (
-                    delivered_age_days >= days_to_chargeback
-                ) and (rng.random() < chargeback_probability)
+                should_chargeback_now = (delivered_age_days >= days_to_chargeback) and (
+                    rng.random() < chargeback_probability
+                )
 
                 if not should_chargeback_now:
                     continue

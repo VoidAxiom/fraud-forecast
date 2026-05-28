@@ -4,6 +4,7 @@ import datetime as dt
 import json
 import random
 import uuid
+from unittest.mock import AsyncMock, patch
 
 import asyncpg
 import pytest
@@ -13,6 +14,7 @@ from simulator.lifecycle import (
     _coerce_uuid,
     _compute_transition,
     _seeded_rng,
+    advance_lifecycle,
     advance_order,
     SIMULATION_TIME_COMPRESSION,
 )
@@ -147,6 +149,44 @@ def test_in_transit_uses_deterministic_distance_factor_per_order() -> None:
     )
     assert status == "DELIVERED"
     assert reason is None
+
+
+@pytest.mark.asyncio
+async def test_advance_lifecycle_uses_now_param() -> None:
+    order_id = uuid.UUID(int=123)
+    placed_at = dt.datetime(2025, 1, 7, 12, 0, tzinfo=dt.timezone.utc)
+    last_state_at = placed_at - dt.timedelta(minutes=1)
+    now = placed_at + dt.timedelta(minutes=10)
+
+    class _FakeConn:
+        async def fetchrow(self, _query: str, *args: object) -> dict[str, object] | None:
+            assert args == (order_id,)
+            return {
+                "order_id": order_id,
+                "placed_at": placed_at,
+                "order_status": "PLACED",
+                "order_type": "PICKUP",
+                "store_id": None,
+                "store_city": "London",
+                "delivery_distance_km": None,
+                "driver_id": None,
+            }
+
+        async def fetchval(self, _query: str, *args: object) -> dt.datetime:
+            assert args == (order_id,)
+            return last_state_at
+
+    advance_order_mock = AsyncMock(return_value=False)
+    with patch("simulator.lifecycle.advance_order", advance_order_mock):
+        await advance_lifecycle(order_id, _FakeConn(), now=now)
+
+    advance_order_mock.assert_awaited_once()
+    assert advance_order_mock.await_args.kwargs["last_state_at"] == last_state_at
+    assert advance_order_mock.await_args.kwargs["now"] == now
+    assert (
+        advance_order_mock.await_args.kwargs["simulation_time_compression"]
+        == SIMULATION_TIME_COMPRESSION
+    )
 
 
 @pytest.mark.asyncio
