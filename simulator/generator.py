@@ -175,30 +175,32 @@ def load_config_from_env() -> GeneratorConfig:
 
 async def write_simulator_epoch(conn: asyncpg.Connection) -> str:
     """Insert a startup epoch row. Returns the key inserted."""
-    epoch_raw = await conn.fetchval(
-        """
-        SELECT coalesce(max((value->>'epoch_num')::int), 0) + 1
-        FROM sim.simulator_meta WHERE key LIKE 'simulator_epoch_%'
-        """,
-    )
-    epoch_num = int(epoch_raw)
-    key = f"simulator_epoch_{epoch_num:06d}_{uuid.uuid4().hex[:8]}"
-    value = {
-        "started_at": datetime.now(tz=LONDON_TZ).isoformat(),
-        "git_commit": os.environ.get("GIT_COMMIT", "unknown"),
-        "rng_seed": 42,
-        "epoch_num": epoch_num,
-    }
+    async with conn.transaction():
+        await conn.execute("SELECT pg_advisory_xact_lock(1234567890)")
+        epoch_raw = await conn.fetchval(
+            """
+            SELECT coalesce(max((value->>'epoch_num')::int), 0) + 1
+            FROM sim.simulator_meta WHERE key LIKE 'simulator_epoch_%'
+            """,
+        )
+        epoch_num = int(epoch_raw)
+        key = f"simulator_epoch_{epoch_num:06d}_{uuid.uuid4().hex[:8]}"
+        value = {
+            "started_at": datetime.now(tz=LONDON_TZ).isoformat(),
+            "git_commit": os.environ.get("GIT_COMMIT", "unknown"),
+            "rng_seed": 42,
+            "epoch_num": epoch_num,
+        }
 
-    await conn.execute(
-        """
-        INSERT INTO sim.simulator_meta (key, value)
-        VALUES ($1, $2::jsonb)
-        ON CONFLICT (key) DO NOTHING
-        """,
-        key,
-        json.dumps(value),
-    )
+        await conn.execute(
+            """
+            INSERT INTO sim.simulator_meta (key, value)
+            VALUES ($1, $2::jsonb)
+            ON CONFLICT (key) DO NOTHING
+            """,
+            key,
+            json.dumps(value),
+        )
     return key
 
 
