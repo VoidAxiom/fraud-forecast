@@ -32,11 +32,11 @@ COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-fraud-forecast}"
 BULK_RATE_MULTIPLIER="${BULK_RATE_MULTIPLIER:-0.05}"
 export COMPOSE_PROJECT_NAME
 
-restart_feature_aggregator() {
+restart_stopped_services() {
   local status=$?
 
-  echo "[bulk-generate] restarting feature_aggregator..."
-  docker compose start feature_aggregator 2>/dev/null || true
+  echo "[bulk-generate] restarting stopped services..."
+  docker compose start feature_aggregator simulator lifecycle_daemon chargebacks_daemon 2>/dev/null || true
 
   if [ "$status" -eq 0 ]; then
     echo "[bulk-generate] completed successfully."
@@ -47,14 +47,14 @@ restart_feature_aggregator() {
   exit "$status"
 }
 
-trap restart_feature_aggregator EXIT
+trap restart_stopped_services EXIT
 
 cd "$REPO_ROOT"
 
 echo "[bulk-generate] starting bulk generation."
 echo "[bulk-generate] COMPOSE_PROJECT_NAME=$COMPOSE_PROJECT_NAME BULK_RATE_MULTIPLIER=$BULK_RATE_MULTIPLIER"
-echo "[bulk-generate] stopping feature_aggregator..."
-docker compose stop feature_aggregator
+echo "[bulk-generate] stopping conflicting services (feature_aggregator simulator lifecycle_daemon chargebacks_daemon)..."
+docker compose stop feature_aggregator simulator lifecycle_daemon chargebacks_daemon 2>/dev/null || true
 
 echo "[bulk-generate] running simulator.bulk_generate; final output line is summary JSON."
 docker compose run --rm \

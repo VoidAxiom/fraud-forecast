@@ -144,6 +144,34 @@ def _chargeback_age_allowed(delivered_age_days: float) -> bool:
     return delivered_age_days <= 60.0
 
 
+def bulk_chargeback_received_at(
+    order_id: uuid.UUID,
+    delivered_at: datetime.datetime,
+    is_fraud: bool,
+    fraud_category: str | None,
+    window_end: datetime.datetime,
+) -> datetime.datetime | None:
+    """Return the deterministic chargeback receive time for a bulk order.
+
+    Returns None if this order should not receive a chargeback (probability
+    check failed or age exceeded limit). The receive time is
+    delivered_at + days_to_chargeback, capped at window_end. Uses the same RNG
+    seed as maybe_emit_chargeback so results are consistent.
+    """
+    rng = random.Random(int(order_id.bytes[:8].hex(), 16))
+    days_to_chargeback = _days_to_chargeback_threshold(rng, is_fraud)
+    chargeback_at = delivered_at + datetime.timedelta(days=days_to_chargeback)
+    if chargeback_at > window_end:
+        return None
+    delivered_age_days = (window_end - delivered_at).total_seconds() / 86400
+    if not _chargeback_age_allowed(delivered_age_days):
+        return None
+    chargeback_probability = _chargeback_probability(is_fraud, fraud_category)
+    if rng.random() >= chargeback_probability:
+        return None
+    return min(chargeback_at, window_end)
+
+
 def _refund_due_at_hours(order_id: uuid.UUID) -> float:
     """Deterministic 0-5d refund delay (in hours) sampled per order_id.
 

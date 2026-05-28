@@ -33,7 +33,7 @@ from typing import Any, Optional
 import asyncpg  # type: ignore[import]  # asyncpg 0.28 lacks type stubs in the tool env.
 import redis.asyncio as aioredis
 
-from simulator.chargebacks import maybe_emit_chargeback
+from simulator.chargebacks import bulk_chargeback_received_at, maybe_emit_chargeback
 from simulator.fraud_patterns.collusive_merchant import init_collusive_stores
 from simulator.fraud_patterns.promo_abuse import init_rings_from_db as init_promo_abuse_rings
 from simulator.fraud_patterns.reseller import init_reseller_accounts
@@ -299,6 +299,24 @@ async def bulk_generate(
             )
             await conn.execute(
                 """
+                DELETE FROM refunds
+                WHERE order_id IN (
+                    SELECT order_id
+                    FROM orders
+                    WHERE placed_at >= $1
+                      AND placed_at < $2
+                    UNION ALL
+                    SELECT order_id
+                    FROM orders_archive
+                    WHERE placed_at >= $1
+                      AND placed_at < $2
+                )
+                """,
+                window_start,
+                window_end,
+            )
+            await conn.execute(
+                """
                 DELETE FROM orders
                 WHERE placed_at >= $1
                   AND placed_at < $2
@@ -378,7 +396,34 @@ async def bulk_generate(
                     if status_before in _TERMINAL_STATES:
                         break
                     await advance_lifecycle(order_id, conn, now=lifecycle_now)
-                await maybe_emit_chargeback(order_id, conn, now=window_end)
+                order_row = await conn.fetchrow(
+                    """
+                    SELECT o.delivered_at, gt.is_fraud, gt.fraud_category
+                    FROM (
+                        SELECT delivered_at FROM orders WHERE order_id = $1
+                        UNION ALL
+                        SELECT delivered_at FROM orders_archive WHERE order_id = $1
+                    ) o,
+                    sim.simulator_ground_truth gt
+                    WHERE gt.order_id = $1
+                    LIMIT 1
+                    """,
+                    order_id,
+                )
+                if order_row is not None and order_row["delivered_at"] is not None:
+                    cb_time = bulk_chargeback_received_at(
+                        order_id=order_id,
+                        delivered_at=order_row["delivered_at"],
+                        is_fraud=bool(order_row["is_fraud"]),
+                        fraud_category=(
+                            str(order_row["fraud_category"])
+                            if order_row["fraud_category"]
+                            else None
+                        ),
+                        window_end=window_end,
+                    )
+                    if cb_time is not None:
+                        await maybe_emit_chargeback(order_id, conn, now=cb_time)
 
             processed += 1
             if processed % 1000 == 0:
