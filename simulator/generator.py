@@ -1827,8 +1827,11 @@ async def main() -> None:
 
         while True:
             now = datetime.now(tz=LONDON_TZ)
+            now_for_rate = (
+                datetime(2024, 5, 10, 19, 0, 0, tzinfo=LONDON_TZ) if FORCE_PEAK else now
+            )
             rate = current_rate(
-                now=now,
+                now=now_for_rate,
                 multiplier=rate_multiplier,
                 day_multiplier_cache=day_multiplier_cache,
             )
