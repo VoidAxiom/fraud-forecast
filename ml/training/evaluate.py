@@ -20,6 +20,7 @@ os.environ.setdefault(
 
 import matplotlib
 import numpy as np
+import xgboost as xgb
 from sklearn.calibration import calibration_curve
 from sklearn.metrics import (
     average_precision_score,
@@ -278,9 +279,7 @@ def evaluate_ensemble(
     xgb_flat = _as_1d_array(xgb_scores, np.float64)
     dnn_flat = _as_1d_array(dnn_scores, np.float64)
     if len(xgb_flat) != len(dnn_flat):
-        raise ValueError(
-            f"xgb_scores length {len(xgb_flat)} != dnn_scores length {len(dnn_flat)}"
-        )
+        raise ValueError(f"xgb_scores length {len(xgb_flat)} != dnn_scores length {len(dnn_flat)}")
     ensemble_scores = weights[0] * xgb_flat + weights[1] * dnn_flat
     return compute_metrics(y_test, ensemble_scores)
 
@@ -319,13 +318,24 @@ def main() -> None:
     parser.add_argument("--reports-dir", default="ml/training/reports")
     args = parser.parse_args()
 
-    with np.load(str(args.test_data_path), allow_pickle=False) as test_data_file:
-        y_true = np.asarray(test_data_file["y_true"])
-        y_pred = np.asarray(test_data_file["y_pred"])
-        if "categories" in test_data_file.files:
-            categories = np.asarray(test_data_file["categories"])
-        else:
-            categories = np.full(_as_1d_array(y_true, np.int64).shape, "", dtype=str)
+    test_data_path = str(args.test_data_path)
+    if test_data_path.endswith(".npz"):
+        with np.load(test_data_path, allow_pickle=False) as test_data_file:
+            y_true = np.asarray(test_data_file["y_true"])
+            y_pred = np.asarray(test_data_file["y_pred"])
+            if "categories" in test_data_file.files:
+                categories = np.asarray(test_data_file["categories"])
+            else:
+                categories = np.full(_as_1d_array(y_true, np.int64).shape, "", dtype=str)
+    else:
+        from ml.training.train_xgboost import FEATURE_NAMES, tfrecords_to_numpy
+
+        x_test, y_test = tfrecords_to_numpy(test_data_path)
+        y_true = y_test
+        model = xgb.Booster()
+        model.load_model(str(args.model_path))
+        y_pred = model.predict(xgb.DMatrix(x_test, feature_names=list(FEATURE_NAMES)))
+        categories = np.full(y_true.shape, "", dtype=str)
 
     metrics = evaluate(
         str(args.model_path),
