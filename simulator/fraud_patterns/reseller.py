@@ -136,16 +136,17 @@ async def init_reseller_accounts(
     RESELLER_STORE_POOL.clear()
     RESELLER_STORE_POOL.extend(store_id_pool)
 
+    # Always generate exactly n accounts so the shared simulator RNG advances
+    # identically on cold starts, partial warm starts, and full warm starts.
+    all_accounts = [_create_account(rng, store_id_pool) for _ in range(n)]
+
     async with conn.transaction():
         await conn.execute("LOCK TABLE sim.fraud_reseller_accounts IN SHARE ROW EXCLUSIVE MODE")
         rows = await conn.fetch(_SELECT_RESELLER_ACCOUNTS_SQL)
         if len(rows) < n:
-            # Advance RNG past the positions of existing accounts, then generate only
-            # the missing accounts so there is no PK collision for any seed.
-            for _ in range(len(rows)):
-                _create_account(rng, store_id_pool)
+            existing_ids = {row["account_id"] for row in rows}
             new_accounts = [
-                _create_account(rng, store_id_pool) for _ in range(n - len(rows))
+                account for account in all_accounts if account.account_id not in existing_ids
             ]
             await conn.executemany(
                 _INSERT_RESELLER_ACCOUNTS_SQL,

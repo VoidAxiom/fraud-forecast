@@ -182,8 +182,8 @@ def test_init_no_pk_collision_on_topup(mock_conn: unittest.mock.AsyncMock) -> No
     )
     assert len(RESELLER_ACCOUNTS) == 50
 
-    # Leave positions 0..29 so the top-up path resumes at deterministic position 30.
-    account_ids_to_remove = list(rows_dict)[30:]
+    # Remove positions 0..19 so the top-up must recreate earlier RNG positions.
+    account_ids_to_remove = list(rows_dict)[:20]
     assert len(account_ids_to_remove) == 20
     for account_id in account_ids_to_remove:
         del rows_dict[account_id]
@@ -201,6 +201,40 @@ def test_init_no_pk_collision_on_topup(mock_conn: unittest.mock.AsyncMock) -> No
     assert len(RESELLER_ACCOUNTS) == 50
     assert len({account.account_id for account in RESELLER_ACCOUNTS}) == 50
     assert mock_conn.executemany.call_count == 2
+
+
+def test_init_consumes_same_rng_draws_on_full_warm_restart() -> None:
+    store_id_pool = [UUID(int=i + 1) for i in range(5)]
+
+    cold_conn = unittest.mock.AsyncMock()
+    _prime_empty_persistent_db(cold_conn)
+    cold_rng = random.Random(42)
+    asyncio.run(
+        init_reseller_accounts(
+            rng=cold_rng,
+            conn=cold_conn,
+            store_id_pool=store_id_pool,
+            n=50,
+        )
+    )
+    cold_next = cold_rng.getrandbits(128)
+
+    warm_conn = unittest.mock.AsyncMock()
+    warm_conn.fetch.return_value = [_fake_row(i) for i in range(50)]
+    _prime_transaction_mock(warm_conn)
+    warm_rng = random.Random(42)
+    asyncio.run(
+        init_reseller_accounts(
+            rng=warm_rng,
+            conn=warm_conn,
+            store_id_pool=store_id_pool,
+            n=50,
+        )
+    )
+    warm_next = warm_rng.getrandbits(128)
+
+    assert warm_next == cold_next
+    warm_conn.executemany.assert_not_called()
 
 
 def test_registered() -> None:
