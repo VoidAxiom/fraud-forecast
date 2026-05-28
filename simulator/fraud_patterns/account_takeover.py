@@ -14,6 +14,7 @@ else:
     from backports.zoneinfo import ZoneInfo
 
 from simulator.fraud_patterns import GroundTruth, register
+from simulator.fraud_patterns._entity_factory import create_fresh_device
 from simulator.fraud_patterns.stolen_card import FraudPatternContext
 
 LONDON_TZ = ZoneInfo("Europe/London")
@@ -84,8 +85,17 @@ async def generate_account_takeover_fraud(
 ) -> tuple[dict[str, Any], GroundTruth]:
     victim_user_id = uuid.UUID(int=ctx.rng.getrandbits(128))
 
-    device_id = uuid.UUID(int=ctx.rng.getrandbits(128))
-    device_platform = ctx.rng.choice(["iOS", "Android", "Web"])
+    if ctx.conn is None:
+        device_id = uuid.UUID(int=ctx.rng.getrandbits(128))
+        device_platform = ctx.rng.choice(["iOS", "Android", "Web"])
+    else:
+        device_platform = ctx.rng.choice(["iOS", "Android", "Web"])
+        device_id = await create_fresh_device(
+            ctx.rng,
+            ctx.conn,
+            ctx.now,
+            platform_bias=device_platform,
+        )
 
     ip_country_category = _weighted_choice(ctx.rng, _IP_COUNTRY_CATEGORIES)
     _iso2_raw = _IP_COUNTRY_RESOLUTION[ip_country_category]

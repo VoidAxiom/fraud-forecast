@@ -290,10 +290,12 @@ def _profile_label_leak_sentinels(frame: pd.DataFrame) -> List[Finding]:
             continue
 
         value_labels = pd.DataFrame({"value": series, "label": labels})
-        value_labels = value_labels.dropna(subset=["value", "label"])
+        # Drop rows where LABEL is null (can't classify). Keep NULL values; NULL
+        # can itself be a fraud-only sentinel (e.g. platform=NULL always fraud).
+        value_labels = value_labels.dropna(subset=["label"])
         if value_labels.empty:
             continue
-        value_labels["value"] = value_labels["value"].astype(str)
+        value_labels["value"] = value_labels["value"].astype(object).fillna("__NULL__").astype(str)
         value_labels["label"] = value_labels["label"].astype(int)
         value_labels = value_labels[value_labels["label"].isin([0, 1])]
         if value_labels.empty:

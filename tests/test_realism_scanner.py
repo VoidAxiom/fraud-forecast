@@ -118,3 +118,22 @@ def test_no_findings_no_crash(tmp_path: Path, minimal_config_path: Path) -> None
     findings = _scan_frame(frame, tmp_path, minimal_config_path)
 
     assert isinstance(findings, list)
+
+
+def test_null_platform_sentinel_detected(tmp_path: Path, minimal_config_path: Path) -> None:
+    """NULL value that exclusively maps to fraud=1 should be flagged as sentinel."""
+    frame = pd.DataFrame(
+        {
+            "platform": [None] * 10 + ["iOS"] * 10,
+            "gt_is_fraud": [1] * 10 + [0] * 10,
+        }
+    )
+
+    findings = _scan_frame(frame, tmp_path, minimal_config_path)
+
+    assert any(
+        finding["check_name"] == "sentinel_label_leak"
+        and finding["column"] == "platform"
+        and finding["actual"]["value"] == "__NULL__"
+        for finding in findings
+    ), f"Expected NULL sentinel finding, got: {findings}"
