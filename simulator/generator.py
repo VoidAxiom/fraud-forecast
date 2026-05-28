@@ -30,7 +30,7 @@ from simulator.cart_builder import Cart, MenuItemLike, UserProfile, build_realis
 from simulator.fraud_patterns import GroundTruth, generate_fraud_order
 from simulator.fraud_patterns.account_takeover import _IP_COUNTRY_RESOLUTION, _OTHER_ISO2_POOL
 from simulator.fraud_patterns.collusive_merchant import init_collusive_stores
-from simulator.fraud_patterns.promo_abuse import init_rings as init_promo_abuse_rings
+from simulator.fraud_patterns.promo_abuse import init_rings_from_db as init_promo_abuse_rings
 from simulator.fraud_patterns.reseller import init_reseller_accounts
 from simulator.fraud_patterns.stolen_card import FraudPatternContext
 from simulator.fraud_patterns.triangulation import init_accounts as init_triangulation_accounts
@@ -1814,7 +1814,8 @@ async def main() -> None:
                 ),
                 n=10,
             )
-        init_promo_abuse_rings(rng)
+        async with pool.acquire() as _promo_conn:
+            await init_promo_abuse_rings(rng, _promo_conn)
         async with pool.acquire() as _reseller_conn:
             await init_reseller_accounts(
                 rng,
