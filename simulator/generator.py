@@ -1827,6 +1827,30 @@ async def main() -> None:
         window_create_ms = 0.0
         window_started_at = time.perf_counter()
 
+        async def _run_order(order_rng: random.Random, start: float) -> None:
+            nonlocal orders_since_report, successful_orders, window_errors, window_create_ms
+
+            async with semaphore:
+                try:
+                    await create_one_order(
+                        pool=pool,
+                        user_picker=user_picker,
+                        stores_by_city=stores_by_city,
+                        store_hours_by_store_id=store_hours_by_store_id,
+                        promos=promos,
+                        rng=order_rng,
+                        scoring_enabled=config.scoring_enabled,
+                        now=datetime.now(tz=LONDON_TZ),
+                    )
+                except Exception:
+                    logger.exception("order_gen_failed")
+                    window_errors += 1
+                else:
+                    successful_orders += 1
+                    orders_since_report += 1
+                finally:
+                    window_create_ms += (time.perf_counter() - start) * 1000
+
         while True:
             now = datetime.now(tz=LONDON_TZ)
             now_for_rate = (
@@ -1850,26 +1874,7 @@ async def main() -> None:
             order_rng = random.Random(rng.randint(0, 2**63 - 1))
             start = time.perf_counter()
 
-            try:
-                await create_one_order(
-                    pool=pool,
-                    user_picker=user_picker,
-                    stores_by_city=stores_by_city,
-                    store_hours_by_store_id=store_hours_by_store_id,
-                    promos=promos,
-                    rng=order_rng,
-                    scoring_enabled=config.scoring_enabled,
-                    now=datetime.now(tz=LONDON_TZ),
-                )
-            except Exception:
-                logger.exception("order_gen_failed")
-                window_errors += 1
-                window_create_ms += (time.perf_counter() - start) * 1000
-                continue
-
-            successful_orders += 1
-            orders_since_report += 1
-            window_create_ms += (time.perf_counter() - start) * 1000
+            asyncio.create_task(_run_order(order_rng, start))
 
             if orders_since_report >= 100:
                 elapsed_seconds = time.perf_counter() - window_started_at
