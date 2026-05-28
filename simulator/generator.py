@@ -1091,13 +1091,14 @@ async def insert_order(
     cart: Cart,
     placed_at: datetime,
     *,
+    order_id: uuid.UUID | None = None,
     is_fraud: bool = False,
     fraud_category: str | None = None,
     pattern_notes: str | None = None,
     ring_id: uuid.UUID | None = None,
 ) -> tuple[uuid.UUID, datetime]:
     order_row = {
-        "order_id": uuid.uuid4(),
+        "order_id": order_id if order_id is not None else uuid.uuid4(),
         "placed_at": placed_at,
         "order_status": "PLACED",
     }
@@ -1580,6 +1581,8 @@ async def generate_order(
     store_hours_by_store_id: dict[uuid.UUID, list[dict[str, Any]]],
     promos: list[dict[str, Any]],
     scoring_enabled: bool = False,
+    order_id_override: uuid.UUID | None = None,
+    device_id_override: uuid.UUID | None = None,
 ) -> uuid.UUID:
     user_id = user_picker.pick(rng)
     fraud_roll = rng.random()
@@ -1607,6 +1610,8 @@ async def generate_order(
         if isinstance(user_data.get("default_address"), dict)
         else None,
     )
+    if device_id_override is not None:
+        device["device_id"] = device_id_override
     if order_channel == "LEGACY_API":
         device = {
             "device_id": None,
@@ -1725,18 +1730,40 @@ async def generate_order(
         try:
             snapshot["order_number"] = generate_order_number(rng, year=placed_at.year)
             if fraud_ground_truth is None:
-                order_id, _ = await insert_order(conn, snapshot, cart, placed_at)
+                if order_id_override is None:
+                    order_id, _ = await insert_order(conn, snapshot, cart, placed_at)
+                else:
+                    order_id, _ = await insert_order(
+                        conn,
+                        snapshot,
+                        cart,
+                        placed_at,
+                        order_id=order_id_override,
+                    )
             else:
-                order_id, _ = await insert_order(
-                    conn,
-                    snapshot,
-                    cart,
-                    placed_at,
-                    is_fraud=True,
-                    fraud_category=fraud_ground_truth.fraud_category,
-                    pattern_notes=fraud_ground_truth.pattern_notes,
-                    ring_id=fraud_ground_truth.ring_id,
-                )
+                if order_id_override is None:
+                    order_id, _ = await insert_order(
+                        conn,
+                        snapshot,
+                        cart,
+                        placed_at,
+                        is_fraud=True,
+                        fraud_category=fraud_ground_truth.fraud_category,
+                        pattern_notes=fraud_ground_truth.pattern_notes,
+                        ring_id=fraud_ground_truth.ring_id,
+                    )
+                else:
+                    order_id, _ = await insert_order(
+                        conn,
+                        snapshot,
+                        cart,
+                        placed_at,
+                        order_id=order_id_override,
+                        is_fraud=True,
+                        fraud_category=fraud_ground_truth.fraud_category,
+                        pattern_notes=fraud_ground_truth.pattern_notes,
+                        ring_id=fraud_ground_truth.ring_id,
+                    )
             break
         except asyncpg.UniqueViolationError:
             attempts += 1
@@ -1874,9 +1901,7 @@ async def main() -> None:
 
         while True:
             now = datetime.now(tz=LONDON_TZ)
-            now_for_rate = (
-                datetime(2024, 5, 10, 19, 0, 0, tzinfo=LONDON_TZ) if FORCE_PEAK else now
-            )
+            now_for_rate = datetime(2024, 5, 10, 19, 0, 0, tzinfo=LONDON_TZ) if FORCE_PEAK else now
             rate = current_rate(
                 now=now_for_rate,
                 multiplier=rate_multiplier,

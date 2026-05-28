@@ -8,6 +8,12 @@ Bulk generation uses the app role via DATABASE_URL_BULK -> DATABASE_URL rather
 than simulator_user because it needs DELETE on sim.simulator_ground_truth for
 the --force path and SELECT on sim.simulator_ground_truth when chargebacks are
 emitted.
+
+KNOWN LIMITATION (v1, tracked in VOI-324): bulk-generated orders use the
+current state of promos and aggregate windows (NOW()-relative), not the
+historical state at each order's placed_at. For Phase 5 v1 evaluation
+this is acceptable since promos are mostly static seed data; for
+publication-quality training data, VOI-324 fixes this.
 """
 
 from __future__ import annotations
@@ -63,7 +69,7 @@ class BulkRunConfig:
     end_at: datetime
     seed: int
     force: bool = False
-    rate_multiplier: float = 1.0
+    rate_multiplier: float = 0.05
 
     def __post_init__(self) -> None:
         if self.days <= 0.0:
@@ -257,6 +263,42 @@ async def bulk_generate(
             )
             await conn.execute(
                 """
+                DELETE FROM order_items_archive
+                WHERE order_id IN (
+                    SELECT order_id
+                    FROM orders
+                    WHERE placed_at >= $1
+                      AND placed_at < $2
+                    UNION ALL
+                    SELECT order_id
+                    FROM orders_archive
+                    WHERE placed_at >= $1
+                      AND placed_at < $2
+                )
+                """,
+                window_start,
+                window_end,
+            )
+            await conn.execute(
+                """
+                DELETE FROM order_events_archive
+                WHERE order_id IN (
+                    SELECT order_id
+                    FROM orders
+                    WHERE placed_at >= $1
+                      AND placed_at < $2
+                    UNION ALL
+                    SELECT order_id
+                    FROM orders_archive
+                    WHERE placed_at >= $1
+                      AND placed_at < $2
+                )
+                """,
+                window_start,
+                window_end,
+            )
+            await conn.execute(
+                """
                 DELETE FROM orders
                 WHERE placed_at >= $1
                   AND placed_at < $2
@@ -307,6 +349,10 @@ async def bulk_generate(
         total = len(timestamps)
         for ts in timestamps:
             order_rng = random.Random(rng.randint(0, 2**63 - 1))
+            order_id_bytes = bytes(rng.getrandbits(8) for _ in range(16))
+            device_id_bytes = bytes(rng.getrandbits(8) for _ in range(16))
+            bulk_order_id = uuid.UUID(bytes=order_id_bytes)
+            bulk_device_id = uuid.UUID(bytes=device_id_bytes)
             async with pool.acquire() as conn:
                 order_id = await generate_order(
                     order_rng,
@@ -317,6 +363,8 @@ async def bulk_generate(
                     store_hours_by_store_id=store_hours_by_store_id,
                     promos=promos,
                     scoring_enabled=False,
+                    order_id_override=bulk_order_id,
+                    device_id_override=bulk_device_id,
                 )
                 for lifecycle_iter in range(20):
                     lifecycle_now = min(
@@ -385,15 +433,15 @@ def _parse_end_at(raw: Optional[str]) -> datetime:  # noqa: UP045
 
 
 def _rate_multiplier_from_env() -> float:
-    for env_name in ("BULK_RATE_MULTIPLIER", "LIVE_RATE_MULTIPLIER"):
-        raw = os.environ.get(env_name)
-        if raw is None:
-            continue
-        try:
-            return float(raw)
-        except ValueError:
-            logger.warning("invalid_rate_multiplier env=%s raw=%r", env_name, raw)
-    return 1.0
+    env_name = "BULK_RATE_MULTIPLIER"
+    raw = os.environ.get(env_name)
+    if raw is None:
+        return 0.05
+    try:
+        return float(raw)
+    except ValueError:
+        logger.warning("invalid_rate_multiplier env=%s raw=%r", env_name, raw)
+    return 0.05
 
 
 def _build_parser() -> argparse.ArgumentParser:

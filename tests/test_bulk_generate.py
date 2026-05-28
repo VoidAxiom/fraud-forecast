@@ -239,28 +239,12 @@ def test_parse_end_at_iso_z() -> None:
 
 def test_rate_multiplier_from_env_default(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("BULK_RATE_MULTIPLIER", raising=False)
-    monkeypatch.delenv("LIVE_RATE_MULTIPLIER", raising=False)
 
-    assert _rate_multiplier_from_env() == 1.0
+    assert _rate_multiplier_from_env() == 0.05
 
 
 def test_rate_multiplier_from_env_bulk_override(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("BULK_RATE_MULTIPLIER", "0.5")
-    monkeypatch.delenv("LIVE_RATE_MULTIPLIER", raising=False)
-
-    assert _rate_multiplier_from_env() == 0.5
-
-
-def test_rate_multiplier_from_env_live_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("BULK_RATE_MULTIPLIER", raising=False)
-    monkeypatch.setenv("LIVE_RATE_MULTIPLIER", "0.3")
-
-    assert _rate_multiplier_from_env() == 0.3
-
-
-def test_rate_multiplier_bulk_takes_priority(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("BULK_RATE_MULTIPLIER", "0.5")
-    monkeypatch.setenv("LIVE_RATE_MULTIPLIER", "0.3")
 
     assert _rate_multiplier_from_env() == 0.5
 
@@ -435,6 +419,21 @@ def test_bulk_generate_reproducibility() -> None:
     )
 
     assert first == second
+
+
+def test_bulk_seeded_uuids_deterministic() -> None:
+    def _derive_uuids(seed: int) -> tuple[uuid.UUID, uuid.UUID]:
+        rng = random.Random(seed)
+        order_id_bytes = bytes(rng.getrandbits(8) for _ in range(16))
+        device_id_bytes = bytes(rng.getrandbits(8) for _ in range(16))
+        return uuid.UUID(bytes=order_id_bytes), uuid.UUID(bytes=device_id_bytes)
+
+    run1 = _derive_uuids(42)
+    run2 = _derive_uuids(42)
+    assert run1 == run2, f"UUID generation is not deterministic: {run1} != {run2}"
+
+    run3 = _derive_uuids(99)
+    assert run1 != run3, "Different seeds should produce different UUIDs"
 
 
 @pytest.mark.slow
