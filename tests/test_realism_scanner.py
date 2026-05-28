@@ -36,7 +36,7 @@ def _scan_frame(
 
 
 def test_sentinel_detection(tmp_path: Path, minimal_config_path: Path) -> None:
-    labels = [0, 1] * 6
+    labels = [0, 1] * 10
     frame = pd.DataFrame(
         {
             "store_city": ["FRAUD_RING" if label == 1 else "London" for label in labels],

@@ -22,6 +22,7 @@ _PERCENTILE_CHECKS: Tuple[Tuple[str, str, str, float], ...] = (
     ("p50", "p50_min", "p50_max", 50.0),
     ("p95", "p95_min", "p95_max", 95.0),
 )
+MIN_SENTINEL_SUPPORT = 10
 
 
 def _finding(
@@ -210,10 +211,14 @@ def _profile_narrow_numeric_distributions(frame: pd.DataFrame) -> List[Finding]:
         return findings
 
     for column in sorted(str(name) for name in frame.columns):
+        if column == "gt_is_fraud":
+            continue
         series = frame[column]
         if not pd.api.types.is_numeric_dtype(series):
             continue
         unique_count = int(series.nunique(dropna=False))
+        if _is_binary_numeric_indicator(series, unique_count):
+            continue
         if 1 < unique_count < 5:
             findings.append(
                 _finding(
@@ -227,6 +232,12 @@ def _profile_narrow_numeric_distributions(frame: pd.DataFrame) -> List[Finding]:
                 )
             )
     return findings
+
+
+def _is_binary_numeric_indicator(series: pd.Series, unique_count: int) -> bool:
+    if unique_count != 2:
+        return False
+    return set(series.dropna().unique()) == {0, 1}
 
 
 def _profile_constant_columns(frame: pd.DataFrame) -> List[Finding]:
@@ -290,6 +301,8 @@ def _profile_label_leak_sentinels(frame: pd.DataFrame) -> List[Finding]:
 
         grouped = value_labels.groupby("value", sort=True)["label"].agg(["count", "nunique", "min"])
         for value, row in grouped.iterrows():
+            if int(row["count"]) < MIN_SENTINEL_SUPPORT:
+                continue
             if int(row["nunique"]) != 1:
                 continue
             label_value = int(row["min"])
