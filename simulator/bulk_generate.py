@@ -125,10 +125,17 @@ async def _existing_order_count(
 ) -> int:
     count_raw = await pool.fetchval(
         """
-        SELECT COUNT(*)
-        FROM orders
-        WHERE placed_at >= $1
-          AND placed_at < $2
+        SELECT (
+            SELECT COUNT(*)
+            FROM orders
+            WHERE placed_at >= $1
+              AND placed_at < $2
+        ) + (
+            SELECT COUNT(*)
+            FROM orders_archive
+            WHERE placed_at >= $1
+              AND placed_at < $2
+        )
         """,
         window_start,
         window_end,
@@ -184,6 +191,11 @@ async def bulk_generate(
                     FROM orders
                     WHERE placed_at >= $1
                       AND placed_at < $2
+                    UNION ALL
+                    SELECT order_id
+                    FROM orders_archive
+                    WHERE placed_at >= $1
+                      AND placed_at < $2
                 )
                 """,
                 window_start,
@@ -195,6 +207,11 @@ async def bulk_generate(
                 WHERE order_id IN (
                     SELECT order_id
                     FROM orders
+                    WHERE placed_at >= $1
+                      AND placed_at < $2
+                    UNION ALL
+                    SELECT order_id
+                    FROM orders_archive
                     WHERE placed_at >= $1
                       AND placed_at < $2
                 )
@@ -210,6 +227,11 @@ async def bulk_generate(
                     FROM orders
                     WHERE placed_at >= $1
                       AND placed_at < $2
+                    UNION ALL
+                    SELECT order_id
+                    FROM orders_archive
+                    WHERE placed_at >= $1
+                      AND placed_at < $2
                 )
                 """,
                 window_start,
@@ -223,6 +245,11 @@ async def bulk_generate(
                     FROM orders
                     WHERE placed_at >= $1
                       AND placed_at < $2
+                    UNION ALL
+                    SELECT order_id
+                    FROM orders_archive
+                    WHERE placed_at >= $1
+                      AND placed_at < $2
                 )
                 """,
                 window_start,
@@ -231,6 +258,15 @@ async def bulk_generate(
             await conn.execute(
                 """
                 DELETE FROM orders
+                WHERE placed_at >= $1
+                  AND placed_at < $2
+                """,
+                window_start,
+                window_end,
+            )
+            await conn.execute(
+                """
+                DELETE FROM orders_archive
                 WHERE placed_at >= $1
                   AND placed_at < $2
                 """,
