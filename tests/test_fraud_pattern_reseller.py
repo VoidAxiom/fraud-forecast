@@ -145,7 +145,8 @@ def test_init_idempotent_across_restarts(mock_conn: unittest.mock.AsyncMock) -> 
     second_account_ids = [account.account_id for account in RESELLER_ACCOUNTS]
 
     assert second_account_ids == first_account_ids
-    assert mock_conn.executemany.call_count == 2
+    assert mock_conn.fetch.call_count == 2
+    mock_conn.executemany.assert_not_called()
 
 
 def test_init_loads_existing_from_db(mock_conn: unittest.mock.AsyncMock) -> None:
@@ -181,7 +182,9 @@ def test_init_no_pk_collision_on_topup(mock_conn: unittest.mock.AsyncMock) -> No
     )
     assert len(RESELLER_ACCOUNTS) == 50
 
-    account_ids_to_remove = list(rows_dict)[:20]
+    # Leave positions 0..29 so the top-up path resumes at deterministic position 30.
+    account_ids_to_remove = list(rows_dict)[30:]
+    assert len(account_ids_to_remove) == 20
     for account_id in account_ids_to_remove:
         del rows_dict[account_id]
     assert len(rows_dict) == 30

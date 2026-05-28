@@ -139,12 +139,19 @@ async def init_reseller_accounts(
     async with conn.transaction():
         await conn.execute("LOCK TABLE sim.fraud_reseller_accounts IN SHARE ROW EXCLUSIVE MODE")
         rows = await conn.fetch(_SELECT_RESELLER_ACCOUNTS_SQL)
-        new_accounts = [_create_account(rng, store_id_pool) for _ in range(n)]
-        await conn.executemany(
-            _INSERT_RESELLER_ACCOUNTS_SQL,
-            [_insert_args(account) for account in new_accounts],
-        )
-        rows = await conn.fetch(_SELECT_RESELLER_ACCOUNTS_SQL)
+        if len(rows) < n:
+            # Advance RNG past the positions of existing accounts, then generate only
+            # the missing accounts so there is no PK collision for any seed.
+            for _ in range(len(rows)):
+                _create_account(rng, store_id_pool)
+            new_accounts = [
+                _create_account(rng, store_id_pool) for _ in range(n - len(rows))
+            ]
+            await conn.executemany(
+                _INSERT_RESELLER_ACCOUNTS_SQL,
+                [_insert_args(account) for account in new_accounts],
+            )
+            rows = await conn.fetch(_SELECT_RESELLER_ACCOUNTS_SQL)
 
     RESELLER_ACCOUNTS.extend(_account_from_row(row) for row in rows)
 
