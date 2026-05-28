@@ -92,6 +92,11 @@ echo "[4/5] DNN training..."
 docker compose --profile tools run --rm app python -m ml.training.train_dnn \
   --version "$RUN_ID" \
   --epochs "${DNN_EPOCHS:-5}"
+STEP4_EXIT=$?
+if [ $STEP4_EXIT -ne 0 ]; then
+  echo "ERROR: step 4 (DNN training) failed with exit $STEP4_EXIT -- aborting"
+  exit $STEP4_EXIT
+fi
 
 echo ""
 echo "[5/5] XGBoost evaluation..."
@@ -101,6 +106,11 @@ docker compose --profile tools run --rm app python -m ml.training.evaluate \
   --model-path "$XGB_MODEL_PATH" \
   --test-data-path "$TRANSFORM_RUN_DIR/test" \
   --reports-dir "$TRANSFORM_RUN_DIR/reports"
+STEP5_EXIT=$?
+if [ $STEP5_EXIT -ne 0 ]; then
+  echo "ERROR: step 5 (XGBoost evaluation) failed with exit $STEP5_EXIT -- aborting"
+  exit $STEP5_EXIT
+fi
 
 echo ""
 echo "=== DONE ==="
