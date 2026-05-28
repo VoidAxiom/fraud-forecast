@@ -1637,7 +1637,10 @@ async def main() -> None:
         init_promo_abuse_rings(rng)
         init_reseller_accounts(
             rng,
-            store_id_pool=[s["store_id"] for stores in stores_by_city.values() for s in stores],
+            store_id_pool=sorted(
+                [s["store_id"] for stores in stores_by_city.values() for s in stores],
+                key=str,
+            ),
         )
         init_triangulation_accounts(rng)
         rng_lock = asyncio.Lock()
