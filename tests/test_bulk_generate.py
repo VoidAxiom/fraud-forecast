@@ -442,6 +442,7 @@ def test_bulk_generate_force_rerun_cleans_ephemeral_state() -> None:
             window_start + timedelta(seconds=1),
             window_start + timedelta(seconds=2),
         ]
+        window_only_pm_ids = [uuid.UUID(int=100), uuid.UUID(int=101)]
 
         class _FakeTransaction:
             async def __aenter__(self) -> _FakeTransaction:
@@ -457,14 +458,25 @@ def test_bulk_generate_force_rerun_cleans_ephemeral_state() -> None:
 
         class _RecordingConnection:
             def __init__(self) -> None:
+                self.calls: list[tuple[str, str, tuple[object, ...]]] = []
                 self.executed: list[tuple[str, tuple[object, ...]]] = []
+                self.fetched: list[tuple[str, tuple[object, ...]]] = []
 
             def transaction(self) -> _FakeTransaction:
                 return _FakeTransaction()
 
             async def execute(self, sql: str, *args: object) -> str:
+                self.calls.append(("execute", sql, args))
                 self.executed.append((sql, args))
                 return "OK"
+
+            async def fetch(self, sql: str, *args: object) -> list[dict[str, uuid.UUID]]:
+                self.calls.append(("fetch", sql, args))
+                self.fetched.append((sql, args))
+                return [
+                    {"payment_method_id": payment_method_id}
+                    for payment_method_id in window_only_pm_ids
+                ]
 
             async def fetchval(self, _sql: str, *_args: object) -> str:
                 return "DELIVERED"
@@ -572,6 +584,24 @@ def test_bulk_generate_force_rerun_cleans_ephemeral_state() -> None:
         assert int(second["orders_generated"]) == expected_generated
 
         normalized_sql = [" ".join(sql.split()) for sql, _args in conn.executed]
+        normalized_calls = [
+            (kind, " ".join(sql.split()), args) for kind, sql, args in conn.calls
+        ]
+        payment_collection_kind, payment_collection_sql, payment_collection_args = (
+            normalized_calls[0]
+        )
+        assert payment_collection_kind == "fetch"
+        assert payment_collection_sql.startswith(
+            "SELECT DISTINCT window_orders.payment_method_id"
+        )
+        assert "FROM orders_archive" in payment_collection_sql
+        assert "NOT EXISTS ( SELECT 1 FROM orders surviving_orders" in payment_collection_sql
+        assert (
+            "NOT EXISTS ( SELECT 1 FROM orders_archive surviving_archive_orders"
+            in payment_collection_sql
+        )
+        assert payment_collection_args == (window_start, force_config.end_at)
+
         ring_cleanup_sql = normalized_sql[0]
         assert ring_cleanup_sql.startswith("UPDATE sim.fraud_promo_rings")
         assert "ARRAY_AGG(DISTINCT u.user_id)" in ring_cleanup_sql
@@ -590,6 +620,26 @@ def test_bulk_generate_force_rerun_cleans_ephemeral_state() -> None:
         )
         assert fraud_decisions_index > 0
         assert conn.executed[0][1] == (window_start, force_config.end_at)
+        payment_delete_matches = [
+            (index, sql, args)
+            for index, (kind, sql, args) in enumerate(normalized_calls)
+            if kind == "execute" and sql.startswith("DELETE FROM payment_methods")
+        ]
+        assert len(payment_delete_matches) == 1
+        payment_delete_index, payment_delete_sql, payment_delete_args = (
+            payment_delete_matches[0]
+        )
+        assert (
+            payment_delete_sql
+            == "DELETE FROM payment_methods WHERE payment_method_id = ANY($1::uuid[])"
+        )
+        assert payment_delete_args == (window_only_pm_ids,)
+        orders_delete_index = next(
+            index
+            for index, (kind, sql, _args) in enumerate(normalized_calls)
+            if kind == "execute" and sql.startswith("DELETE FROM orders WHERE placed_at")
+        )
+        assert payment_delete_index > orders_delete_index
 
     asyncio.run(_run())
 

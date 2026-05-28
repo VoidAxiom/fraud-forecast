@@ -193,6 +193,52 @@ async def bulk_generate(
 
     if config.force:
         async with pool.acquire() as conn, conn.transaction():
+            window_only_payment_method_rows = await conn.fetch(
+                """
+                SELECT DISTINCT window_orders.payment_method_id
+                FROM (
+                    SELECT payment_method_id
+                    FROM orders
+                    WHERE placed_at >= $1
+                      AND placed_at < $2
+                    UNION ALL
+                    SELECT payment_method_id
+                    FROM orders_archive
+                    WHERE placed_at >= $1
+                      AND placed_at < $2
+                ) window_orders
+                WHERE window_orders.payment_method_id IS NOT NULL
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM orders surviving_orders
+                      WHERE surviving_orders.payment_method_id = window_orders.payment_method_id
+                        AND (
+                            surviving_orders.placed_at < $1
+                            OR surviving_orders.placed_at >= $2
+                        )
+                  )
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM orders_archive surviving_archive_orders
+                      WHERE surviving_archive_orders.payment_method_id =
+                            window_orders.payment_method_id
+                        AND (
+                            surviving_archive_orders.placed_at < $1
+                            OR surviving_archive_orders.placed_at >= $2
+                        )
+                  )
+                """,
+                window_start,
+                window_end,
+            )
+            window_only_pm_ids: list[uuid.UUID] = []
+            for row in window_only_payment_method_rows:
+                payment_method_id = row["payment_method_id"]
+                if isinstance(payment_method_id, uuid.UUID):
+                    window_only_pm_ids.append(payment_method_id)
+                else:
+                    window_only_pm_ids.append(uuid.UUID(str(payment_method_id)))
+
             await conn.execute(
                 """
                 UPDATE sim.fraud_promo_rings r
@@ -383,6 +429,11 @@ async def bulk_generate(
                 window_start,
                 window_end,
             )
+            if window_only_pm_ids:
+                await conn.execute(
+                    "DELETE FROM payment_methods WHERE payment_method_id = ANY($1::uuid[])",
+                    window_only_pm_ids,
+                )
 
     rng = random.Random(config.seed)
     # Mix window start into seed so runs over different windows with
