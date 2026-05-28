@@ -32,7 +32,7 @@ from simulator.fraud_patterns.stolen_card import FraudPatternContext
 
 LONDON_TZ_TEST: ZoneInfo = ZoneInfo("Europe/London")
 DATABASE_URL_SIMULATOR: str = os.environ.get(
-    "DATABASE_URL",
+    "DATABASE_URL_SIMULATOR",
     "postgresql://simulator_user:simulator_dev_password@postgres:5432/fraud_platform",
 )
 
