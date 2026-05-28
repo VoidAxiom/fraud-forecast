@@ -1431,9 +1431,13 @@ async def _apply_fraud_identity_overrides(
             snapshot["card_bin"] = None
             snapshot["card_last_four"] = None
             snapshot["card_brand"] = None
-            snapshot["card_funding_type"] = None
-            snapshot["card_issuer_country"] = None
-            snapshot["is_digital_native_bank"] = False
+            # Preserve fraud-derived card signals already stamped by _apply_fraud_order_attrs.
+            if "card_funding_type" not in fraud_dict:
+                snapshot["card_funding_type"] = None
+            if "card_country" not in fraud_dict:
+                snapshot["card_issuer_country"] = None
+            if "is_digital_native_bank" not in fraud_dict:
+                snapshot["is_digital_native_bank"] = False
 
     addr_id = _fraud_uuid_override(fraud_dict.get("delivery_address_id"))
     if addr_id is not None:
