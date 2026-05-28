@@ -1387,7 +1387,8 @@ async def _apply_fraud_identity_overrides(
     device_id = _fraud_uuid_override(fraud_dict.get("device_id"))
     if device_id is not None:
         row = await conn.fetchrow(
-            "SELECT device_type, platform, os_version, app_version, browser_name, browser_version "
+            "SELECT device_type, platform, os_version, app_version, browser_name, browser_version, "
+            "unique_users_count "
             "FROM devices WHERE device_id = $1",
             device_id,
         )
@@ -1398,8 +1399,16 @@ async def _apply_fraud_identity_overrides(
             snapshot["app_version"] = row["app_version"]
             snapshot["browser_name"] = row["browser_name"]
             snapshot["browser_version"] = row["browser_version"]
+            snapshot["device_user_count"] = row["unique_users_count"]
         else:
-            raise RuntimeError(f"fraud FK device_id not found in DB: {device_id}")
+            # Device not in DB (pattern uses synthetic device_id, not eager-written).
+            # Set device columns to None; will be skipped by the ML scorer.
+            snapshot["device_type"] = None
+            snapshot["platform"] = None
+            snapshot["os_version"] = None
+            snapshot["app_version"] = None
+            snapshot["browser_name"] = None
+            snapshot["browser_version"] = None
 
     pm_id = _fraud_uuid_override(fraud_dict.get("payment_method_id"))
     if pm_id is not None:
@@ -1419,6 +1428,12 @@ async def _apply_fraud_identity_overrides(
             snapshot["is_digital_native_bank"] = row["is_digital_native_bank"]
         else:
             snapshot["payment_type"] = "CREDIT_CARD"
+            snapshot["card_bin"] = None
+            snapshot["card_last_four"] = None
+            snapshot["card_brand"] = None
+            snapshot["card_funding_type"] = None
+            snapshot["card_issuer_country"] = None
+            snapshot["is_digital_native_bank"] = False
 
     addr_id = _fraud_uuid_override(fraud_dict.get("delivery_address_id"))
     if addr_id is not None:
