@@ -489,6 +489,7 @@ def pick_store_for_user(
         )
     else:
         effective_now = now if now is not None else datetime.now(tz=LONDON_TZ)
+        effective_now = effective_now.astimezone(LONDON_TZ)
         weekday = effective_now.isoweekday() % 7
         prev_weekday = (weekday - 1) % 7
         current_time = effective_now.time()
