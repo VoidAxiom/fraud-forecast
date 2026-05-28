@@ -13,6 +13,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import ROUND_HALF_UP, Decimal
+from pathlib import Path
 
 if sys.version_info >= (3, 9):
     from zoneinfo import ZoneInfo
@@ -20,11 +21,12 @@ else:
     from backports.zoneinfo import ZoneInfo
 from typing import Any, Optional
 
-import asyncpg
+import asyncpg  # type: ignore[import]  # asyncpg 0.28 lacks type stubs in tool env.
 import redis.asyncio as aioredis
+import yaml  # type: ignore[import]  # PyYAML 6 has no bundled type stubs.
 from shared.money import VATLineItem, calculate_total, calculate_vat
 
-from simulator.cart_builder import Cart, UserProfile, build_realistic_cart
+from simulator.cart_builder import Cart, MenuItemLike, UserProfile, build_realistic_cart
 from simulator.fraud_patterns import GroundTruth, generate_fraud_order
 from simulator.fraud_patterns.account_takeover import _IP_COUNTRY_RESOLUTION, _OTHER_ISO2_POOL
 from simulator.fraud_patterns.collusive_merchant import init_collusive_stores
@@ -64,6 +66,9 @@ REDIS_URL = os.environ.get("REDIS_URL", "redis://redis:6379/0")
 FRAUD_INJECTION_RATE = _parse_fraud_rate(os.getenv("FRAUD_INJECTION_RATE"))
 
 LONDON_TZ = ZoneInfo("Europe/London")
+_TIMING_PATTERNS_PATH = Path(__file__).with_name("timing_patterns.yaml")
+_WEEKDAY_DAY_MULTIPLIER_SIGMA = 0.12
+_WEEKEND_DAY_MULTIPLIER_SIGMA = 0.18
 _FALLBACK_OTHER_CARD_COUNTRY = _OTHER_ISO2_POOL[0]
 _FRAUD_FK_SENTINELS = {"VICTIM_SAVED", "ABUSER_SAVED"}
 _SYNTHETIC_FRAUD_RING_MERCHANT_ID = uuid.UUID("ffffffff-ffff-ffff-ffff-ffffffffffff")
@@ -89,6 +94,74 @@ _UK_ISP_PREFIXES: list[str] = [
     "109.145",
     "109.146",
 ]
+
+
+def _load_timing_patterns() -> dict[str, object]:
+    loaded = yaml.safe_load(_TIMING_PATTERNS_PATH.read_text(encoding="utf-8"))
+    if not isinstance(loaded, dict):
+        raise RuntimeError("timing_patterns.yaml must contain a mapping")
+
+    patterns: dict[str, object] = {}
+    for key, value in loaded.items():
+        if not isinstance(key, str):
+            raise RuntimeError("timing_patterns.yaml top-level keys must be strings")
+        patterns[key] = value
+    return patterns
+
+
+def _extract_indexed_float_map(
+    patterns: dict[str, object],
+    key: str,
+    expected_keys: range,
+) -> dict[int, float]:
+    raw_values = patterns.get(key)
+    if not isinstance(raw_values, dict):
+        raise RuntimeError(f"timing_patterns.yaml missing mapping: {key}")
+
+    values: dict[int, float] = {}
+    for expected_key in expected_keys:
+        raw_value = raw_values.get(expected_key)
+        if not isinstance(raw_value, (int, float)):
+            raise RuntimeError(f"timing_patterns.yaml {key}[{expected_key}] must be numeric")
+        values[expected_key] = float(raw_value)
+    return values
+
+
+_TIMING_PATTERNS = _load_timing_patterns()
+_HOURLY_RATE = _extract_indexed_float_map(_TIMING_PATTERNS, "hourly_rate", range(24))
+_MEAN_HOURLY_RATE: float = sum(_HOURLY_RATE.values()) / len(_HOURLY_RATE)
+_DAY_OF_WEEK_MULTIPLIER = _extract_indexed_float_map(
+    _TIMING_PATTERNS,
+    "day_of_week_multiplier",
+    range(7),
+)
+
+
+def current_rate(
+    *,
+    now: datetime,
+    multiplier: float,
+    day_multiplier_cache: dict[date, float],
+) -> float:
+    london_now = now.astimezone(LONDON_TZ)
+    current_date = london_now.date()
+
+    lognormal_multiplier = day_multiplier_cache.get(current_date)
+    if lognormal_multiplier is None:
+        sigma = (
+            _WEEKEND_DAY_MULTIPLIER_SIGMA
+            if london_now.weekday() >= 5
+            else _WEEKDAY_DAY_MULTIPLIER_SIGMA
+        )
+        lognormal_multiplier = random.Random(current_date.toordinal()).lognormvariate(0.0, sigma)
+        day_multiplier_cache[current_date] = lognormal_multiplier
+
+    return (
+        _HOURLY_RATE[london_now.hour]
+        * _DAY_OF_WEEK_MULTIPLIER[london_now.weekday()]
+        * lognormal_multiplier
+        * multiplier
+    )
 
 
 def _resolve_card_country(raw: str | None) -> str:
@@ -136,7 +209,7 @@ class GeneratorConfig:
     scoring_enabled: bool = False
 
 
-@dataclass(frozen=True)
+@dataclass
 class _MenuItemForCart:
     item_id: uuid.UUID
     item_name: str
@@ -377,6 +450,7 @@ def pick_store_for_user(
     user_data: dict[str, Any],
     stores_by_city: dict[str, list[dict[str, Any]]],
     store_hours_by_store_id: dict[uuid.UUID, list[dict[str, Any]]],
+    now: datetime | None = None,
 ) -> dict[str, Any]:
     default_lat, default_lon, user_city = _default_user_location(user_data)
 
@@ -414,10 +488,11 @@ def pick_store_for_user(
             datetime.now(tz=LONDON_TZ).replace(hour=19, minute=0, second=0, microsecond=0).time()
         )
     else:
-        now = datetime.now(tz=LONDON_TZ)
-        weekday = now.isoweekday() % 7
+        effective_now = now if now is not None else datetime.now(tz=LONDON_TZ)
+        effective_now = effective_now.astimezone(LONDON_TZ)
+        weekday = effective_now.isoweekday() % 7
         prev_weekday = (weekday - 1) % 7
-        current_time = now.time()
+        current_time = effective_now.time()
     open_stores = []
     for store in stores:
         store_id = store["store_id"]
@@ -519,9 +594,9 @@ def pick_device_and_ip(
     return device, _random_uk_ip(rng)
 
 
-def generate_order_number(rng: random.Random) -> str:
+def generate_order_number(rng: random.Random, *, year: int | None = None) -> str:
     _ = rng
-    order_year = datetime.now(tz=LONDON_TZ).year
+    order_year = datetime.now(tz=LONDON_TZ).year if year is None else year
     suffix = base64.b32encode(uuid.uuid4().bytes).decode()[0:10]
     return f"JE-{order_year}-{suffix}"
 
@@ -733,23 +808,25 @@ async def _insert_ephemeral_payment_method(
 async def _load_menu_items(
     conn: asyncpg.Connection,
     store_id: uuid.UUID,
-) -> list[_MenuItemForCart]:
+) -> list[MenuItemLike]:
     rows = await conn.fetch(
         "SELECT item_id, item_name, category, price_pence, is_hot_food "
         "FROM menu_items WHERE store_id=$1 AND is_available=true",
         store_id,
     )
 
-    return [
-        _MenuItemForCart(
-            item_id=row["item_id"],
-            item_name=row["item_name"],
-            category=row["category"] or "",
-            price_pence=int(row["price_pence"]),
-            is_hot_food=bool(row["is_hot_food"]),
+    menu_items: list[MenuItemLike] = []
+    for row in rows:
+        menu_items.append(
+            _MenuItemForCart(
+                item_id=row["item_id"],
+                item_name=row["item_name"],
+                category=row["category"] or "",
+                price_pence=int(row["price_pence"]),
+                is_hot_food=bool(row["is_hot_food"]),
+            )
         )
-        for row in rows
-    ]
+    return menu_items
 
 
 def _select_order_type(rng: random.Random, store: dict[str, Any]) -> str:
@@ -864,12 +941,13 @@ def _build_snapshot(
     is_new_address: bool | None,
     is_new_payment_method: bool,
     rng: random.Random,
+    *,
+    placed_at: datetime,
 ) -> dict[str, Any]:
     delivery_fee_pence, service_fee_pence, tip_pence, _ = pricing_tuple
     delivery_distance_km = _distance_km_for_delivery(store, delivery_address)
 
     user_created_at = user.get("created_at")
-    placed_at = datetime.now(tz=LONDON_TZ)
     if user_created_at is not None:
         user_account_age_days = (placed_at - user_created_at.astimezone(LONDON_TZ)).days
     else:
@@ -1230,11 +1308,12 @@ async def insert_order(
             INSERT INTO order_events (
                 order_id, order_placed_at, event_type, event_data, actor_type, created_at
             )
-            VALUES ($1, $2, 'ORDER_PLACED', $3::jsonb, 'SIMULATOR', NOW())
+            VALUES ($1, $2, 'ORDER_PLACED', $3::jsonb, 'SIMULATOR', $4)
             """,
             order_id,
             placed_at,
             json.dumps(_event_payload({**snapshot, "order_id": str(order_id)})),
+            placed_at,
         )
 
         await conn.execute(
@@ -1265,15 +1344,12 @@ async def _read_runtime_rate(
     raw = await redis_conn.get("simulator:rate_per_second")
     if raw is None:
         return fallback
-
     if isinstance(raw, bytes):
         raw = raw.decode()
-
     try:
         parsed = int(raw)
     except (TypeError, ValueError):
         return fallback
-
     return parsed if parsed > 0 else fallback
 
 
@@ -1494,6 +1570,189 @@ async def _apply_fraud_identity_overrides(
             snapshot["delivery_address_type"] = "RESIDENTIAL_NEW"
 
 
+async def generate_order(
+    rng: random.Random,
+    conn: asyncpg.Connection,
+    *,
+    now: datetime,
+    user_picker: WeightedUserPicker,
+    stores_by_city: dict[str, list[dict[str, Any]]],
+    store_hours_by_store_id: dict[uuid.UUID, list[dict[str, Any]]],
+    promos: list[dict[str, Any]],
+    scoring_enabled: bool = False,
+) -> uuid.UUID:
+    user_id = user_picker.pick(rng)
+    fraud_roll = rng.random()
+    fraud_rate = _parse_fraud_rate(os.getenv("FRAUD_INJECTION_RATE"), FRAUD_INJECTION_RATE)
+    is_fraud_order = fraud_roll < fraud_rate
+    user_data = await load_user_data(conn, user_id)
+    user = user_data["user"]
+
+    store = pick_store_for_user(rng, user_data, stores_by_city, store_hours_by_store_id, now=now)
+    order_type = _select_order_type(rng, store)
+    if order_type == "DINE_IN" and not bool(store.get("accepts_in_store")):
+        raise RuntimeError("DINE_IN selected but store does not accept in-store orders")
+    order_channel = pick_channel_for_user(rng, user_data["devices"])
+    if (
+        not is_fraud_order
+        and order_channel in {"IOS_APP", "ANDROID_APP", "MOBILE_WEB", "DESKTOP_WEB"}
+        and rng.random() < 0.02
+    ):
+        order_channel = "LEGACY_API"
+
+    device, ip_address = pick_device_and_ip(
+        rng,
+        user_data["devices"],
+        user_data["default_address"].get("city")
+        if isinstance(user_data.get("default_address"), dict)
+        else None,
+    )
+    if order_channel == "LEGACY_API":
+        device = {
+            "device_id": None,
+            "device_type": None,
+            "platform": None,
+            "os_version": None,
+            "app_version": None,
+            "browser_name": None,
+            "browser_version": None,
+        }
+        ip_address = _random_uk_ip(rng)
+
+    delivery_address = None
+    if order_type == "DELIVERY":
+        delivery_address = _select_delivery_address(
+            rng,
+            user_data["default_address"],
+            user_data["addresses"],
+        )
+
+    payment_methods = user_data["payment_methods"]
+    roll = rng.random()
+    if payment_methods and roll < 0.85:
+        payment_method = payment_methods[0]
+    elif payment_methods and roll < 0.95:
+        payment_method = rng.choice(payment_methods)
+    else:
+        payment_method = await _insert_ephemeral_payment_method(conn, user_id, rng)
+
+    is_new_payment_method = await _is_new_payment_method(
+        conn,
+        user_id,
+        payment_method["payment_method_id"],
+    )
+
+    menu_items = await _load_menu_items(conn, store["store_id"])
+    if not menu_items:
+        raise RuntimeError(f"no active menu items for store: {store['store_id']}")
+
+    user_profile = UserProfile(
+        user_id=user_id,
+        preferred_cuisines=store.get("cuisine_types"),
+    )
+    cart = build_realistic_cart(store["store_id"], user_profile, menu_items, rng=rng)
+
+    (
+        user_total_orders_lifetime,
+        user_total_orders_30d,
+        user_total_spend_lifetime_pence,
+    ) = await _read_user_order_metrics(conn, user_id)
+    is_first_order_for_user = user_total_orders_lifetime == 0
+
+    promo = await apply_promo(
+        conn,
+        user_id,
+        rng,
+        is_first_order_for_user,
+        promos,
+        cart.subtotal_pence,
+    )
+    applied_discount = _promo_discount(promo, cart.subtotal_pence)
+
+    distance_km = _distance_km_for_delivery(store, delivery_address)
+    pricing_tuple = compute_pricing(cart.subtotal_pence, distance_km, rng, order_type)
+    placed_at = now
+
+    snapshot = _build_snapshot(
+        user=user,
+        store=store,
+        cart=cart,
+        delivery_address=delivery_address,
+        payment_method=payment_method,
+        device=device,
+        ip_address=ip_address,
+        order_type=order_type,
+        order_channel=order_channel,
+        promo=promo,
+        applied_discount=applied_discount,
+        pricing_tuple=pricing_tuple,
+        user_total_orders_lifetime=user_total_orders_lifetime,
+        user_total_orders_30d=user_total_orders_30d,
+        user_total_spend_lifetime_pence=user_total_spend_lifetime_pence,
+        is_new_address=(
+            await _is_new_delivery_address(
+                conn,
+                user_id,
+                delivery_address["address_id"],
+            )
+            if delivery_address is not None
+            else None
+        ),
+        is_new_payment_method=is_new_payment_method,
+        rng=rng,
+        placed_at=placed_at,
+    )
+
+    snapshot["order_number"] = generate_order_number(rng, year=placed_at.year)
+
+    attempts = 0
+    # DESIGN: placed_at stays generator-owned. Patterns like stolen_card that set 2-5am
+    # timestamps for time-of-day fraud signal are ignored by the live path because
+    # overriding to past timestamps breaks partition windows, NOTIFY consistency, and
+    # lifecycle daemon assumptions. v1 limitation; see <P3-K1 follow-up issue>.
+    fraud_order_dict: dict[str, Any] | None = None
+    fraud_ground_truth: GroundTruth | None = None
+    if is_fraud_order:
+        ctx = FraudPatternContext(now=placed_at, rng=rng, conn=conn)
+        fraud_order_dict, fraud_ground_truth = await generate_fraud_order(ctx)
+
+    if is_fraud_order and fraud_order_dict is not None:
+        _apply_fraud_order_attrs(snapshot, fraud_order_dict)
+        await _apply_fraud_identity_overrides(conn, snapshot, fraud_order_dict)
+
+    order_id: uuid.UUID | None = None
+    while True:
+        try:
+            snapshot["order_number"] = generate_order_number(rng, year=placed_at.year)
+            if fraud_ground_truth is None:
+                order_id, _ = await insert_order(conn, snapshot, cart, placed_at)
+            else:
+                order_id, _ = await insert_order(
+                    conn,
+                    snapshot,
+                    cart,
+                    placed_at,
+                    is_fraud=True,
+                    fraud_category=fraud_ground_truth.fraud_category,
+                    pattern_notes=fraud_ground_truth.pattern_notes,
+                    ring_id=fraud_ground_truth.ring_id,
+                )
+            break
+        except asyncpg.UniqueViolationError:
+            attempts += 1
+            if attempts >= 5:
+                raise
+
+    if order_id is None:
+        raise RuntimeError("order insert did not return an order_id")
+
+    if scoring_enabled:
+        pass
+
+    await notify_order_placed(conn, uuid.UUID(str(order_id)))
+    return uuid.UUID(str(order_id))
+
+
 async def create_one_order(
     pool: asyncpg.Pool,
     user_picker: WeightedUserPicker,
@@ -1502,173 +1761,23 @@ async def create_one_order(
     promos: list[dict[str, Any]],
     rng: random.Random,
     scoring_enabled: bool,
+    *,
+    now: datetime | None = None,
 ) -> None:
+    if now is None:
+        now = datetime.now(tz=LONDON_TZ)
+
     async with pool.acquire() as conn:
-        user_id = user_picker.pick(rng)
-        fraud_roll = rng.random()
-        fraud_rate = _parse_fraud_rate(os.getenv("FRAUD_INJECTION_RATE"), FRAUD_INJECTION_RATE)
-        is_fraud_order = fraud_roll < fraud_rate
-        user_data = await load_user_data(conn, user_id)
-        user = user_data["user"]
-
-        store = pick_store_for_user(rng, user_data, stores_by_city, store_hours_by_store_id)
-        order_type = _select_order_type(rng, store)
-        if order_type == "DINE_IN" and not bool(store.get("accepts_in_store")):
-            raise RuntimeError("DINE_IN selected but store does not accept in-store orders")
-        order_channel = pick_channel_for_user(rng, user_data["devices"])
-        if (
-            not is_fraud_order
-            and order_channel in {"IOS_APP", "ANDROID_APP", "MOBILE_WEB", "DESKTOP_WEB"}
-            and rng.random() < 0.02
-        ):
-            order_channel = "LEGACY_API"
-
-        device, ip_address = pick_device_and_ip(
+        await generate_order(
             rng,
-            user_data["devices"],
-            user_data["default_address"].get("city")
-            if isinstance(user_data.get("default_address"), dict)
-            else None,
-        )
-        if order_channel == "LEGACY_API":
-            device = {
-                "device_id": None,
-                "device_type": None,
-                "platform": None,
-                "os_version": None,
-                "app_version": None,
-                "browser_name": None,
-                "browser_version": None,
-            }
-            ip_address = _random_uk_ip(rng)
-
-        delivery_address = None
-        if order_type == "DELIVERY":
-            delivery_address = _select_delivery_address(
-                rng,
-                user_data["default_address"],
-                user_data["addresses"],
-            )
-
-        payment_methods = user_data["payment_methods"]
-        roll = rng.random()
-        if payment_methods and roll < 0.85:
-            payment_method = payment_methods[0]
-        elif payment_methods and roll < 0.95:
-            payment_method = rng.choice(payment_methods)
-        else:
-            payment_method = await _insert_ephemeral_payment_method(conn, user_id, rng)
-
-        is_new_payment_method = await _is_new_payment_method(
             conn,
-            user_id,
-            payment_method["payment_method_id"],
+            now=now,
+            user_picker=user_picker,
+            stores_by_city=stores_by_city,
+            store_hours_by_store_id=store_hours_by_store_id,
+            promos=promos,
+            scoring_enabled=scoring_enabled,
         )
-
-        menu_items = await _load_menu_items(conn, store["store_id"])
-        if not menu_items:
-            raise RuntimeError(f"no active menu items for store: {store['store_id']}")
-
-        user_profile = UserProfile(
-            user_id=user_id,
-            preferred_cuisines=store.get("cuisine_types"),
-        )
-        cart = build_realistic_cart(store["store_id"], user_profile, menu_items, rng=rng)
-
-        (
-            user_total_orders_lifetime,
-            user_total_orders_30d,
-            user_total_spend_lifetime_pence,
-        ) = await _read_user_order_metrics(conn, user_id)
-        is_first_order_for_user = user_total_orders_lifetime == 0
-
-        promo = await apply_promo(
-            conn,
-            user_id,
-            rng,
-            is_first_order_for_user,
-            promos,
-            cart.subtotal_pence,
-        )
-        applied_discount = _promo_discount(promo, cart.subtotal_pence)
-
-        distance_km = _distance_km_for_delivery(store, delivery_address)
-        pricing_tuple = compute_pricing(cart.subtotal_pence, distance_km, rng, order_type)
-
-        snapshot = _build_snapshot(
-            user=user,
-            store=store,
-            cart=cart,
-            delivery_address=delivery_address,
-            payment_method=payment_method,
-            device=device,
-            ip_address=ip_address,
-            order_type=order_type,
-            order_channel=order_channel,
-            promo=promo,
-            applied_discount=applied_discount,
-            pricing_tuple=pricing_tuple,
-            user_total_orders_lifetime=user_total_orders_lifetime,
-            user_total_orders_30d=user_total_orders_30d,
-            user_total_spend_lifetime_pence=user_total_spend_lifetime_pence,
-            is_new_address=(
-                await _is_new_delivery_address(
-                    conn,
-                    user_id,
-                    delivery_address["address_id"],
-                )
-                if delivery_address is not None
-                else None
-            ),
-            is_new_payment_method=is_new_payment_method,
-            rng=rng,
-        )
-
-        snapshot["order_number"] = generate_order_number(rng)
-
-        attempts = 0
-        placed_at = datetime.now(tz=LONDON_TZ)
-        # DESIGN: placed_at stays wall-clock (generator-owned). Patterns like stolen_card
-        # that set 2-5am timestamps for time-of-day fraud signal are ignored - real-time
-        # simulator pacing conflict (overriding to past timestamps breaks partition window,
-        # aggregator NOTIFY consistency, and lifecycle daemon assumptions). v1 limitation;
-        # see <P3-K1 follow-up issue> for the future fraud-time-shift mode.
-        fraud_order_dict: dict[str, Any] | None = None
-        fraud_ground_truth: GroundTruth | None = None
-        if is_fraud_order:
-            ctx = FraudPatternContext(now=placed_at, rng=rng, conn=conn)
-            fraud_order_dict, fraud_ground_truth = await generate_fraud_order(ctx)
-
-        if is_fraud_order and fraud_order_dict is not None:
-            _apply_fraud_order_attrs(snapshot, fraud_order_dict)
-            await _apply_fraud_identity_overrides(conn, snapshot, fraud_order_dict)
-
-        while True:
-            try:
-                snapshot["order_number"] = generate_order_number(rng)
-                if fraud_ground_truth is None:
-                    order_id, _ = await insert_order(conn, snapshot, cart, placed_at)
-                else:
-                    order_id, _ = await insert_order(
-                        conn,
-                        snapshot,
-                        cart,
-                        placed_at,
-                        is_fraud=True,
-                        fraud_category=fraud_ground_truth.fraud_category,
-                        pattern_notes=fraud_ground_truth.pattern_notes,
-                        ring_id=fraud_ground_truth.ring_id,
-                    )
-                break
-            except asyncpg.UniqueViolationError:
-                attempts += 1
-                if attempts >= 5:
-                    raise
-
-        if scoring_enabled:
-            pass
-
-        await notify_order_placed(conn, uuid.UUID(str(order_id)))
 
 
 async def main() -> None:
@@ -1717,85 +1826,106 @@ async def main() -> None:
             )
         async with pool.acquire() as _tri_conn:
             await init_triangulation_accounts(rng, _tri_conn)
-        rng_lock = asyncio.Lock()
-        stats_lock = asyncio.Lock()
 
-        attempt_counter = 0
-        window_orders = 0
+        _live_rate_env = os.environ.get("LIVE_RATE_MULTIPLIER")
+        if _live_rate_env is not None:
+            try:
+                rate_multiplier = float(_live_rate_env)
+            except ValueError:
+                logger.warning("invalid_live_rate_multiplier falling_back_to_ops_derived")
+                rate_multiplier = config.orders_per_second / _MEAN_HOURLY_RATE
+        else:
+            # Scale so that average hourly rate = config.orders_per_second.
+            rate_multiplier = config.orders_per_second / _MEAN_HOURLY_RATE
+
+        day_multiplier_cache: dict[date, float] = {}
+        orders_since_report = 0
+        successful_orders = 0
         window_errors = 0
         window_create_ms = 0.0
-        effective_orders_per_second = config.orders_per_second
+        window_started_at = time.perf_counter()
 
-        async def generate_one() -> None:
-            nonlocal window_orders
-            nonlocal window_errors
-            nonlocal window_create_ms
-            nonlocal effective_orders_per_second
-
-            start = time.perf_counter()
+        async def _run_order(order_rng: random.Random, start: float) -> None:
+            nonlocal orders_since_report, successful_orders, window_errors, window_create_ms
 
             try:
-                async with rng_lock:
-                    order_rng = random.Random(rng.randint(0, 2**63 - 1))
-
-                try:
-                    await create_one_order(
-                        pool=pool,
-                        user_picker=user_picker,
-                        stores_by_city=stores_by_city,
-                        store_hours_by_store_id=store_hours_by_store_id,
-                        promos=promos,
-                        rng=order_rng,
-                        scoring_enabled=config.scoring_enabled,
-                    )
-                except Exception:
-                    logger.exception("order_gen_failed")
-                    elapsed_ms = (time.perf_counter() - start) * 1000
-                    async with stats_lock:
-                        window_orders += 1
-                        window_errors += 1
-                        window_create_ms += elapsed_ms
-                    return
-
-                elapsed_ms = (time.perf_counter() - start) * 1000
-                async with stats_lock:
-                    window_orders += 1
-                    window_create_ms += elapsed_ms
-
-                    if window_orders >= 1000:
-                        logger.info(
-                            json.dumps(
-                                {
-                                    "event": "throughput_report",
-                                    "orders_1min": window_orders,
-                                    "errors_1min": window_errors,
-                                    "avg_create_ms": (
-                                        0.0
-                                        if window_orders == 0
-                                        else round(window_create_ms / max(window_orders, 1), 3)
-                                    ),
-                                }
-                            )
-                        )
-                        window_orders = 0
-                        window_errors = 0
-                        window_create_ms = 0.0
+                await create_one_order(
+                    pool=pool,
+                    user_picker=user_picker,
+                    stores_by_city=stores_by_city,
+                    store_hours_by_store_id=store_hours_by_store_id,
+                    promos=promos,
+                    rng=order_rng,
+                    scoring_enabled=config.scoring_enabled,
+                    now=datetime.now(tz=LONDON_TZ),
+                )
+            except Exception:
+                logger.exception("order_gen_failed")
+                window_errors += 1
+            else:
+                successful_orders += 1
+                orders_since_report += 1
             finally:
+                window_create_ms += (time.perf_counter() - start) * 1000
                 semaphore.release()
 
         while True:
-            await semaphore.acquire()
-            asyncio.create_task(generate_one())
-            attempt_counter += 1
-
-            if attempt_counter % 100 == 0:
-                effective_orders_per_second = await _read_runtime_rate(
-                    redis_conn,
-                    config.orders_per_second,
+            now = datetime.now(tz=LONDON_TZ)
+            now_for_rate = (
+                datetime(2024, 5, 10, 19, 0, 0, tzinfo=LONDON_TZ) if FORCE_PEAK else now
+            )
+            rate = current_rate(
+                now=now_for_rate,
+                multiplier=rate_multiplier,
+                day_multiplier_cache=day_multiplier_cache,
+            )
+            if rate <= 0:
+                logger.warning(
+                    "non_positive_live_rate rate=%s multiplier=%s",
+                    rate,
+                    rate_multiplier,
                 )
+                await asyncio.sleep(1.0)
+                continue
 
-            sleep_for = 1.0 / max(effective_orders_per_second, 1)
-            await asyncio.sleep(sleep_for)
+            await asyncio.sleep(rng.expovariate(rate))
+            order_rng = random.Random(rng.randint(0, 2**63 - 1))
+            start = time.perf_counter()
+
+            await semaphore.acquire()
+            asyncio.create_task(_run_order(order_rng, start))
+
+            if orders_since_report >= 100:
+                elapsed_seconds = time.perf_counter() - window_started_at
+                logger.info(
+                    json.dumps(
+                        {
+                            "event": "throughput_report",
+                            "orders_last_100": successful_orders,
+                            "errors_since_last_report": window_errors,
+                            "orders_per_second_target": config.orders_per_second,
+                            "elapsed_seconds": round(elapsed_seconds, 3),
+                            "observed_orders_per_second": round(
+                                successful_orders / max(elapsed_seconds, 0.001),
+                                3,
+                            ),
+                            "current_rate": round(rate, 3),
+                            "rate_multiplier": rate_multiplier,
+                            "avg_create_ms": round(
+                                window_create_ms / max(successful_orders, 1),
+                                3,
+                            ),
+                        }
+                    )
+                )
+                rate_multiplier = (
+                    await _read_runtime_rate(redis_conn, config.orders_per_second)
+                ) / _MEAN_HOURLY_RATE
+                orders_since_report = 0
+                successful_orders = 0
+                window_errors = 0
+                window_create_ms = 0.0
+                window_started_at = time.perf_counter()
     finally:
         await pool.close()
         await redis_conn.close()

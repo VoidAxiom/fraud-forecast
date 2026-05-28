@@ -1,0 +1,42 @@
+sources:
+  - name: DoorDash Engineering Blog
+    note: Public marketplace-demand and delivery-operations posts; exact URL not verified in this offline worker run.
+  - name: Deliveroo public reports and insights
+    note: Public UK delivery-demand commentary; exact URL not verified in this offline worker run.
+  - name: Uber Eats public blog
+    note: Public restaurant and delivery-demand commentary; exact URL not verified in this offline worker run.
+
+hourly_rate:
+  0: 18.0 # starter — needs sourcing
+  1: 10.0 # starter — needs sourcing
+  2: 6.0 # starter — needs sourcing
+  3: 4.0 # starter — needs sourcing
+  4: 3.0 # starter — needs sourcing
+  5: 5.0 # starter — needs sourcing
+  6: 8.0 # starter — needs sourcing
+  7: 18.0 # starter — needs sourcing
+  8: 32.0 # starter — needs sourcing
+  9: 28.0 # starter — needs sourcing
+  10: 24.0 # starter — needs sourcing
+  11: 42.0 # starter — needs sourcing
+  12: 62.0 # starter — needs sourcing
+  13: 55.0 # starter — needs sourcing
+  14: 38.0 # starter — needs sourcing
+  15: 32.0 # starter — needs sourcing
+  16: 40.0 # starter — needs sourcing
+  17: 62.0 # starter — needs sourcing
+  18: 88.0 # starter — needs sourcing
+  19: 105.0 # starter — needs sourcing
+  20: 90.0 # starter — needs sourcing
+  21: 64.0 # starter — needs sourcing
+  22: 42.0 # starter — needs sourcing
+  23: 28.0 # starter — needs sourcing
+
+day_of_week_multiplier:
+  0: 0.90 # starter — needs sourcing
+  1: 0.95 # starter — needs sourcing
+  2: 1.00 # starter — needs sourcing
+  3: 1.05 # starter — needs sourcing
+  4: 1.25 # starter — needs sourcing
+  5: 1.30 # starter — needs sourcing
+  6: 1.15 # starter — needs sourcing

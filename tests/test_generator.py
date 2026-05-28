@@ -20,7 +20,6 @@ from simulator.generator import (
     _apply_fraud_identity_overrides,
     _apply_fraud_order_attrs,
     _parse_fraud_rate,
-    _read_runtime_rate,
     _resolve_card_country,
     _select_order_type,
     apply_promo,
@@ -758,6 +757,157 @@ def test_parse_fraud_rate_defaults_and_clamps() -> None:
     assert _parse_fraud_rate("0.25") == 0.25
 
 
+def test_generate_order_uses_now_param() -> None:
+    async def _run() -> None:
+        injected_now = datetime(2025, 1, 7, 19, 0, tzinfo=timezone.utc)
+        user_id = uuid.UUID(int=1)
+        store_id = uuid.UUID(int=2)
+        payment_method_id = uuid.UUID(int=3)
+        device_id = uuid.UUID(int=4)
+        user_data = {
+            "user": {"user_id": user_id},
+            "addresses": [],
+            "default_address": {"city": "London"},
+            "devices": [{"device_id": device_id}],
+            "payment_methods": [{"payment_method_id": payment_method_id}],
+        }
+        store = {
+            "store_id": store_id,
+            "accepts_in_store": False,
+        }
+        cart = Cart(store_id=store_id, items=[])
+        captured_snapshot_placed_at: list[datetime] = []
+        captured_insert_placed_at: list[datetime] = []
+
+        class _FakeAcquire:
+            async def __aenter__(self) -> object:
+                return object()
+
+            async def __aexit__(self, *_args: object) -> None:
+                return None
+
+        class _FakePool:
+            def acquire(self) -> _FakeAcquire:
+                return _FakeAcquire()
+
+        async def fake_load_user_data(_conn: object, _user_id: uuid.UUID) -> dict[str, object]:
+            return user_data
+
+        async def fake_is_new_payment_method(
+            _conn: object,
+            _user_id: uuid.UUID,
+            _payment_method_id: uuid.UUID,
+        ) -> bool:
+            return False
+
+        async def fake_load_menu_items(_conn: object, _store_id: uuid.UUID) -> list[object]:
+            return [object()]
+
+        async def fake_read_user_order_metrics(
+            _conn: object,
+            _user_id: uuid.UUID,
+        ) -> tuple[int, int, int]:
+            return 0, 0, 0
+
+        async def fake_apply_promo(
+            _conn: object,
+            _user_id: uuid.UUID,
+            _rng: random.Random,
+            _is_first_order_for_user: bool,
+            _promos: list[dict[str, object]],
+            _subtotal_pence: int,
+        ) -> None:
+            return None
+
+        def fake_build_snapshot(**kwargs: object) -> dict[str, object]:
+            placed_at = kwargs["placed_at"]
+            assert isinstance(placed_at, datetime)
+            captured_snapshot_placed_at.append(placed_at)
+            return {}
+
+        async def fake_insert_order(
+            _conn: object,
+            _snapshot: dict[str, object],
+            _cart: Cart,
+            placed_at: datetime,
+            *,
+            is_fraud: bool = False,
+            fraud_category: str | None = None,
+            pattern_notes: str | None = None,
+            ring_id: uuid.UUID | None = None,
+        ) -> tuple[uuid.UUID, datetime]:
+            assert not is_fraud
+            assert fraud_category is None
+            assert pattern_notes is None
+            assert ring_id is None
+            captured_insert_placed_at.append(placed_at)
+            return uuid.UUID(int=99), placed_at
+
+        async def fake_notify_order_placed(_conn: object, _order_id: uuid.UUID) -> None:
+            return None
+
+        rng = random.Random(123)
+        with ExitStack() as stack:
+            stack.enter_context(patch.dict(os.environ, {"FRAUD_INJECTION_RATE": "0.0"}))
+            stack.enter_context(patch("simulator.generator.load_user_data", fake_load_user_data))
+            stack.enter_context(
+                patch("simulator.generator.pick_store_for_user", return_value=store)
+            )
+            stack.enter_context(
+                patch("simulator.generator._select_order_type", return_value="PICKUP")
+            )
+            stack.enter_context(
+                patch("simulator.generator.pick_channel_for_user", return_value="WEB")
+            )
+            stack.enter_context(
+                patch(
+                    "simulator.generator.pick_device_and_ip",
+                    return_value=({"device_id": device_id}, "81.2.3.4"),
+                )
+            )
+            stack.enter_context(
+                patch("simulator.generator._is_new_payment_method", fake_is_new_payment_method)
+            )
+            stack.enter_context(patch("simulator.generator._load_menu_items", fake_load_menu_items))
+            stack.enter_context(
+                patch("simulator.generator.build_realistic_cart", return_value=cart)
+            )
+            stack.enter_context(
+                patch("simulator.generator._read_user_order_metrics", fake_read_user_order_metrics)
+            )
+            stack.enter_context(patch("simulator.generator.apply_promo", fake_apply_promo))
+            stack.enter_context(
+                patch("simulator.generator.compute_pricing", return_value=(0, 0, 0, 0))
+            )
+            stack.enter_context(patch("simulator.generator._build_snapshot", fake_build_snapshot))
+            stack.enter_context(
+                patch(
+                    "simulator.generator.generate_order_number",
+                    return_value="JE-2025-AAAAAAAAAA",
+                )
+            )
+            stack.enter_context(patch("simulator.generator.insert_order", fake_insert_order))
+            stack.enter_context(
+                patch("simulator.generator.notify_order_placed", fake_notify_order_placed)
+            )
+
+            await create_one_order(
+                pool=_FakePool(),
+                user_picker=_FixedUserPicker(user_id),
+                stores_by_city={"London": [store]},
+                store_hours_by_store_id={store_id: []},
+                promos=[],
+                rng=rng,
+                scoring_enabled=False,
+                now=injected_now,
+            )
+
+        assert captured_snapshot_placed_at == [injected_now]
+        assert captured_insert_placed_at == [injected_now]
+
+    asyncio.run(_run())
+
+
 def test_fraud_injection_rate_over_500_orders() -> None:
     async def _run() -> None:
         sample_size = 500
@@ -1274,26 +1424,3 @@ def test_generator_notify_fires() -> None:
 
     asyncio.run(_run())
 
-
-def test_generator_rate_runtime_override() -> None:
-    async def _run() -> None:
-        redis_conn = aioredis.from_url(REDIS_URL)
-        previous_rate = await redis_conn.get("simulator:rate_per_second")
-        try:
-            assert asyncio.iscoroutinefunction(main)
-            config = load_config_from_env()
-            await redis_conn.set("simulator:rate_per_second", "5")
-            assert await _read_runtime_rate(redis_conn, fallback=1) == 5
-            await redis_conn.delete("simulator:rate_per_second")
-            assert (
-                await _read_runtime_rate(redis_conn, fallback=config.orders_per_second)
-                == config.orders_per_second
-            )
-        finally:
-            if previous_rate is None:
-                await redis_conn.delete("simulator:rate_per_second")
-            else:
-                await redis_conn.set("simulator:rate_per_second", previous_rate)
-            await redis_conn.close()
-
-    asyncio.run(_run())

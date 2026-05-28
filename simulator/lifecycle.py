@@ -10,7 +10,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any, Mapping
 
-import asyncpg
+import asyncpg  # type: ignore[import]  # asyncpg 0.28 lacks type stubs in tool env.
 
 logger = logging.getLogger(__name__)
 
@@ -351,10 +351,14 @@ async def advance_order(
     next_param = 4
 
     if status_timestamp is not None:
-        update_parts.append(f"{status_timestamp} = NOW()")
+        update_parts.append(f"{status_timestamp} = ${next_param}")
+        update_values.append(now)
+        next_param += 1
 
     if is_terminal:
-        update_parts.append("terminal_state_reached_at = NOW()")
+        update_parts.append(f"terminal_state_reached_at = ${next_param}")
+        update_values.append(now)
+        next_param += 1
 
     driver_id: uuid.UUID | None = None
     if next_status == "ACCEPTED" and order_type.upper() == "DELIVERY":
@@ -423,7 +427,7 @@ async def advance_order(
             INSERT INTO order_events (
                 order_id, order_placed_at, event_type, event_data,
                 actor_type, actor_id, created_at
-            ) VALUES ($1, $2, $3, $4::jsonb, $5, $6, NOW())
+            ) VALUES ($1, $2, $3, $4::jsonb, $5, $6, $7)
             """,
             order_id,
             placed_at,
@@ -431,6 +435,7 @@ async def advance_order(
             json.dumps(event_payload),
             event_actor_type,
             event_actor_id,
+            now,
         )
 
     logger.info(
@@ -477,6 +482,52 @@ async def _safe_advance_one_order(
             )
         )
         return False
+
+
+async def advance_lifecycle(
+    order_id: uuid.UUID,
+    conn: asyncpg.Connection,
+    *,
+    now: datetime,
+) -> None:
+    row = await conn.fetchrow(
+        """
+        SELECT *
+        FROM orders
+        WHERE order_id = $1
+        """,
+        order_id,
+    )
+    if row is None:
+        return
+
+    order: dict[str, Any] = dict(row)
+    last_state_at = await conn.fetchval(
+        """
+        SELECT MAX(created_at)
+        FROM order_events
+        WHERE order_id = $1
+        """,
+        order_id,
+    )
+    if not isinstance(last_state_at, datetime):
+        placed_at = order.get("placed_at")
+        last_state_at = placed_at if isinstance(placed_at, datetime) else now
+
+    store_avg_prep_time_min_by_store_id: dict[uuid.UUID, float] = {}
+    store_id = _coerce_uuid(order.get("store_id"))
+    if store_id is not None:
+        store_avg_prep_time_min_by_store_id = await _fetch_store_prep_times(conn, [store_id])
+
+    await advance_order(
+        conn,
+        order,
+        last_state_at=last_state_at,
+        rng=_seeded_rng(order_id, "advance_lifecycle"),
+        simulation_time_compression=SIMULATION_TIME_COMPRESSION,
+        store_avg_prep_time_min_by_store_id=store_avg_prep_time_min_by_store_id,
+        now=now,
+    )
 
 
 async def run_once(
