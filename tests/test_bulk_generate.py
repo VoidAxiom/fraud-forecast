@@ -156,11 +156,11 @@ async def _noop_write_bulk_metadata(
     return None
 
 
-async def _noop_maybe_emit_chargeback(
+async def _noop_bulk_emit_chargeback(
     _order_id: uuid.UUID,
     _conn: asyncpg.Connection,
     *,
-    now: datetime,
+    received_at: datetime,
 ) -> None:
     return None
 
@@ -199,7 +199,7 @@ async def _run_bulk_with_test_patches(
             patch("simulator.bulk_generate._write_bulk_metadata", _noop_write_bulk_metadata)
         )
         stack.enter_context(
-            patch("simulator.bulk_generate.maybe_emit_chargeback", _noop_maybe_emit_chargeback)
+            patch("simulator.bulk_generate.bulk_emit_chargeback", _noop_bulk_emit_chargeback)
         )
         stack.enter_context(
             patch(

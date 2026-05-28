@@ -397,9 +397,7 @@ async def bulk_generate(
         for ts in timestamps:
             order_rng = random.Random(rng.randint(0, 2**63 - 1))
             order_id_bytes = bytes(rng.getrandbits(8) for _ in range(16))
-            device_id_bytes = bytes(rng.getrandbits(8) for _ in range(16))
             bulk_order_id = uuid.UUID(bytes=order_id_bytes)
-            bulk_device_id = uuid.UUID(bytes=device_id_bytes)
             async with pool.acquire() as conn:
                 order_id = await generate_order(
                     order_rng,
@@ -411,7 +409,6 @@ async def bulk_generate(
                     promos=promos,
                     scoring_enabled=False,
                     order_id_override=bulk_order_id,
-                    device_id_override=bulk_device_id,
                 )
                 for lifecycle_iter in range(20):
                     lifecycle_now = min(
