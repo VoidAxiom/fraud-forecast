@@ -85,7 +85,11 @@ async def generate_reseller_fraud(
                 "RESELLER_STORE_POOL is empty — call "
                 "init_reseller_accounts(rng, store_id_pool) explicitly"
             )
-        store_id = ctx.rng.choice(RESELLER_STORE_POOL)
+        preferred_set = set(preferred_stores)
+        non_preferred_pool = [
+            sid for sid in RESELLER_STORE_POOL if sid not in preferred_set
+        ]
+        store_id = ctx.rng.choice(non_preferred_pool or RESELLER_STORE_POOL)
 
     order_id: UUID = UUID(int=ctx.rng.getrandbits(128))
     pattern_notes: str = (
