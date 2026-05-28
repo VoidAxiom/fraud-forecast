@@ -26,11 +26,15 @@ echo "---"
 
 echo "[1/5] Generating training parquet via data_loader..."
 docker compose --profile tools run --rm app python -c "
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
+try:
+    from zoneinfo import ZoneInfo
+except ImportError:
+    from backports.zoneinfo import ZoneInfo
 from ml.training.data_loader import TrainingDataConfig, load_training_data
 
-end = datetime.now(timezone.utc)
+end = datetime.now(ZoneInfo(\"Europe/London\"))
 start = end - timedelta(days=${TRAIN_DAYS})
 config = TrainingDataConfig(start_date=start, end_date=end, label_finalisation_buffer_days=${LABEL_BUFFER_DAYS})
 df = load_training_data(config)
