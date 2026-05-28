@@ -14,6 +14,8 @@ import random
 from typing import Any
 from uuid import UUID
 
+import asyncpg
+
 from simulator.fraud_patterns import GroundTruth, register
 from simulator.fraud_patterns.stolen_card import FraudPatternContext, _weighted_choice
 
@@ -22,28 +24,62 @@ from simulator.fraud_patterns.stolen_card import FraudPatternContext, _weighted_
 COLLUSIVE_STORES: set[UUID] = set()
 
 
-def init_collusive_stores(
-    rng: random.Random,
-    n: int = 10,
-    store_id_pool: list[UUID] | None = None,
-) -> None:
-    """Initialize the collusive store pool.
+async def _fetch_collusive_store_ids(conn: asyncpg.Connection) -> set[UUID]:
+    rows = await conn.fetch(
+        """
+        SELECT store_id
+        FROM sim.fraud_collusive_stores
+        ORDER BY store_id
+        """
+    )
 
-    When store_id_pool is provided (production path), sample n stores from real
-    seeded store IDs so collusive orders land at real stores (not FRAUD_RING).
-    When not provided (test path), generate placeholder UUIDs — still valid for
-    unit tests that do not query the DB.
-    """
+    store_ids: set[UUID] = set()
+    for row in rows:
+        raw_store_id: Any = row["store_id"]
+        if isinstance(raw_store_id, UUID):
+            store_ids.add(raw_store_id)
+        else:
+            store_ids.add(UUID(str(raw_store_id)))
+    return store_ids
+
+
+async def init_collusive_stores(
+    rng: random.Random,
+    conn: asyncpg.Connection,
+    store_pool: list[UUID],
+    n: int = 10,
+) -> None:
+    """Initialize the collusive store pool from persistent simulator state."""
+    existing_ids = await _fetch_collusive_store_ids(conn)
+
+    if len(existing_ids) >= n:
+        COLLUSIVE_STORES.clear()
+        COLLUSIVE_STORES.update(existing_ids)
+        return
+
+    needed = n - len(existing_ids)
+    candidates = sorted(
+        {store_id for store_id in store_pool if store_id not in existing_ids},
+        key=str,
+    )
+    if len(candidates) < needed:
+        raise ValueError(
+            f"store_pool has {len(candidates)} available entries, need {needed}"
+        )
+
+    selected = rng.sample(candidates, k=needed)
+    await conn.executemany(
+        """
+        INSERT INTO sim.fraud_collusive_stores (store_id)
+        VALUES ($1)
+        ON CONFLICT (store_id) DO NOTHING
+        """,
+        [(store_id,) for store_id in selected],
+    )
+    existing_ids = await _fetch_collusive_store_ids(conn)
+
     COLLUSIVE_STORES.clear()
-    if store_id_pool is not None:
-        if len(store_id_pool) < n:
-            raise ValueError(
-                f"store_id_pool has {len(store_id_pool)} entries, need at least {n}"
-            )
-        COLLUSIVE_STORES.update(rng.sample(store_id_pool, k=n))
-    else:
-        while len(COLLUSIVE_STORES) < n:
-            COLLUSIVE_STORES.add(UUID(int=rng.getrandbits(128)))
+    COLLUSIVE_STORES.update(existing_ids)
 
 
 @register("collusive_merchant", 0.05)
@@ -61,7 +97,7 @@ async def generate_collusive_merchant_fraud(
     """
     if not COLLUSIVE_STORES:
         raise RuntimeError(
-            "COLLUSIVE_STORES is empty — call init_collusive_stores(rng) at simulator startup"
+            "COLLUSIVE_STORES is empty — call init_collusive_stores(rng, conn, store_pool) at simulator startup"
         )
 
     store_id = ctx.rng.choice(sorted(COLLUSIVE_STORES))
@@ -113,5 +149,5 @@ async def generate_collusive_merchant_fraud(
     return order_dict, gt
 
 
-# No auto-init at module-import time. Call init_collusive_stores(rng, store_id_pool=pool)
-# explicitly at simulator startup, or init_collusive_stores(rng) for tests.
+# No auto-init at module-import time. Call init_collusive_stores(rng, conn, store_pool=pool)
+# explicitly at simulator startup.
