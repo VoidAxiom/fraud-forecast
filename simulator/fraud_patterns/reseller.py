@@ -22,6 +22,7 @@ class ResellerAccount:
 
 
 RESELLER_ACCOUNTS: list[ResellerAccount] = []
+RESELLER_STORE_POOL: list[UUID] = []
 
 
 def _create_account(rng: random.Random, store_id_pool: list[UUID]) -> ResellerAccount:
@@ -48,6 +49,8 @@ def init_reseller_accounts(
         raise ValueError("store_id_pool must contain at least one store_id")
 
     RESELLER_ACCOUNTS.clear()
+    RESELLER_STORE_POOL.clear()
+    RESELLER_STORE_POOL.extend(store_id_pool)
     for _ in range(n):
         RESELLER_ACCOUNTS.append(_create_account(rng, store_id_pool))
 
@@ -77,9 +80,12 @@ async def generate_reseller_fraud(
     if preferred_stores and ctx.rng.random() < 0.70:
         store_id: UUID = ctx.rng.choice(preferred_stores)
     else:
-        if not preferred_stores:
-            raise RuntimeError("reseller account has no preferred_store_ids")
-        store_id = ctx.rng.choice(preferred_stores)
+        if not RESELLER_STORE_POOL:
+            raise RuntimeError(
+                "RESELLER_STORE_POOL is empty — call "
+                "init_reseller_accounts(rng, store_id_pool) explicitly"
+            )
+        store_id = ctx.rng.choice(RESELLER_STORE_POOL)
 
     order_id: UUID = UUID(int=ctx.rng.getrandbits(128))
     pattern_notes: str = (
