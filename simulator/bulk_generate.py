@@ -195,33 +195,31 @@ async def bulk_generate(
         async with pool.acquire() as conn, conn.transaction():
             await conn.execute(
                 """
-                DELETE FROM payment_methods
-                WHERE payment_method_id IN (
-                    SELECT DISTINCT payment_method_id
-                    FROM (
-                        SELECT payment_method_id
-                        FROM orders
-                        WHERE placed_at >= $1
-                          AND placed_at < $2
-                          AND is_new_payment_method = TRUE
-                          AND payment_method_id IS NOT NULL
-                        UNION ALL
-                        SELECT payment_method_id
-                        FROM orders_archive
-                        WHERE placed_at >= $1
-                          AND placed_at < $2
-                          AND is_new_payment_method = TRUE
-                          AND payment_method_id IS NOT NULL
-                    ) pm
+                UPDATE sim.fraud_promo_rings r
+                SET created_user_ids = COALESCE(
+                    (
+                        SELECT ARRAY_AGG(DISTINCT u.user_id)
+                        FROM (
+                            SELECT sgt.user_id
+                            FROM sim.simulator_ground_truth sgt
+                            JOIN orders o ON o.order_id = sgt.order_id
+                            WHERE sgt.fraud_category = 'promo_abuse'
+                              AND sgt.ring_id = r.ring_id
+                              AND (o.placed_at < $1 OR o.placed_at >= $2)
+                            UNION
+                            SELECT sgt.user_id
+                            FROM sim.simulator_ground_truth sgt
+                            JOIN orders_archive oa ON oa.order_id = sgt.order_id
+                            WHERE sgt.fraud_category = 'promo_abuse'
+                              AND sgt.ring_id = r.ring_id
+                              AND (oa.placed_at < $1 OR oa.placed_at >= $2)
+                        ) u
+                    ),
+                    ARRAY[]::uuid[]
                 )
                 """,
                 window_start,
                 window_end,
-            )
-            await conn.execute(
-                """
-                UPDATE sim.fraud_promo_rings SET created_user_ids = ARRAY[]::uuid[]
-                """
             )
             await conn.execute(
                 """

@@ -572,22 +572,24 @@ def test_bulk_generate_force_rerun_cleans_ephemeral_state() -> None:
         assert int(second["orders_generated"]) == expected_generated
 
         normalized_sql = [" ".join(sql.split()) for sql, _args in conn.executed]
-        payment_cleanup_sql = normalized_sql[0]
-        assert payment_cleanup_sql.startswith("DELETE FROM payment_methods")
-        assert "is_new_payment_method = TRUE" in payment_cleanup_sql
-        assert "NOT EXISTS" not in payment_cleanup_sql
+        ring_cleanup_sql = normalized_sql[0]
+        assert ring_cleanup_sql.startswith("UPDATE sim.fraud_promo_rings")
+        assert "ARRAY_AGG(DISTINCT u.user_id)" in ring_cleanup_sql
+        assert "JOIN orders o ON o.order_id = sgt.order_id" in ring_cleanup_sql
+        assert "JOIN orders_archive oa ON oa.order_id = sgt.order_id" in ring_cleanup_sql
         assert (
-            normalized_sql[1]
-            == "UPDATE sim.fraud_promo_rings SET created_user_ids = ARRAY[]::uuid[]"
+            "AND (o.placed_at < $1 OR o.placed_at >= $2)" in ring_cleanup_sql
+        )
+        assert (
+            "AND (oa.placed_at < $1 OR oa.placed_at >= $2)" in ring_cleanup_sql
         )
         fraud_decisions_index = next(
             index
             for index, sql in enumerate(normalized_sql)
             if sql.startswith("DELETE FROM fraud_decisions")
         )
-        assert fraud_decisions_index > 1
+        assert fraud_decisions_index > 0
         assert conn.executed[0][1] == (window_start, force_config.end_at)
-        assert conn.executed[1][1] == ()
 
     asyncio.run(_run())
 
