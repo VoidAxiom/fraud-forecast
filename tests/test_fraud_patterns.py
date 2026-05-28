@@ -5,14 +5,17 @@ import math
 import os
 import random
 import sys
+import unittest.mock
 import uuid
 from datetime import datetime, timedelta, timezone
 from statistics import NormalDist
+from typing import Any
 from unittest.mock import AsyncMock
 
 import asyncpg
 
 import pytest
+
 if sys.version_info >= (3, 9):
     from zoneinfo import ZoneInfo
 else:
@@ -131,6 +134,51 @@ def _init_triangulation_accounts_for_test(rng: random.Random, n: int = 30) -> No
     conn.execute.return_value = "DELETE 0"
     conn.executemany.return_value = None
     asyncio.run(init_accounts(rng, conn, n=n))
+
+
+def _mock_reseller_conn() -> unittest.mock.AsyncMock:
+    """Stateful mock connection for empty DB reseller account initialization."""
+    conn = unittest.mock.AsyncMock()
+    rows: list[dict[str, Any]] = []
+
+    async def _fetch(_query: str) -> list[dict[str, Any]]:
+        return list(rows)
+
+    async def _executemany(
+        _query: str,
+        values: list[Any],
+    ) -> None:
+        import json as _json
+
+        for v in values:
+            (
+                account_id,
+                reseller_address_json,
+                delivery_address_uuid,
+                device_uuid,
+                preferred_store_ids,
+            ) = v
+            rows.append(
+                {
+                    "account_id": account_id,
+                    "reseller_address": _json.loads(reseller_address_json)
+                    if isinstance(reseller_address_json, str)
+                    else reseller_address_json,
+                    "delivery_address_uuid": delivery_address_uuid,
+                    "device_uuid": device_uuid,
+                    "preferred_store_ids": list(preferred_store_ids),
+                }
+            )
+
+    conn.fetch.side_effect = _fetch
+    conn.executemany.side_effect = _executemany
+    conn.execute.return_value = None
+    txn_mock = unittest.mock.AsyncMock()
+    txn_mock.__aenter__ = unittest.mock.AsyncMock(return_value=txn_mock)
+    txn_mock.__aexit__ = unittest.mock.AsyncMock(return_value=None)
+    conn.transaction = unittest.mock.Mock()
+    conn.transaction.return_value = txn_mock
+    return conn
 
 
 def _assert_uuid(value: object, field_name: str) -> uuid.UUID:
@@ -317,10 +365,13 @@ def test_triangulation_signals_present() -> None:
 
 
 def test_reseller_signals_present() -> None:
-    init_reseller_accounts(
-        rng=random.Random(7),
-        store_id_pool=[uuid.UUID(int=i + 1) for i in range(5)],
-        n=50,
+    asyncio.run(
+        init_reseller_accounts(
+            rng=random.Random(7),
+            conn=_mock_reseller_conn(),
+            store_id_pool=[uuid.UUID(int=i + 1) for i in range(5)],
+            n=50,
+        )
     )
     ctx = _ctx(seed=0)
     delivery_address_ids: set[uuid.UUID] = set()
@@ -384,7 +435,9 @@ def test_stolen_card_ground_truth_recorded(db_engine: Engine) -> None:
             found = {
                 row[0]: row[1]
                 for row in conn.execute(
-                    text("SELECT order_id, fraud_category FROM sim.simulator_ground_truth WHERE order_id = ANY(:ids)"),
+                    text(
+                        "SELECT order_id, fraud_category FROM sim.simulator_ground_truth WHERE order_id = ANY(:ids)"
+                    ),
                     {"ids": rows},
                 ).fetchall()
             }
@@ -400,10 +453,11 @@ def test_stolen_card_ground_truth_recorded(db_engine: Engine) -> None:
             )
             if min_placed_at is not None:
                 conn.execute(
-                    text("DELETE FROM orders WHERE order_id = ANY(:ids) AND placed_at >= :min_placed_at"),
+                    text(
+                        "DELETE FROM orders WHERE order_id = ANY(:ids) AND placed_at >= :min_placed_at"
+                    ),
                     {"ids": rows, "min_placed_at": min_placed_at},
                 )
-
 
 
 def _safe_datetime(value: object) -> datetime:
@@ -465,7 +519,9 @@ def test_account_takeover_ground_truth_recorded(db_engine: Engine) -> None:
             found = {
                 row[0]: row[1]
                 for row in conn.execute(
-                    text("SELECT order_id, fraud_category FROM sim.simulator_ground_truth WHERE order_id = ANY(:ids)"),
+                    text(
+                        "SELECT order_id, fraud_category FROM sim.simulator_ground_truth WHERE order_id = ANY(:ids)"
+                    ),
                     {"ids": rows},
                 ).fetchall()
             }
@@ -481,7 +537,9 @@ def test_account_takeover_ground_truth_recorded(db_engine: Engine) -> None:
             )
             if min_placed_at is not None:
                 conn.execute(
-                    text("DELETE FROM orders WHERE order_id = ANY(:ids) AND placed_at >= :min_placed_at"),
+                    text(
+                        "DELETE FROM orders WHERE order_id = ANY(:ids) AND placed_at >= :min_placed_at"
+                    ),
                     {"ids": rows, "min_placed_at": min_placed_at},
                 )
 
@@ -533,7 +591,9 @@ def test_promo_abuse_ground_truth_recorded(db_engine: Engine) -> None:
             found = {
                 row[0]: row[1]
                 for row in conn.execute(
-                    text("SELECT order_id, fraud_category FROM sim.simulator_ground_truth WHERE order_id = ANY(:ids)"),
+                    text(
+                        "SELECT order_id, fraud_category FROM sim.simulator_ground_truth WHERE order_id = ANY(:ids)"
+                    ),
                     {"ids": rows},
                 ).fetchall()
             }
@@ -549,7 +609,9 @@ def test_promo_abuse_ground_truth_recorded(db_engine: Engine) -> None:
             )
             if min_placed_at is not None:
                 conn.execute(
-                    text("DELETE FROM orders WHERE order_id = ANY(:ids) AND placed_at >= :min_placed_at"),
+                    text(
+                        "DELETE FROM orders WHERE order_id = ANY(:ids) AND placed_at >= :min_placed_at"
+                    ),
                     {"ids": rows, "min_placed_at": min_placed_at},
                 )
 
@@ -600,7 +662,9 @@ def test_refund_abuse_ground_truth_recorded(db_engine: Engine) -> None:
             found = {
                 row[0]: row[1]
                 for row in conn.execute(
-                    text("SELECT order_id, fraud_category FROM sim.simulator_ground_truth WHERE order_id = ANY(:ids)"),
+                    text(
+                        "SELECT order_id, fraud_category FROM sim.simulator_ground_truth WHERE order_id = ANY(:ids)"
+                    ),
                     {"ids": rows},
                 ).fetchall()
             }
@@ -616,7 +680,9 @@ def test_refund_abuse_ground_truth_recorded(db_engine: Engine) -> None:
             )
             if min_placed_at is not None:
                 conn.execute(
-                    text("DELETE FROM orders WHERE order_id = ANY(:ids) AND placed_at >= :min_placed_at"),
+                    text(
+                        "DELETE FROM orders WHERE order_id = ANY(:ids) AND placed_at >= :min_placed_at"
+                    ),
                     {"ids": rows, "min_placed_at": min_placed_at},
                 )
 
@@ -675,7 +741,9 @@ def test_collusive_merchant_ground_truth_recorded(db_engine: Engine) -> None:
             found = {
                 row[0]: row[1]
                 for row in conn.execute(
-                    text("SELECT order_id, fraud_category FROM sim.simulator_ground_truth WHERE order_id = ANY(:ids)"),
+                    text(
+                        "SELECT order_id, fraud_category FROM sim.simulator_ground_truth WHERE order_id = ANY(:ids)"
+                    ),
                     {"ids": rows},
                 ).fetchall()
             }
@@ -691,7 +759,9 @@ def test_collusive_merchant_ground_truth_recorded(db_engine: Engine) -> None:
             )
             if min_placed_at is not None:
                 conn.execute(
-                    text("DELETE FROM orders WHERE order_id = ANY(:ids) AND placed_at >= :min_placed_at"),
+                    text(
+                        "DELETE FROM orders WHERE order_id = ANY(:ids) AND placed_at >= :min_placed_at"
+                    ),
                     {"ids": rows, "min_placed_at": min_placed_at},
                 )
 
@@ -743,7 +813,9 @@ def test_triangulation_ground_truth_recorded(db_engine: Engine) -> None:
             found = {
                 row[0]: row[1]
                 for row in conn.execute(
-                    text("SELECT order_id, fraud_category FROM sim.simulator_ground_truth WHERE order_id = ANY(:ids)"),
+                    text(
+                        "SELECT order_id, fraud_category FROM sim.simulator_ground_truth WHERE order_id = ANY(:ids)"
+                    ),
                     {"ids": rows},
                 ).fetchall()
             }
@@ -759,16 +831,21 @@ def test_triangulation_ground_truth_recorded(db_engine: Engine) -> None:
             )
             if min_placed_at is not None:
                 conn.execute(
-                    text("DELETE FROM orders WHERE order_id = ANY(:ids) AND placed_at >= :min_placed_at"),
+                    text(
+                        "DELETE FROM orders WHERE order_id = ANY(:ids) AND placed_at >= :min_placed_at"
+                    ),
                     {"ids": rows, "min_placed_at": min_placed_at},
                 )
 
 
 def test_reseller_ground_truth_recorded(db_engine: Engine) -> None:
-    init_reseller_accounts(
-        rng=random.Random(7),
-        store_id_pool=[uuid.UUID(int=i + 1) for i in range(5)],
-        n=50,
+    asyncio.run(
+        init_reseller_accounts(
+            rng=random.Random(7),
+            conn=_mock_reseller_conn(),
+            store_id_pool=[uuid.UUID(int=i + 1) for i in range(5)],
+            n=50,
+        )
     )
     rows: list[uuid.UUID] = []
     min_placed_at: datetime | None = None
@@ -815,7 +892,9 @@ def test_reseller_ground_truth_recorded(db_engine: Engine) -> None:
             found = {
                 row[0]: row[1]
                 for row in conn.execute(
-                    text("SELECT order_id, fraud_category FROM sim.simulator_ground_truth WHERE order_id = ANY(:ids)"),
+                    text(
+                        "SELECT order_id, fraud_category FROM sim.simulator_ground_truth WHERE order_id = ANY(:ids)"
+                    ),
                     {"ids": rows},
                 ).fetchall()
             }
@@ -831,7 +910,9 @@ def test_reseller_ground_truth_recorded(db_engine: Engine) -> None:
             )
             if min_placed_at is not None:
                 conn.execute(
-                    text("DELETE FROM orders WHERE order_id = ANY(:ids) AND placed_at >= :min_placed_at"),
+                    text(
+                        "DELETE FROM orders WHERE order_id = ANY(:ids) AND placed_at >= :min_placed_at"
+                    ),
                     {"ids": rows, "min_placed_at": min_placed_at},
                 )
 
@@ -847,10 +928,13 @@ def test_fraud_distribution() -> None:
         )
     )
     _init_triangulation_accounts_for_test(rng=random.Random(42), n=30)
-    init_reseller_accounts(
-        rng=random.Random(42),
-        store_id_pool=[uuid.UUID(int=i + 1) for i in range(5)],
-        n=50,
+    asyncio.run(
+        init_reseller_accounts(
+            rng=random.Random(42),
+            conn=_mock_reseller_conn(),
+            store_id_pool=[uuid.UUID(int=i + 1) for i in range(5)],
+            n=50,
+        )
     )
 
     ctx: FraudPatternContext = _ctx(42)
@@ -911,7 +995,8 @@ def test_promo_abuse_ring_consistency() -> None:
         assert isinstance(ring_base_lon, float)
 
         ring_payment_signatures: set[tuple[str, str, str]] = {
-            (payment["card_bin"], payment["last4"], payment["funding"]) for payment in ring.payment_pool
+            (payment["card_bin"], payment["last4"], payment["funding"])
+            for payment in ring.payment_pool
         }
 
         device_ids: set[uuid.UUID] = set()
@@ -948,10 +1033,13 @@ def test_collusive_store_concentration() -> None:
     )
     init_rings(rng=random.Random(7), n_rings=50)
     _init_triangulation_accounts_for_test(rng=random.Random(7), n=30)
-    init_reseller_accounts(
-        rng=random.Random(7),
-        store_id_pool=[uuid.UUID(int=i + 1) for i in range(5)],
-        n=50,
+    asyncio.run(
+        init_reseller_accounts(
+            rng=random.Random(7),
+            conn=_mock_reseller_conn(),
+            store_id_pool=[uuid.UUID(int=i + 1) for i in range(5)],
+            n=50,
+        )
     )
     ctx: FraudPatternContext = _ctx(7)
 
@@ -976,7 +1064,9 @@ def test_collusive_store_concentration() -> None:
                 store_id = _assert_uuid(store_id_raw, "store_id")
                 order_id = _assert_uuid(order_dict["order_id"], "order_id")
                 user_id = _extract_user_id(order_dict)
-                placed_at = _safe_datetime(order_dict.get("placed_at", datetime.now(tz=LONDON_TZ_TEST)))
+                placed_at = _safe_datetime(
+                    order_dict.get("placed_at", datetime.now(tz=LONDON_TZ_TEST))
+                )
                 total_pence = _safe_int(
                     order_dict.get("order_total_pence", 1000),
                     "order_total_pence",
@@ -986,9 +1076,7 @@ def test_collusive_store_concentration() -> None:
                 fraud_order_ids.append(order_id)
                 orders_by_store[store_id] = orders_by_store.get(store_id, 0) + 1
                 if gt.is_fraud:
-                    fraud_orders_by_store[store_id] = (
-                        fraud_orders_by_store.get(store_id, 0) + 1
-                    )
+                    fraud_orders_by_store[store_id] = fraud_orders_by_store.get(store_id, 0) + 1
 
                 if gt.fraud_category == "collusive_merchant":
                     assert store_id in COLLUSIVE_STORES
@@ -1015,7 +1103,7 @@ def test_collusive_store_concentration() -> None:
                         "pattern_notes": gt.pattern_notes,
                         "ring_id": gt.ring_id,
                     },
-                    )
+                )
 
             for i in range(normal_order_count):
                 order_id = uuid.uuid5(
@@ -1055,12 +1143,8 @@ def test_collusive_store_concentration() -> None:
         assert collusive_store_ids
         assert normal_store_ids
 
-        collusive_order_total = sum(
-            orders_by_store[store_id] for store_id in collusive_store_ids
-        )
-        normal_order_total = sum(
-            orders_by_store[store_id] for store_id in normal_store_ids
-        )
+        collusive_order_total = sum(orders_by_store[store_id] for store_id in collusive_store_ids)
+        normal_order_total = sum(orders_by_store[store_id] for store_id in normal_store_ids)
         collusive_fraud_total = sum(
             fraud_orders_by_store.get(store_id, 0) for store_id in collusive_store_ids
         )
@@ -1130,7 +1214,9 @@ def test_scoring_user_cannot_join_to_ground_truth() -> None:
 
 
 def _chargeback_database_url() -> str:
-    database_url = os.environ.get("DATABASE_URL", "postgresql://app:app_dev_password@postgres:5432/fraud_platform")
+    database_url = os.environ.get(
+        "DATABASE_URL", "postgresql://app:app_dev_password@postgres:5432/fraud_platform"
+    )
     os.environ["DATABASE_URL"] = database_url
     simulator.chargebacks.DATABASE_URL = database_url
     return database_url
@@ -1311,13 +1397,12 @@ def test_chargeback_rates() -> None:
 def test_chargeback_timing() -> None:
     rng = random.Random(11)
     thresholds_days: list[float] = [
-        simulator.chargebacks._days_to_chargeback_threshold(rng, True)
-        for _ in range(500)
+        simulator.chargebacks._days_to_chargeback_threshold(rng, True) for _ in range(500)
     ]
     assert thresholds_days
 
     normal_dist = NormalDist()
-    mu = math.log(14) - 0.7 ** 2 / 2
+    mu = math.log(14) - 0.7**2 / 2
     sigma = 0.7
     expected_p10 = math.exp(mu + sigma * normal_dist.inv_cdf(0.10))
     expected_p50 = math.exp(mu + sigma * normal_dist.inv_cdf(0.50))
