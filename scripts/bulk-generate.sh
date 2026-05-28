@@ -32,11 +32,16 @@ COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-fraud-forecast}"
 BULK_RATE_MULTIPLIER="${BULK_RATE_MULTIPLIER:-0.05}"
 export COMPOSE_PROJECT_NAME
 
+SERVICES_TO_MANAGE="feature_aggregator simulator lifecycle chargebacks_daemon"
+WAS_RUNNING=""
+
 restart_stopped_services() {
   local status=$?
 
   echo "[bulk-generate] restarting stopped services..."
-  docker compose start feature_aggregator simulator lifecycle chargebacks_daemon 2>/dev/null || true
+  if [ -n "$WAS_RUNNING" ]; then
+    docker compose start $WAS_RUNNING 2>/dev/null || true
+  fi
 
   if [ "$status" -eq 0 ]; then
     echo "[bulk-generate] completed successfully."
@@ -54,7 +59,16 @@ cd "$REPO_ROOT"
 echo "[bulk-generate] starting bulk generation."
 echo "[bulk-generate] COMPOSE_PROJECT_NAME=$COMPOSE_PROJECT_NAME BULK_RATE_MULTIPLIER=$BULK_RATE_MULTIPLIER"
 echo "[bulk-generate] stopping conflicting services (feature_aggregator simulator lifecycle chargebacks_daemon)..."
-docker compose stop feature_aggregator simulator lifecycle chargebacks_daemon 2>/dev/null || true
+RUNNING_SERVICES="$(docker compose ps --services --filter "status=running" 2>/dev/null)" || WAS_RUNNING="$SERVICES_TO_MANAGE"
+if [ -z "$WAS_RUNNING" ]; then
+  for svc in $SERVICES_TO_MANAGE; do
+    if printf '%s\n' "$RUNNING_SERVICES" | grep -qx "$svc"; then
+      WAS_RUNNING="$WAS_RUNNING $svc"
+    fi
+  done
+  WAS_RUNNING="${WAS_RUNNING# }"
+fi
+docker compose stop $SERVICES_TO_MANAGE 2>/dev/null || true
 
 echo "[bulk-generate] running simulator.bulk_generate; final output line is summary JSON."
 docker compose run --rm \

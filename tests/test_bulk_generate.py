@@ -15,12 +15,13 @@ asyncpg = pytest.importorskip("asyncpg")
 
 from simulator.bulk_generate import (  # noqa: E402
     BulkRunConfig,
+    DATABASE_URL_BULK,
     _parse_end_at,
     _rate_multiplier_from_env,
     bulk_generate,
 )
 from simulator.cart_builder import Cart  # noqa: E402
-from simulator.generator import DATABASE_URL_SIMULATOR, LONDON_TZ, generate_order  # noqa: E402
+from simulator.generator import LONDON_TZ, generate_order  # noqa: E402
 from simulator.timestamps import synthesize_chronological_timestamps  # noqa: E402
 
 
@@ -63,7 +64,7 @@ def _window_start(config: BulkRunConfig) -> datetime:
 
 async def _create_pool_or_skip() -> asyncpg.Pool:
     try:
-        pool = await asyncpg.create_pool(DATABASE_URL_SIMULATOR, min_size=2, max_size=5)
+        pool = await asyncpg.create_pool(DATABASE_URL_BULK, min_size=2, max_size=5)
     except Exception as exc:
         pytest.skip(f"requires live DB: {exc}")
     return pool
