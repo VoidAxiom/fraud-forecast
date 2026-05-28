@@ -69,11 +69,13 @@ def _fake_row(i: int) -> dict[str, Any]:
     }
 
 
-def _prime_empty_persistent_db(conn: unittest.mock.AsyncMock) -> None:
-    rows: list[dict[str, Any]] = []
+def _prime_empty_persistent_db(
+    conn: unittest.mock.AsyncMock,
+) -> dict[UUID, dict[str, Any]]:
+    rows_dict: dict[UUID, dict[str, Any]] = {}
 
     async def _fetch(_query: str) -> list[dict[str, Any]]:
-        return list(rows)
+        return list(rows_dict.values())
 
     async def _executemany(
         _query: str,
@@ -86,19 +88,19 @@ def _prime_empty_persistent_db(conn: unittest.mock.AsyncMock) -> None:
             device_uuid,
             preferred_store_ids,
         ) in values:
-            rows.append(
-                {
+            if account_id not in rows_dict:
+                rows_dict[account_id] = {
                     "account_id": account_id,
                     "reseller_address": json.loads(reseller_address),
                     "delivery_address_uuid": delivery_address_uuid,
                     "device_uuid": device_uuid,
                     "preferred_store_ids": list(preferred_store_ids),
                 }
-            )
 
     conn.fetch.side_effect = _fetch
     conn.executemany.side_effect = _executemany
     _prime_transaction_mock(conn)
+    return rows_dict
 
 
 def test_reseller_init(mock_conn: unittest.mock.AsyncMock) -> None:
@@ -143,7 +145,7 @@ def test_init_idempotent_across_restarts(mock_conn: unittest.mock.AsyncMock) -> 
     second_account_ids = [account.account_id for account in RESELLER_ACCOUNTS]
 
     assert second_account_ids == first_account_ids
-    mock_conn.executemany.assert_not_called()
+    assert mock_conn.executemany.call_count == 2
 
 
 def test_init_loads_existing_from_db(mock_conn: unittest.mock.AsyncMock) -> None:
@@ -163,6 +165,39 @@ def test_init_loads_existing_from_db(mock_conn: unittest.mock.AsyncMock) -> None
 
     assert len(RESELLER_ACCOUNTS) == 50
     mock_conn.executemany.assert_called_once()
+
+
+def test_init_no_pk_collision_on_topup(mock_conn: unittest.mock.AsyncMock) -> None:
+    rows_dict = _prime_empty_persistent_db(mock_conn)
+    store_id_pool = [UUID(int=i + 1) for i in range(5)]
+
+    asyncio.run(
+        init_reseller_accounts(
+            rng=random.Random(42),
+            conn=mock_conn,
+            store_id_pool=store_id_pool,
+            n=50,
+        )
+    )
+    assert len(RESELLER_ACCOUNTS) == 50
+
+    account_ids_to_remove = list(rows_dict)[:20]
+    for account_id in account_ids_to_remove:
+        del rows_dict[account_id]
+    assert len(rows_dict) == 30
+
+    asyncio.run(
+        init_reseller_accounts(
+            rng=random.Random(42),
+            conn=mock_conn,
+            store_id_pool=store_id_pool,
+            n=50,
+        )
+    )
+
+    assert len(RESELLER_ACCOUNTS) == 50
+    assert len({account.account_id for account in RESELLER_ACCOUNTS}) == 50
+    assert mock_conn.executemany.call_count == 2
 
 
 def test_registered() -> None:
