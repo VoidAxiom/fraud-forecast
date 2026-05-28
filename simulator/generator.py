@@ -581,7 +581,7 @@ def pick_device_and_ip(
         device = dict(rng.choice(user_devices))
     else:
         device = {
-            "device_id": uuid.uuid4(),
+            "device_id": uuid.UUID(bytes=bytes(rng.getrandbits(8) for _ in range(16))),
             "device_type": "MOBILE_APP",
             "platform": rng.choice(["iOS", "Android"]),
             "os_version": "17.0",
@@ -595,9 +595,8 @@ def pick_device_and_ip(
 
 
 def generate_order_number(rng: random.Random, *, year: int | None = None) -> str:
-    _ = rng
     order_year = datetime.now(tz=LONDON_TZ).year if year is None else year
-    suffix = base64.b32encode(uuid.uuid4().bytes).decode()[0:10]
+    suffix = base64.b32encode(bytes(rng.getrandbits(8) for _ in range(16))).decode()[0:10]
     return f"JE-{order_year}-{suffix}"
 
 
@@ -1096,6 +1095,7 @@ async def insert_order(
     fraud_category: str | None = None,
     pattern_notes: str | None = None,
     ring_id: uuid.UUID | None = None,
+    rng: Optional[random.Random] = None,
 ) -> tuple[uuid.UUID, datetime]:
     order_row = {
         "order_id": order_id if order_id is not None else uuid.uuid4(),
@@ -1277,9 +1277,14 @@ async def insert_order(
         placed_at = inserted["placed_at"]
 
         if cart.items:
+            def _next_order_item_id() -> uuid.UUID:
+                if rng is None:
+                    return uuid.uuid4()
+                return uuid.UUID(bytes=bytes(rng.getrandbits(8) for _ in range(16)))
+
             item_rows = [
                 (
-                    uuid.uuid4(),
+                    _next_order_item_id(),
                     order_id,
                     placed_at,
                     item.item_id,
@@ -1731,7 +1736,7 @@ async def generate_order(
             snapshot["order_number"] = generate_order_number(rng, year=placed_at.year)
             if fraud_ground_truth is None:
                 if order_id_override is None:
-                    order_id, _ = await insert_order(conn, snapshot, cart, placed_at)
+                    order_id, _ = await insert_order(conn, snapshot, cart, placed_at, rng=rng)
                 else:
                     order_id, _ = await insert_order(
                         conn,
@@ -1739,6 +1744,7 @@ async def generate_order(
                         cart,
                         placed_at,
                         order_id=order_id_override,
+                        rng=rng,
                     )
             else:
                 if order_id_override is None:
@@ -1751,6 +1757,7 @@ async def generate_order(
                         fraud_category=fraud_ground_truth.fraud_category,
                         pattern_notes=fraud_ground_truth.pattern_notes,
                         ring_id=fraud_ground_truth.ring_id,
+                        rng=rng,
                     )
                 else:
                     order_id, _ = await insert_order(
@@ -1763,6 +1770,7 @@ async def generate_order(
                         fraud_category=fraud_ground_truth.fraud_category,
                         pattern_notes=fraud_ground_truth.pattern_notes,
                         ring_id=fraud_ground_truth.ring_id,
+                        rng=rng,
                     )
             break
         except asyncpg.UniqueViolationError:
