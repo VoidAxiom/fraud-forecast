@@ -450,6 +450,7 @@ def pick_store_for_user(
     user_data: dict[str, Any],
     stores_by_city: dict[str, list[dict[str, Any]]],
     store_hours_by_store_id: dict[uuid.UUID, list[dict[str, Any]]],
+    now: datetime | None = None,
 ) -> dict[str, Any]:
     default_lat, default_lon, user_city = _default_user_location(user_data)
 
@@ -487,10 +488,10 @@ def pick_store_for_user(
             datetime.now(tz=LONDON_TZ).replace(hour=19, minute=0, second=0, microsecond=0).time()
         )
     else:
-        now = datetime.now(tz=LONDON_TZ)
-        weekday = now.isoweekday() % 7
+        effective_now = now if now is not None else datetime.now(tz=LONDON_TZ)
+        weekday = effective_now.isoweekday() % 7
         prev_weekday = (weekday - 1) % 7
-        current_time = now.time()
+        current_time = effective_now.time()
     open_stores = []
     for store in stores:
         store_id = store["store_id"]
@@ -1570,7 +1571,7 @@ async def generate_order(
     user_data = await load_user_data(conn, user_id)
     user = user_data["user"]
 
-    store = pick_store_for_user(rng, user_data, stores_by_city, store_hours_by_store_id)
+    store = pick_store_for_user(rng, user_data, stores_by_city, store_hours_by_store_id, now=now)
     order_type = _select_order_type(rng, store)
     if order_type == "DINE_IN" and not bool(store.get("accepts_in_store")):
         raise RuntimeError("DINE_IN selected but store does not accept in-store orders")
