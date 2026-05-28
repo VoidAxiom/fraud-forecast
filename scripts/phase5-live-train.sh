@@ -62,6 +62,7 @@ fi
 echo ""
 echo "[3/5] XGBoost training..."
 STEP3_START=$(date +%s)
+XGB_FAILED=0
 docker compose --profile tools run --rm app python -c "
 from ml.training.train_xgboost import train_xgboost
 
@@ -76,16 +77,20 @@ XGB_DIR=$(ls -td models/xgboost/v*/ 2>/dev/null | head -1)
 if [ -z "$XGB_DIR" ]; then
   echo "ERROR: step 3 produced no XGBoost model directory under models/xgboost/v*/ -- step 3 may have failed"
   echo "Skipping step 5 (evaluate). Check step 3 output above."
-  exit 1
+  XGB_FAILED=1
+  XGB_MODEL_PATH=""
+else
+  DIR_MTIME=$(stat -c %Y "$XGB_DIR" 2>/dev/null || stat -f %m "$XGB_DIR" 2>/dev/null)
+  if [ -n "$DIR_MTIME" ] && { [ "$DIR_MTIME" -lt "$STEP3_START" ] || [ "$(($(date +%s) - DIR_MTIME))" -gt 1800 ]; }; then
+    echo "ERROR: newest XGBoost model dir ${XGB_DIR} was not created during step 3 or is older than 30 minutes -- step 3 may have failed (stale artifact from prior run)"
+    echo "Skipping step 5 (evaluate). Check step 3 output above."
+    XGB_FAILED=1
+    XGB_MODEL_PATH=""
+  else
+    XGB_MODEL_PATH="${XGB_DIR}model.bin"
+    echo "XGBoost model: $XGB_MODEL_PATH"
+  fi
 fi
-DIR_MTIME=$(stat -c %Y "$XGB_DIR" 2>/dev/null || stat -f %m "$XGB_DIR" 2>/dev/null)
-if [ -n "$DIR_MTIME" ] && { [ "$DIR_MTIME" -lt "$STEP3_START" ] || [ "$(($(date +%s) - DIR_MTIME))" -gt 1800 ]; }; then
-  echo "ERROR: newest XGBoost model dir ${XGB_DIR} was not created during step 3 or is older than 30 minutes -- step 3 may have failed (stale artifact from prior run)"
-  echo "Skipping step 5 (evaluate). Check step 3 output above."
-  exit 1
-fi
-XGB_MODEL_PATH="${XGB_DIR}model.bin"
-echo "XGBoost model: $XGB_MODEL_PATH"
 
 echo ""
 echo "[4/5] DNN training..."
@@ -96,6 +101,11 @@ STEP4_EXIT=$?
 if [ $STEP4_EXIT -ne 0 ]; then
   echo "ERROR: step 4 (DNN training) failed with exit $STEP4_EXIT -- aborting"
   exit $STEP4_EXIT
+fi
+
+if [ "${XGB_FAILED:-0}" -eq 1 ]; then
+  echo "Skipping step 5 (evaluate): XGBoost model unavailable (step 3 failed)"
+  exit 1
 fi
 
 echo ""
