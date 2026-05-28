@@ -1916,9 +1916,10 @@ async def main() -> None:
                         }
                     )
                 )
-                rate_multiplier = (
-                    await _read_runtime_rate(redis_conn, config.orders_per_second)
-                ) / _MEAN_HOURLY_RATE
+                if os.environ.get("LIVE_RATE_MULTIPLIER") is None:
+                    rate_multiplier = (
+                        await _read_runtime_rate(redis_conn, config.orders_per_second)
+                    ) / _MEAN_HOURLY_RATE
                 orders_since_report = 0
                 successful_orders = 0
                 window_errors = 0
