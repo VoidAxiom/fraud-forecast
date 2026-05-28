@@ -80,6 +80,7 @@ fi
 # docker compose inherits COMPOSE_PROJECT_NAME when the caller sets it.
 docker compose run --rm \
   -v "$(pwd)/reports:/app/reports" \
+  -v "$(pwd)/ml/training:/app/ml/training" \
   app "${ARGS[@]}"
 
 printf '%s\n' "$REPORT_DIR"
