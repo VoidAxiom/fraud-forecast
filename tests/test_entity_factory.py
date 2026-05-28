@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import random
 import uuid
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock
@@ -25,7 +26,8 @@ def _execute_values(conn: Any) -> tuple[Any, ...]:
 
 def test_create_fresh_device_inserts_realistic_device_row() -> None:
     conn = _mock_conn()
-    device_id = asyncio.run(create_fresh_device(random.Random(42), conn))
+    now = datetime(2024, 1, 15, 10, 0, 0, tzinfo=timezone.utc)
+    device_id = asyncio.run(create_fresh_device(random.Random(42), conn, now))
     values = _execute_values(conn)
 
     assert isinstance(device_id, uuid.UUID)
@@ -42,8 +44,9 @@ def test_create_fresh_device_inserts_realistic_device_row() -> None:
 
 def test_create_fresh_device_honours_ios_platform_bias() -> None:
     conn = _mock_conn()
+    now = datetime(2024, 1, 15, 10, 0, 0, tzinfo=timezone.utc)
     device_id = asyncio.run(
-        create_fresh_device(random.Random(7), conn, platform_bias="iOS")
+        create_fresh_device(random.Random(7), conn, now, platform_bias="iOS")
     )
     values = _execute_values(conn)
 
@@ -57,7 +60,8 @@ def test_create_fresh_device_honours_ios_platform_bias() -> None:
 
 def test_create_fresh_device_returns_uuid_not_string() -> None:
     conn = _mock_conn()
-    device_id = asyncio.run(create_fresh_device(random.Random(99), conn))
+    now = datetime(2024, 1, 15, 10, 0, 0, tzinfo=timezone.utc)
+    device_id = asyncio.run(create_fresh_device(random.Random(99), conn, now))
 
     assert isinstance(device_id, uuid.UUID)
     assert not isinstance(device_id, str)

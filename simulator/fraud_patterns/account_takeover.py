@@ -93,6 +93,7 @@ async def generate_account_takeover_fraud(
         device_id = await create_fresh_device(
             ctx.rng,
             ctx.conn,
+            ctx.now,
             platform_bias=device_platform,
         )
 

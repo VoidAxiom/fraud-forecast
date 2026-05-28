@@ -8,22 +8,15 @@ from __future__ import annotations
 
 import hashlib
 import random
-import sys
 import uuid
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
 from typing import TYPE_CHECKING
 
-if sys.version_info >= (3, 9):
-    from zoneinfo import ZoneInfo
-else:
-    from backports.zoneinfo import ZoneInfo
-
 if TYPE_CHECKING:
     import asyncpg
 
-LONDON_TZ = ZoneInfo("Europe/London")
 _APP_VERSIONS = ["4.30.1", "4.31.0", "4.32.1", "4.33.0", "4.34.2", "4.35.0"]
 _IOS_BROWSERS = ["Safari", "Chrome", "Firefox"]
 _ANDROID_BROWSERS = ["Chrome", "Firefox", "Samsung"]
@@ -140,13 +133,13 @@ def _build_device_profile(
 async def create_fresh_device(
     rng: random.Random,
     conn: asyncpg.Connection,
+    now: datetime,
     *,
     platform_bias: str | None = None,
 ) -> uuid.UUID:
     """INSERT a new devices row with realistic attributes and return its UUID."""
-    device_id = uuid.uuid4()
+    device_id = uuid.UUID(int=rng.getrandbits(128))
     profile = _build_device_profile(rng, platform_bias)
-    now = datetime.now(tz=LONDON_TZ)
     fp_raw = (
         f"fraud:{device_id}:{profile.device_type}:"
         f"{profile.platform}:{rng.getrandbits(64)}"
