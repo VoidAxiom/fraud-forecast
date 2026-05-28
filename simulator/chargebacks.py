@@ -172,6 +172,107 @@ def bulk_chargeback_received_at(
     return min(chargeback_at, window_end)
 
 
+def bulk_refund_issued_at(
+    order_id: uuid.UUID,
+    delivered_at: datetime.datetime,
+    window_end: datetime.datetime,
+) -> datetime.datetime | None:
+    """Return the deterministic refund issue time for a bulk refund-abuse order.
+
+    Returns None if the computed issue time exceeds window_end.
+    Uses the same seed as _refund_due_at_hours so the delay is consistent
+    with the real-time daemon.
+    """
+    refund_delay_hours = _refund_due_at_hours(order_id)
+    issued_at = delivered_at + datetime.timedelta(hours=refund_delay_hours)
+    if issued_at > window_end:
+        return None
+    return issued_at
+
+
+async def bulk_emit_chargeback(
+    order_id: uuid.UUID,
+    conn: asyncpg.Connection,
+    *,
+    received_at: datetime.datetime,
+) -> None:
+    """Emit a chargeback for a bulk order at the pre-computed received_at time.
+
+    Unlike the live emitter, this function does NOT recompute the
+    threshold or probability - the caller (bulk_chargeback_received_at) has
+    already made those decisions. This avoids the microsecond rounding issue
+    where the recomputed age can be infinitesimally below the threshold.
+    """
+    row = await conn.fetchrow(
+        """
+        SELECT * FROM (
+            SELECT
+              o.order_id,
+              o.placed_at AS order_placed_at,
+              o.total_pence,
+              gt.is_fraud
+            FROM orders o
+            JOIN sim.simulator_ground_truth gt USING (order_id)
+            WHERE o.order_id = $1
+              AND o.delivered_at IS NOT NULL
+              AND o.chargeback_received_at IS NULL
+              AND o.fraud_outcome IS NULL
+              AND NOT EXISTS (SELECT 1 FROM chargebacks cb WHERE cb.order_id = o.order_id)
+            UNION ALL
+            SELECT
+              o.order_id,
+              o.placed_at AS order_placed_at,
+              o.total_pence,
+              gt.is_fraud
+            FROM orders_archive o
+            JOIN sim.simulator_ground_truth gt USING (order_id)
+            WHERE o.order_id = $1
+              AND o.delivered_at IS NOT NULL
+              AND o.chargeback_received_at IS NULL
+              AND o.fraud_outcome IS NULL
+              AND NOT EXISTS (SELECT 1 FROM chargebacks cb WHERE cb.order_id = o.order_id)
+        ) _candidate
+        LIMIT 1
+        """,
+        order_id,
+    )
+    if row is None:
+        return
+
+    candidate_order_id = _coerce_order_id(row["order_id"])
+    order_placed_at = row["order_placed_at"]
+    total_pence = int(row["total_pence"])
+    is_fraud = bool(row["is_fraud"])
+    reason_category = "FRAUD" if is_fraud else "OTHER"
+    fraud_outcome = "CHARGEBACK" if is_fraud else "LEGIT"
+
+    async with conn.transaction():
+        await conn.execute(
+            _CHARGEBACK_INSERT_AT_SQL,
+            candidate_order_id,
+            order_placed_at,
+            reason_category,
+            total_pence,
+            received_at,
+        )
+        await conn.execute(
+            _CHARGEBACK_ORDERS_UPDATE_AT_SQL,
+            candidate_order_id,
+            order_placed_at,
+            received_at,
+            total_pence,
+            fraud_outcome,
+        )
+        await conn.execute(
+            _CHARGEBACK_ARCHIVE_UPDATE_AT_SQL,
+            candidate_order_id,
+            order_placed_at,
+            received_at,
+            total_pence,
+            fraud_outcome,
+        )
+
+
 def _refund_due_at_hours(order_id: uuid.UUID) -> float:
     """Deterministic 0-5d refund delay (in hours) sampled per order_id.
 

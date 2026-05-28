@@ -33,7 +33,11 @@ from typing import Any, Optional
 import asyncpg  # type: ignore[import]  # asyncpg 0.28 lacks type stubs in the tool env.
 import redis.asyncio as aioredis
 
-from simulator.chargebacks import bulk_chargeback_received_at, maybe_emit_chargeback
+from simulator.chargebacks import (
+    bulk_chargeback_received_at,
+    bulk_emit_chargeback,
+    bulk_refund_issued_at,
+)
 from simulator.fraud_patterns.collusive_merchant import init_collusive_stores
 from simulator.fraud_patterns.promo_abuse import init_rings_from_db as init_promo_abuse_rings
 from simulator.fraud_patterns.reseller import init_reseller_accounts
@@ -357,6 +361,9 @@ async def bulk_generate(
     # the same seed don't collide on sim.simulator_ground_truth.order_id.
     _window_seed = int(window_start.timestamp()) & 0x7FFFFFFFFFFFFFFF
     rng.seed(config.seed ^ _window_seed)
+    # Use a separate RNG for fraud-state bootstrap so its presence/absence
+    # does not shift bulk generation draws (fixes PRRT_kwDOSmPsa86Fdm5d).
+    bootstrap_rng = random.Random(config.seed ^ 0xC0DE_B007)
     run_id = f"bulk_{datetime.now(tz=LONDON_TZ).strftime('%Y%m%d_%H%M%S')}_{config.seed}"
 
     resolved_redis: aioredis.Redis[Any]
@@ -374,7 +381,7 @@ async def bulk_generate(
 
         user_picker = WeightedUserPicker(pool, resolved_redis)
         await user_picker.refresh()
-        await ensure_fraud_pattern_state(pool, rng, stores_by_city)
+        await ensure_fraud_pattern_state(pool, bootstrap_rng, stores_by_city)
 
         timestamps = synthesize_chronological_timestamps(
             window_start=window_start,
@@ -445,7 +452,32 @@ async def bulk_generate(
                         window_end=window_end,
                     )
                     if cb_time is not None:
-                        await maybe_emit_chargeback(order_id, conn, now=cb_time)
+                        await bulk_emit_chargeback(order_id, conn, received_at=cb_time)
+                if (
+                    order_row is not None
+                    and order_row["delivered_at"] is not None
+                    and str(order_row["fraud_category"]) == "refund_abuse"
+                ):
+                    refund_time = bulk_refund_issued_at(
+                        order_id=order_id,
+                        delivered_at=order_row["delivered_at"],
+                        window_end=window_end,
+                    )
+                    if refund_time is not None:
+                        await conn.execute(
+                            """
+INSERT INTO refunds (order_id, order_placed_at, amount_pence, reason, initiated_by, issued_at)
+SELECT $1, o.placed_at, o.total_pence, 'order_quality_complaint', 'USER', $2
+FROM (
+    SELECT placed_at, total_pence FROM orders WHERE order_id = $1
+    UNION ALL
+    SELECT placed_at, total_pence FROM orders_archive WHERE order_id = $1
+) o
+ON CONFLICT (order_id) DO NOTHING
+""",
+                            order_id,
+                            refund_time,
+                        )
 
             processed += 1
             if processed % 1000 == 0:
