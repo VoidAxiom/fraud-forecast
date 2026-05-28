@@ -65,3 +65,26 @@ def test_create_fresh_device_returns_uuid_not_string() -> None:
 
     assert isinstance(device_id, uuid.UUID)
     assert not isinstance(device_id, str)
+
+
+def test_create_fresh_device_allows_seeded_replay_conflict() -> None:
+    first_conn = _mock_conn()
+    replay_conn = _mock_conn()
+    now = datetime(2024, 1, 15, 10, 0, 0, tzinfo=timezone.utc)
+
+    first_device_id = asyncio.run(
+        create_fresh_device(random.Random(275), first_conn, now)
+    )
+    replay_device_id = asyncio.run(
+        create_fresh_device(random.Random(275), replay_conn, now)
+    )
+    first_values = _execute_values(first_conn)
+    replay_values = _execute_values(replay_conn)
+    first_query = first_conn.execute.await_args.args[0]
+    replay_query = replay_conn.execute.await_args.args[0]
+
+    assert first_device_id == replay_device_id
+    assert first_values[0] == first_device_id
+    assert replay_values[0] == replay_device_id
+    assert "ON CONFLICT (device_id) DO NOTHING" in first_query
+    assert "ON CONFLICT (device_id) DO NOTHING" in replay_query

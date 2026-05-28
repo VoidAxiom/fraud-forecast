@@ -161,6 +161,7 @@ async def create_fresh_device(
             $12, $13, $14,
             $15, $16, $17, $18
         )
+        ON CONFLICT (device_id) DO NOTHING
         """,
         device_id,
         fingerprint,
