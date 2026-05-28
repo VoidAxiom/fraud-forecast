@@ -7,6 +7,8 @@ from typing import Any, Dict, Tuple
 
 import numpy as np
 import pytest
+import tensorflow as tf  # type: ignore[import-untyped]
+import xgboost as xgb
 
 # The packet requires Python 3.8-compatible typing names here.
 # ruff: noqa: UP006
@@ -25,12 +27,69 @@ from ml.training.evaluate import (
     recall_at_precision,
     save_report,
 )
+from ml.training.train_xgboost import FEATURE_NAMES, LABEL_NAME, _FEATURE_SPEC, tfrecords_to_numpy
 
 
 def _labels_and_scores() -> Tuple[np.ndarray, np.ndarray]:
     y_true = np.array([0, 0, 1, 1, 0, 1], dtype=np.int64)
     y_scores = np.array([0.1, 0.2, 0.8, 0.9, 0.3, 0.7], dtype=np.float64)
     return y_true, y_scores
+
+
+def _serialized_tfrecord_example(label: int, row_index: int) -> bytes:
+    features: Dict[str, Any] = {}
+    base_value = 5.0 if label == 1 else 0.0
+    for feature_name in FEATURE_NAMES:
+        spec = _FEATURE_SPEC[feature_name]
+        if spec.dtype == tf.float32:
+            features[feature_name] = tf.train.Feature(
+                float_list=tf.train.FloatList(value=[base_value + (0.01 * float(row_index))]),
+            )
+        elif spec.dtype == tf.int64:
+            features[feature_name] = tf.train.Feature(
+                int64_list=tf.train.Int64List(value=[int(base_value) + row_index + 1]),
+            )
+        else:
+            raise AssertionError(f"Unsupported TFRecord dtype for {feature_name}: {spec.dtype}")
+
+    features[LABEL_NAME] = tf.train.Feature(int64_list=tf.train.Int64List(value=[label]))
+    example = tf.train.Example(features=tf.train.Features(feature=features))
+    return bytes(example.SerializeToString())
+
+
+def _write_gzip_tfrecord(directory: Path) -> Path:
+    labels = (1, 0, 1, 0)
+    directory.mkdir(parents=True, exist_ok=True)
+    tfrecord_path = directory / "part-0.tfrecord.gz"
+    writer = tf.io.TFRecordWriter(str(tfrecord_path), options="GZIP")
+    try:
+        for row_index, label in enumerate(labels):
+            writer.write(_serialized_tfrecord_example(label=label, row_index=row_index))
+    finally:
+        writer.close()
+    return tfrecord_path
+
+
+def _write_xgboost_model(tfrecord_dir: Path, model_path: Path) -> None:
+    x_test, y_test = tfrecords_to_numpy(str(tfrecord_dir))
+    model_path.parent.mkdir(parents=True, exist_ok=True)
+    dtrain = xgb.DMatrix(x_test, label=y_test)
+    model = xgb.train(
+        {
+            "objective": "binary:logistic",
+            "eval_metric": "aucpr",
+            "max_depth": 1,
+            "eta": 1.0,
+            "min_child_weight": 0.0,
+            "seed": 7,
+            "nthread": 1,
+            "verbosity": 0,
+        },
+        dtrain,
+        num_boost_round=1,
+        verbose_eval=False,
+    )
+    model.save_model(str(model_path))
 
 
 def test_compute_metrics_produces_all_headline_metrics_and_confusion_matrices() -> None:
@@ -183,6 +242,73 @@ def test_main_loads_npz_saves_versioned_report_and_prints_json(
     assert (reports_dir / "cli-version" / "pr_curve.png").exists()
     assert (reports_dir / "cli-version" / "roc_curve.png").exists()
     assert (reports_dir / "cli-version" / "calibration.png").exists()
+
+
+def test_main_loads_tfrecord_directory_and_runs_evaluate(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    tfrecord_dir = tmp_path / "test_tfrecord"
+    _write_gzip_tfrecord(tfrecord_dir)
+    model_path = tmp_path / "models" / "xgboost" / "test-version" / "model.bst"
+    _write_xgboost_model(tfrecord_dir, model_path)
+    reports_dir = tmp_path / "reports"
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "evaluate",
+            "--version",
+            "tfrecord-version",
+            "--model-path",
+            str(model_path),
+            "--test-data-path",
+            str(tfrecord_dir),
+            "--reports-dir",
+            str(reports_dir),
+        ],
+    )
+
+    evaluate_main()
+
+    printed_metrics = json.loads(capsys.readouterr().out)
+    assert "auprc" in printed_metrics
+    assert (reports_dir / "tfrecord-version" / "metrics.json").exists()
+
+
+def test_main_tfrecord_branch_uses_model_predictions(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    tfrecord_dir = tmp_path / "test_tfrecord"
+    _write_gzip_tfrecord(tfrecord_dir)
+    model_path = tmp_path / "models" / "xgboost" / "test-version" / "model.bst"
+    _write_xgboost_model(tfrecord_dir, model_path)
+    reports_dir = tmp_path / "reports"
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "evaluate",
+            "--version",
+            "tfrecord-predictions",
+            "--model-path",
+            str(model_path),
+            "--test-data-path",
+            str(tfrecord_dir),
+            "--reports-dir",
+            str(reports_dir),
+        ],
+    )
+
+    evaluate_main()
+
+    printed_metrics = json.loads(capsys.readouterr().out)
+    assert 0.0 <= printed_metrics["auprc"] <= 1.0
 
 
 def test_main_uses_empty_categories_when_npz_omits_categories(
