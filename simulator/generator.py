@@ -130,6 +130,7 @@ def _extract_indexed_float_map(
 _TIMING_PATTERNS = _load_timing_patterns()
 _HOURLY_RATE = _extract_indexed_float_map(_TIMING_PATTERNS, "hourly_rate", range(24))
 _MEAN_HOURLY_RATE: float = sum(_HOURLY_RATE.values()) / len(_HOURLY_RATE)
+_DEFAULT_LIVE_RATE_MULTIPLIER: float = 0.02
 _DAY_OF_WEEK_MULTIPLIER = _extract_indexed_float_map(
     _TIMING_PATTERNS,
     "day_of_week_multiplier",
@@ -1295,6 +1296,7 @@ async def insert_order(
         placed_at = inserted["placed_at"]
 
         if cart.items:
+
             def _next_order_item_id() -> uuid.UUID:
                 if rng is None:
                     return uuid.uuid4()
@@ -1375,6 +1377,44 @@ async def _read_runtime_rate(
     except (TypeError, ValueError):
         return fallback
     return parsed if parsed > 0 else fallback
+
+
+async def _read_runtime_rate_optional(
+    redis_conn: aioredis.Redis[Any],
+) -> Optional[int]:
+    """Return the explicit Redis-stored runtime rate, or None if absent/invalid."""
+    raw = await redis_conn.get("simulator:rate_per_second")
+    if raw is None:
+        return None
+    if isinstance(raw, bytes):
+        raw = raw.decode()
+    try:
+        parsed = int(raw)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed > 0 else None
+
+
+def _parse_live_rate_multiplier_env(
+    env_value: str | None,
+) -> tuple[float, bool]:
+    """Return (rate_multiplier, override_active).
+
+    Empty / None -> (_DEFAULT_LIVE_RATE_MULTIPLIER, False); no warning.
+    Non-empty non-numeric -> warn and return default with no override.
+    Numeric -> parsed multiplier with override active.
+    """
+    stripped = (env_value or "").strip()
+    if not stripped:
+        return (_DEFAULT_LIVE_RATE_MULTIPLIER, False)
+    try:
+        return (float(stripped), True)
+    except ValueError:
+        logger.warning(
+            "invalid_live_rate_multiplier env=%r falling_back_to_default",
+            env_value,
+        )
+        return (_DEFAULT_LIVE_RATE_MULTIPLIER, False)
 
 
 def _apply_fraud_order_attrs(
@@ -1890,18 +1930,9 @@ async def main() -> None:
         async with pool.acquire() as _tri_conn:
             await init_triangulation_accounts(rng, _tri_conn)
 
-        _live_rate_override_active: bool = False
-        _live_rate_env = os.environ.get("LIVE_RATE_MULTIPLIER")
-        if _live_rate_env is not None:
-            try:
-                rate_multiplier = float(_live_rate_env)
-                _live_rate_override_active = True
-            except ValueError:
-                logger.warning("invalid_live_rate_multiplier falling_back_to_ops_derived")
-                rate_multiplier = config.orders_per_second / _MEAN_HOURLY_RATE
-        else:
-            # Scale so that average hourly rate = config.orders_per_second.
-            rate_multiplier = config.orders_per_second / _MEAN_HOURLY_RATE
+        rate_multiplier, _live_rate_override_active = _parse_live_rate_multiplier_env(
+            os.environ.get("LIVE_RATE_MULTIPLIER"),
+        )
 
         day_multiplier_cache: dict[date, float] = {}
         orders_since_report = 0
@@ -1982,9 +2013,11 @@ async def main() -> None:
                     )
                 )
                 if not _live_rate_override_active:
-                    rate_multiplier = (
-                        await _read_runtime_rate(redis_conn, config.orders_per_second)
-                    ) / _MEAN_HOURLY_RATE
+                    runtime_ops_per_second_opt = await _read_runtime_rate_optional(redis_conn)
+                    if runtime_ops_per_second_opt is None:
+                        rate_multiplier = _DEFAULT_LIVE_RATE_MULTIPLIER
+                    else:
+                        rate_multiplier = runtime_ops_per_second_opt / _MEAN_HOURLY_RATE
                 orders_since_report = 0
                 successful_orders = 0
                 window_errors = 0

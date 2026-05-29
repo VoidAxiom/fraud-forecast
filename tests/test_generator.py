@@ -18,9 +18,12 @@ import redis.asyncio as aioredis
 from simulator.cart_builder import Cart
 from simulator.fraud_patterns import GroundTruth
 from simulator.generator import (
+    _DEFAULT_LIVE_RATE_MULTIPLIER,
     _apply_fraud_identity_overrides,
     _apply_fraud_order_attrs,
+    _parse_live_rate_multiplier_env,
     _parse_fraud_rate,
+    _read_runtime_rate_optional,
     _resolve_card_country,
     _select_order_type,
     apply_promo,
@@ -993,7 +996,7 @@ def test_fraud_injection_rate_over_500_orders() -> None:
             fraud_category: str | None = None,
             pattern_notes: str | None = None,
             ring_id: uuid.UUID | None = None,
-            rng: Optional[random.Random] = None,
+            rng: random.Random | None = None,
         ) -> tuple[uuid.UUID, datetime]:
             inserted_fraud_flags.append(is_fraud)
             if is_fraud:
@@ -1163,7 +1166,7 @@ def test_fraud_order_propagates_avs_cvv_to_insert_order() -> None:
             fraud_category: str | None = None,
             pattern_notes: str | None = None,
             ring_id: uuid.UUID | None = None,
-            rng: Optional[random.Random] = None,
+            rng: random.Random | None = None,
         ) -> tuple[uuid.UUID, datetime]:
             captured_snapshots.append(dict(snapshot))
             return uuid.UUID(int=99), datetime.now(tz=timezone.utc)
@@ -1468,7 +1471,7 @@ def test_live_rate_multiplier_preserved_across_report_boundary(
     async def _run() -> None:
         fake_pool = _FakePool()
         fake_redis = _FakeRedis()
-        runtime_rate_mock = AsyncMock(return_value=999.0)
+        runtime_rate_mock = AsyncMock(return_value=999)
         original_sleep = asyncio.sleep
         report_seen = False
         sleep_calls = 0
@@ -1574,7 +1577,10 @@ def test_live_rate_multiplier_preserved_across_report_boundary(
                 )
             )
             stack.enter_context(
-                patch("simulator.generator._read_runtime_rate", new=runtime_rate_mock)
+                patch(
+                    "simulator.generator._read_runtime_rate_optional",
+                    new=runtime_rate_mock,
+                )
             )
             stack.enter_context(
                 patch("simulator.generator.current_rate", side_effect=_current_rate)
@@ -1582,9 +1588,7 @@ def test_live_rate_multiplier_preserved_across_report_boundary(
             stack.enter_context(
                 patch("simulator.generator.logger.info", side_effect=_record_report)
             )
-            stack.enter_context(
-                patch("simulator.generator.asyncio.sleep", side_effect=_sleep)
-            )
+            stack.enter_context(patch("simulator.generator.asyncio.sleep", side_effect=_sleep))
 
             with pytest.raises(_StopMain):
                 await main()
@@ -1635,7 +1639,7 @@ def test_live_rate_multiplier_invalid_does_not_block_redis_refresh(
     async def _run() -> None:
         fake_pool = _FakePool()
         fake_redis = _FakeRedis()
-        runtime_rate_mock = AsyncMock(return_value=999.0)
+        runtime_rate_mock = AsyncMock(return_value=999)
         original_sleep = asyncio.sleep
         report_seen = False
         sleep_calls = 0
@@ -1730,24 +1734,76 @@ def test_live_rate_multiplier_invalid_does_not_block_redis_refresh(
                 )
             )
             stack.enter_context(
-                patch("simulator.generator._read_runtime_rate", new=runtime_rate_mock)
+                patch(
+                    "simulator.generator._read_runtime_rate_optional",
+                    new=runtime_rate_mock,
+                )
             )
-            stack.enter_context(
-                patch("simulator.generator.current_rate", return_value=1000.0)
-            )
+            stack.enter_context(patch("simulator.generator.current_rate", return_value=1000.0))
             stack.enter_context(
                 patch("simulator.generator.logger.info", side_effect=_record_report)
             )
-            stack.enter_context(
-                patch("simulator.generator.asyncio.sleep", side_effect=_sleep)
-            )
+            stack.enter_context(patch("simulator.generator.asyncio.sleep", side_effect=_sleep))
 
             with pytest.raises(_StopMain):
                 await main()
 
         assert report_seen is True
-        runtime_rate_mock.assert_awaited_once_with(
-            fake_redis, config.orders_per_second
-        )
+        runtime_rate_mock.assert_awaited_once_with(fake_redis)
 
     asyncio.run(_run())
+
+
+def test_runtime_rate_optional_distinguishes_absent_from_explicit() -> None:
+    """An explicit rate equal to ORDERS_PER_SECOND is not treated as absent."""
+
+    async def _run() -> None:
+        redis_conn = AsyncMock()
+        redis_conn.get.return_value = None
+
+        assert await _read_runtime_rate_optional(redis_conn) is None
+
+        redis_conn.get.return_value = b"50"
+
+        assert await _read_runtime_rate_optional(redis_conn) == 50
+
+    asyncio.run(_run())
+
+
+def test_live_rate_empty_string_uses_default_no_warning(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level("WARNING", logger="simulator.generator")
+    multiplier, override = _parse_live_rate_multiplier_env("")
+    assert multiplier == _DEFAULT_LIVE_RATE_MULTIPLIER == 0.02
+    assert override is False
+    assert not any("invalid_live_rate_multiplier" in r.getMessage() for r in caplog.records)
+
+
+def test_live_rate_unset_uses_default_no_warning(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level("WARNING", logger="simulator.generator")
+    multiplier, override = _parse_live_rate_multiplier_env(None)
+    assert multiplier == _DEFAULT_LIVE_RATE_MULTIPLIER == 0.02
+    assert override is False
+    assert not any("invalid_live_rate_multiplier" in r.getMessage() for r in caplog.records)
+
+
+def test_live_rate_invalid_string_warns_and_falls_back(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level("WARNING", logger="simulator.generator")
+    multiplier, override = _parse_live_rate_multiplier_env("foo")
+    assert multiplier == _DEFAULT_LIVE_RATE_MULTIPLIER == 0.02
+    assert override is False
+    warnings = [r for r in caplog.records if "invalid_live_rate_multiplier" in r.getMessage()]
+    assert len(warnings) == 1
+
+
+def test_live_rate_valid_value_used(caplog: pytest.LogCaptureFixture) -> None:
+    caplog.set_level("WARNING", logger="simulator.generator")
+    multiplier, override = _parse_live_rate_multiplier_env("0.05")
+    assert multiplier == 0.05
+    assert override is True
+    assert not any("invalid_live_rate_multiplier" in r.getMessage() for r in caplog.records)
