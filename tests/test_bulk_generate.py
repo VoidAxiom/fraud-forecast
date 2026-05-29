@@ -225,10 +225,13 @@ def test_bulk_run_config_validates_rate_multiplier() -> None:
 
 def test_is_unplaceable_order_error_matches_open_hours() -> None:
     assert _is_unplaceable_order_error(RuntimeError("no stores in current open-hours window"))
-    assert _is_unplaceable_order_error(RuntimeError("no active stores available"))
 
 
 def test_is_unplaceable_order_error_ignores_other_runtime_errors() -> None:
+    # "no active stores available" is the empty-DB fail-fast guard raised by
+    # generator.py only when there are no active stores at all; it must
+    # propagate (NOT be skipped as an unplaceable closed-window order).
+    assert not _is_unplaceable_order_error(RuntimeError("no active stores available"))
     assert not _is_unplaceable_order_error(RuntimeError("user not found: 123"))
     assert not _is_unplaceable_order_error(RuntimeError("payment method insert returned no row"))
 
