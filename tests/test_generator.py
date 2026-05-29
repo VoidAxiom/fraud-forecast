@@ -996,7 +996,7 @@ def test_fraud_injection_rate_over_500_orders() -> None:
             fraud_category: str | None = None,
             pattern_notes: str | None = None,
             ring_id: uuid.UUID | None = None,
-            rng: Optional[random.Random] = None,
+            rng: random.Random | None = None,
         ) -> tuple[uuid.UUID, datetime]:
             inserted_fraud_flags.append(is_fraud)
             if is_fraud:
@@ -1166,7 +1166,7 @@ def test_fraud_order_propagates_avs_cvv_to_insert_order() -> None:
             fraud_category: str | None = None,
             pattern_notes: str | None = None,
             ring_id: uuid.UUID | None = None,
-            rng: Optional[random.Random] = None,
+            rng: random.Random | None = None,
         ) -> tuple[uuid.UUID, datetime]:
             captured_snapshots.append(dict(snapshot))
             return uuid.UUID(int=99), datetime.now(tz=timezone.utc)
