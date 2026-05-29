@@ -6,7 +6,7 @@ import random
 import uuid
 from contextlib import ExitStack
 from datetime import datetime, time, timedelta, timezone
-from typing import Any, Optional
+from typing import Any
 from unittest.mock import patch
 
 import pytest
@@ -16,6 +16,7 @@ asyncpg = pytest.importorskip("asyncpg")
 from simulator.bulk_generate import (  # noqa: E402
     BulkRunConfig,
     DATABASE_URL_BULK,
+    _is_unplaceable_order_error,
     _parse_end_at,
     _rate_multiplier_from_env,
     bulk_generate,
@@ -170,7 +171,7 @@ async def _fake_ephemeral_payment_method(
     _conn: asyncpg.Connection,
     user_id: uuid.UUID,
     _rng: random.Random,
-    _payment_method_id: Optional[uuid.UUID] = None,
+    _payment_method_id: uuid.UUID | None = None,
 ) -> tuple[dict[str, Any], bool]:
     return {
         "payment_method_id": uuid.uuid5(uuid.NAMESPACE_DNS, f"bulk-test-payment-{user_id}"),
@@ -220,6 +221,16 @@ def test_bulk_run_config_validates_days() -> None:
 def test_bulk_run_config_validates_rate_multiplier() -> None:
     with pytest.raises(ValueError, match="rate_multiplier must be greater than 0"):
         BulkRunConfig(days=1.0, end_at=_fixed_end_at(), seed=42, rate_multiplier=0.0)
+
+
+def test_is_unplaceable_order_error_matches_open_hours() -> None:
+    assert _is_unplaceable_order_error(RuntimeError("no stores in current open-hours window"))
+    assert _is_unplaceable_order_error(RuntimeError("no active stores available"))
+
+
+def test_is_unplaceable_order_error_ignores_other_runtime_errors() -> None:
+    assert not _is_unplaceable_order_error(RuntimeError("user not found: 123"))
+    assert not _is_unplaceable_order_error(RuntimeError("payment method insert returned no row"))
 
 
 def test_parse_end_at_none() -> None:
@@ -324,7 +335,7 @@ def test_generate_order_uses_placed_at_timestamp() -> None:
             fraud_category: str | None = None,
             pattern_notes: str | None = None,
             ring_id: uuid.UUID | None = None,
-            rng: Optional[random.Random] = None,
+            rng: random.Random | None = None,
         ) -> tuple[uuid.UUID, datetime]:
             assert not is_fraud
             assert fraud_category is None
@@ -494,8 +505,7 @@ def test_bulk_generate_force_rerun_cleans_ephemeral_state() -> None:
                         for payment_method_id in deletable_tracked_pm_ids
                     ]
                 return [
-                    {"payment_method_id": payment_method_id}
-                    for payment_method_id in tracked_pm_ids
+                    {"payment_method_id": payment_method_id} for payment_method_id in tracked_pm_ids
                 ]
 
             async def fetchval(self, _sql: str, *_args: object) -> str:
@@ -604,12 +614,8 @@ def test_bulk_generate_force_rerun_cleans_ephemeral_state() -> None:
         assert int(second["orders_generated"]) == expected_generated
 
         normalized_sql = [" ".join(sql.split()) for sql, _args in conn.executed]
-        normalized_calls = [
-            (kind, " ".join(sql.split()), args) for kind, sql, args in conn.calls
-        ]
-        metadata_lookup_kind, metadata_lookup_sql, metadata_lookup_args = (
-            normalized_calls[0]
-        )
+        normalized_calls = [(kind, " ".join(sql.split()), args) for kind, sql, args in conn.calls]
+        metadata_lookup_kind, metadata_lookup_sql, metadata_lookup_args = normalized_calls[0]
         assert metadata_lookup_kind == "fetch"
         assert metadata_lookup_sql == "SELECT value FROM sim.simulator_meta WHERE key = $1"
         assert metadata_lookup_args == (stable_metadata_key,)
@@ -630,12 +636,8 @@ def test_bulk_generate_force_rerun_cleans_ephemeral_state() -> None:
         assert "sgt.user_id" not in ring_cleanup_sql
         assert "JOIN orders o ON o.order_id = sgt.order_id" in ring_cleanup_sql
         assert "JOIN orders_archive oa ON oa.order_id = sgt.order_id" in ring_cleanup_sql
-        assert (
-            "AND (o.placed_at < $1 OR o.placed_at >= $2)" in ring_cleanup_sql
-        )
-        assert (
-            "AND (oa.placed_at < $1 OR oa.placed_at >= $2)" in ring_cleanup_sql
-        )
+        assert "AND (o.placed_at < $1 OR o.placed_at >= $2)" in ring_cleanup_sql
+        assert "AND (oa.placed_at < $1 OR oa.placed_at >= $2)" in ring_cleanup_sql
         fraud_decisions_index = next(
             index
             for index, sql in enumerate(normalized_sql)
@@ -649,9 +651,7 @@ def test_bulk_generate_force_rerun_cleans_ephemeral_state() -> None:
             if kind == "execute" and sql.startswith("DELETE FROM payment_methods")
         ]
         assert len(payment_delete_matches) == 1
-        payment_delete_index, payment_delete_sql, payment_delete_args = (
-            payment_delete_matches[0]
-        )
+        payment_delete_index, payment_delete_sql, payment_delete_args = payment_delete_matches[0]
         assert (
             payment_delete_sql
             == "DELETE FROM payment_methods WHERE payment_method_id = ANY($1::uuid[])"
