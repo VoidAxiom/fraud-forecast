@@ -520,6 +520,17 @@ def _random_uk_ip() -> str:
     return f"{prefix}.{rng.randint(0, 255)}.{rng.randint(1, 254)}"
 
 
+def _assign_store_channels(rng: random.Random) -> tuple[bool, bool, bool]:
+    """Roll the three store channel flags, guaranteeing at least one is True.
+    Returns (accepts_in_store, accepts_delivery, accepts_pickup)."""
+    accepts_in_store = rng.random() < 0.75
+    accepts_delivery = rng.random() < 0.92
+    accepts_pickup = rng.random() < 0.88
+    if not (accepts_in_store or accepts_delivery or accepts_pickup):
+        accepts_delivery = True
+    return accepts_in_store, accepts_delivery, accepts_pickup
+
+
 def seed_merchants(scale: float) -> None:
     start = time.time()
     rng.seed(random.random())
@@ -725,9 +736,7 @@ def seed_stores(scale: float) -> None:
                 cuisine_types = _pg_array_literal(cuisines)
                 price_tier = int(rng.choices([1, 2, 3, 4], weights=[30, 45, 20, 5], k=1)[0])
                 accepts_cash = rng.random() < 0.05
-                accepts_in_store = rng.random() < 0.75
-                accepts_delivery = rng.random() < 0.92
-                accepts_pickup = rng.random() < 0.88
+                accepts_in_store, accepts_delivery, accepts_pickup = _assign_store_channels(rng)
                 is_verified = rng.random() < 0.95
                 created_at = (now - timedelta(days=rng.randint(365, 730))).replace(microsecond=0)
                 pos_system = rng.choices(_POS_SYSTEM_NAMES, weights=_POS_SYSTEM_WEIGHTS, k=1)[0]

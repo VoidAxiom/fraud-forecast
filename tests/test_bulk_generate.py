@@ -19,6 +19,7 @@ from simulator.bulk_generate import (  # noqa: E402
     _is_unplaceable_order_error,
     _parse_end_at,
     _rate_multiplier_from_env,
+    _should_abort_run,
     bulk_generate,
 )
 from simulator.cart_builder import Cart  # noqa: E402
@@ -227,6 +228,15 @@ def test_is_unplaceable_order_error_matches_open_hours() -> None:
     assert _is_unplaceable_order_error(RuntimeError("no stores in current open-hours window"))
 
 
+def test_bulk_skips_eligible_order_type_error() -> None:
+    assert _is_unplaceable_order_error(RuntimeError("no eligible order type for store"))
+    assert not _is_unplaceable_order_error(
+        RuntimeError("no active menu items for store")
+    )  # raised post-PM-insert; must crash not skip (VOI-329)
+    # empty-DB fail-fast still propagates:
+    assert not _is_unplaceable_order_error(RuntimeError("no active stores available"))
+
+
 def test_is_unplaceable_order_error_ignores_other_runtime_errors() -> None:
     # "no active stores available" is the empty-DB fail-fast guard raised by
     # generator.py only when there are no active stores at all; it must
@@ -234,6 +244,17 @@ def test_is_unplaceable_order_error_ignores_other_runtime_errors() -> None:
     assert not _is_unplaceable_order_error(RuntimeError("no active stores available"))
     assert not _is_unplaceable_order_error(RuntimeError("user not found: 123"))
     assert not _is_unplaceable_order_error(RuntimeError("payment method insert returned no row"))
+
+
+def test_bulk_aborts_on_zero_orders() -> None:
+    assert _should_abort_run(orders_generated=0, skipped_unplaceable=0, total=100)
+
+
+def test_bulk_aborts_above_skip_ceiling() -> None:
+    # >5% skipped
+    assert _should_abort_run(orders_generated=90, skipped_unplaceable=10, total=100)
+    # healthy low-skip run returns success (no abort)
+    assert not _should_abort_run(orders_generated=99, skipped_unplaceable=1, total=100)
 
 
 def test_parse_end_at_none() -> None:

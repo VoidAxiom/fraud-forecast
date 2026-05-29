@@ -56,12 +56,23 @@ from simulator.user_picker import WeightedUserPicker
 
 logger = logging.getLogger(__name__)
 
-_UNPLACEABLE_ORDER_MESSAGES: tuple[str, ...] = ("no stores in current open-hours window",)
+_UNPLACEABLE_ORDER_MESSAGES: tuple[str, ...] = (
+    "no stores in current open-hours window",
+    "no eligible order type for store",
+)
 
 
 def _is_unplaceable_order_error(exc: RuntimeError) -> bool:
     message = str(exc)
     return any(fragment in message for fragment in _UNPLACEABLE_ORDER_MESSAGES)
+
+
+def _should_abort_run(orders_generated: int, skipped_unplaceable: int, total: int) -> bool:
+    """True when a run looks systematically broken: produced zero orders,
+    or skipped more than 5% of attempted timestamps."""
+    if orders_generated == 0:
+        return True
+    return skipped_unplaceable > 0.05 * total
 
 
 DATABASE_URL_BULK: str = os.environ.get(
@@ -637,6 +648,13 @@ ON CONFLICT (order_id) DO NOTHING
             run_id=f"window_{config.seed}_{window_start_epoch}",
             value=metadata,
         )
+
+        if _should_abort_run(processed, skipped_unplaceable, total):
+            raise RuntimeError(
+                f"bulk run aborted: orders_generated={processed} "
+                f"skipped_unplaceable={skipped_unplaceable} of total={total} "
+                f"(exceeds 5% skip ceiling or produced zero orders)"
+            )
 
         result: dict[str, Any] = {
             "run_id": run_id,
