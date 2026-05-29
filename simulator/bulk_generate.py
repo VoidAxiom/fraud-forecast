@@ -59,7 +59,6 @@ logger = logging.getLogger(__name__)
 _UNPLACEABLE_ORDER_MESSAGES: tuple[str, ...] = (
     "no stores in current open-hours window",
     "no eligible order type for store",
-    "no active menu items for store",
 )
 
 

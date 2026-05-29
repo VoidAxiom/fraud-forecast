@@ -230,7 +230,9 @@ def test_is_unplaceable_order_error_matches_open_hours() -> None:
 
 def test_bulk_skips_eligible_order_type_error() -> None:
     assert _is_unplaceable_order_error(RuntimeError("no eligible order type for store"))
-    assert _is_unplaceable_order_error(RuntimeError("no active menu items for store"))
+    assert not _is_unplaceable_order_error(
+        RuntimeError("no active menu items for store")
+    )  # raised post-PM-insert; must crash not skip (VOI-329)
     # empty-DB fail-fast still propagates:
     assert not _is_unplaceable_order_error(RuntimeError("no active stores available"))
 
