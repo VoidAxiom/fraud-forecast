@@ -18,8 +18,10 @@ import redis.asyncio as aioredis
 from simulator.cart_builder import Cart
 from simulator.fraud_patterns import GroundTruth
 from simulator.generator import (
+    _DEFAULT_LIVE_RATE_MULTIPLIER,
     _apply_fraud_identity_overrides,
     _apply_fraud_order_attrs,
+    _parse_live_rate_multiplier_env,
     _parse_fraud_rate,
     _resolve_card_country,
     _select_order_type,
@@ -1751,3 +1753,50 @@ def test_live_rate_multiplier_invalid_does_not_block_redis_refresh(
         )
 
     asyncio.run(_run())
+
+
+def test_live_rate_empty_string_uses_default_no_warning(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level("WARNING", logger="simulator.generator")
+    multiplier, override = _parse_live_rate_multiplier_env("")
+    assert multiplier == _DEFAULT_LIVE_RATE_MULTIPLIER == 0.02
+    assert override is False
+    assert not any(
+        "invalid_live_rate_multiplier" in r.getMessage() for r in caplog.records
+    )
+
+
+def test_live_rate_unset_uses_default_no_warning(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level("WARNING", logger="simulator.generator")
+    multiplier, override = _parse_live_rate_multiplier_env(None)
+    assert multiplier == _DEFAULT_LIVE_RATE_MULTIPLIER == 0.02
+    assert override is False
+    assert not any(
+        "invalid_live_rate_multiplier" in r.getMessage() for r in caplog.records
+    )
+
+
+def test_live_rate_invalid_string_warns_and_falls_back(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level("WARNING", logger="simulator.generator")
+    multiplier, override = _parse_live_rate_multiplier_env("foo")
+    assert multiplier == _DEFAULT_LIVE_RATE_MULTIPLIER == 0.02
+    assert override is False
+    warnings = [
+        r for r in caplog.records if "invalid_live_rate_multiplier" in r.getMessage()
+    ]
+    assert len(warnings) == 1
+
+
+def test_live_rate_valid_value_used(caplog: pytest.LogCaptureFixture) -> None:
+    caplog.set_level("WARNING", logger="simulator.generator")
+    multiplier, override = _parse_live_rate_multiplier_env("0.05")
+    assert multiplier == 0.05
+    assert override is True
+    assert not any(
+        "invalid_live_rate_multiplier" in r.getMessage() for r in caplog.records
+    )
