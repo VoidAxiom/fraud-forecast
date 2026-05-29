@@ -1296,6 +1296,7 @@ async def insert_order(
         placed_at = inserted["placed_at"]
 
         if cart.items:
+
             def _next_order_item_id() -> uuid.UUID:
                 if rng is None:
                     return uuid.uuid4()
@@ -2012,15 +2013,11 @@ async def main() -> None:
                     )
                 )
                 if not _live_rate_override_active:
-                    runtime_ops_per_second_opt = await _read_runtime_rate_optional(
-                        redis_conn
-                    )
+                    runtime_ops_per_second_opt = await _read_runtime_rate_optional(redis_conn)
                     if runtime_ops_per_second_opt is None:
                         rate_multiplier = _DEFAULT_LIVE_RATE_MULTIPLIER
                     else:
-                        rate_multiplier = (
-                            runtime_ops_per_second_opt / _MEAN_HOURLY_RATE
-                        )
+                        rate_multiplier = runtime_ops_per_second_opt / _MEAN_HOURLY_RATE
                 orders_since_report = 0
                 successful_orders = 0
                 window_errors = 0

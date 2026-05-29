@@ -1588,9 +1588,7 @@ def test_live_rate_multiplier_preserved_across_report_boundary(
             stack.enter_context(
                 patch("simulator.generator.logger.info", side_effect=_record_report)
             )
-            stack.enter_context(
-                patch("simulator.generator.asyncio.sleep", side_effect=_sleep)
-            )
+            stack.enter_context(patch("simulator.generator.asyncio.sleep", side_effect=_sleep))
 
             with pytest.raises(_StopMain):
                 await main()
@@ -1741,15 +1739,11 @@ def test_live_rate_multiplier_invalid_does_not_block_redis_refresh(
                     new=runtime_rate_mock,
                 )
             )
-            stack.enter_context(
-                patch("simulator.generator.current_rate", return_value=1000.0)
-            )
+            stack.enter_context(patch("simulator.generator.current_rate", return_value=1000.0))
             stack.enter_context(
                 patch("simulator.generator.logger.info", side_effect=_record_report)
             )
-            stack.enter_context(
-                patch("simulator.generator.asyncio.sleep", side_effect=_sleep)
-            )
+            stack.enter_context(patch("simulator.generator.asyncio.sleep", side_effect=_sleep))
 
             with pytest.raises(_StopMain):
                 await main()
@@ -1783,9 +1777,7 @@ def test_live_rate_empty_string_uses_default_no_warning(
     multiplier, override = _parse_live_rate_multiplier_env("")
     assert multiplier == _DEFAULT_LIVE_RATE_MULTIPLIER == 0.02
     assert override is False
-    assert not any(
-        "invalid_live_rate_multiplier" in r.getMessage() for r in caplog.records
-    )
+    assert not any("invalid_live_rate_multiplier" in r.getMessage() for r in caplog.records)
 
 
 def test_live_rate_unset_uses_default_no_warning(
@@ -1795,9 +1787,7 @@ def test_live_rate_unset_uses_default_no_warning(
     multiplier, override = _parse_live_rate_multiplier_env(None)
     assert multiplier == _DEFAULT_LIVE_RATE_MULTIPLIER == 0.02
     assert override is False
-    assert not any(
-        "invalid_live_rate_multiplier" in r.getMessage() for r in caplog.records
-    )
+    assert not any("invalid_live_rate_multiplier" in r.getMessage() for r in caplog.records)
 
 
 def test_live_rate_invalid_string_warns_and_falls_back(
@@ -1807,9 +1797,7 @@ def test_live_rate_invalid_string_warns_and_falls_back(
     multiplier, override = _parse_live_rate_multiplier_env("foo")
     assert multiplier == _DEFAULT_LIVE_RATE_MULTIPLIER == 0.02
     assert override is False
-    warnings = [
-        r for r in caplog.records if "invalid_live_rate_multiplier" in r.getMessage()
-    ]
+    warnings = [r for r in caplog.records if "invalid_live_rate_multiplier" in r.getMessage()]
     assert len(warnings) == 1
 
 
@@ -1818,6 +1806,4 @@ def test_live_rate_valid_value_used(caplog: pytest.LogCaptureFixture) -> None:
     multiplier, override = _parse_live_rate_multiplier_env("0.05")
     assert multiplier == 0.05
     assert override is True
-    assert not any(
-        "invalid_live_rate_multiplier" in r.getMessage() for r in caplog.records
-    )
+    assert not any("invalid_live_rate_multiplier" in r.getMessage() for r in caplog.records)
