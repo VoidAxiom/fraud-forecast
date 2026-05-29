@@ -581,7 +581,7 @@ def pick_device_and_ip(
         device = dict(rng.choice(user_devices))
     else:
         device = {
-            "device_id": uuid.uuid4(),
+            "device_id": uuid.UUID(bytes=bytes(rng.getrandbits(8) for _ in range(16))),
             "device_type": "MOBILE_APP",
             "platform": rng.choice(["iOS", "Android"]),
             "os_version": "17.0",
@@ -595,9 +595,8 @@ def pick_device_and_ip(
 
 
 def generate_order_number(rng: random.Random, *, year: int | None = None) -> str:
-    _ = rng
     order_year = datetime.now(tz=LONDON_TZ).year if year is None else year
-    suffix = base64.b32encode(uuid.uuid4().bytes).decode()[0:10]
+    suffix = base64.b32encode(bytes(rng.getrandbits(8) for _ in range(16))).decode()[0:10]
     return f"JE-{order_year}-{suffix}"
 
 
@@ -776,20 +775,26 @@ async def _insert_ephemeral_payment_method(
     conn: asyncpg.Connection,
     user_id: uuid.UUID,
     rng: random.Random,
-) -> dict[str, Any]:
+    payment_method_id: Optional[uuid.UUID] = None,
+) -> tuple[dict[str, Any], bool]:
+    if payment_method_id is None:
+        payment_method_id = uuid.uuid4()
+
     card_bin = f"{rng.randint(100000, 999999):06d}"
     card_last_four = f"{rng.randint(1000, 9999):04d}"
 
     row = await conn.fetchrow(
         """
         INSERT INTO payment_methods (
-            user_id, payment_type, card_bin, card_last_four, card_brand,
-            card_funding_type, card_issuer_country, is_digital_native_bank
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+            payment_method_id, user_id, payment_type, card_bin, card_last_four,
+            card_brand, card_funding_type, card_issuer_country, is_digital_native_bank
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+        ON CONFLICT (payment_method_id) DO NOTHING
         RETURNING payment_method_id, payment_type, card_bin, card_last_four, card_brand,
                   card_funding_type, card_issuer_country, is_digital_native_bank,
                   unique_users_count
         """,
+        payment_method_id,
         user_id,
         "CREDIT_CARD",
         card_bin,
@@ -800,9 +805,21 @@ async def _insert_ephemeral_payment_method(
         False,
     )
     if row is None:
-        raise RuntimeError("payment method insert returned no row")
+        row = await conn.fetchrow(
+            """
+            SELECT payment_method_id, payment_type, card_bin, card_last_four, card_brand,
+                   card_funding_type, card_issuer_country, is_digital_native_bank,
+                   unique_users_count
+            FROM payment_methods
+            WHERE payment_method_id=$1
+            """,
+            payment_method_id,
+        )
+        if row is None:
+            raise RuntimeError("payment method insert returned no row")
+        return dict(row), False
 
-    return dict(row)
+    return dict(row), True
 
 
 async def _load_menu_items(
@@ -1091,13 +1108,15 @@ async def insert_order(
     cart: Cart,
     placed_at: datetime,
     *,
+    order_id: uuid.UUID | None = None,
     is_fraud: bool = False,
     fraud_category: str | None = None,
     pattern_notes: str | None = None,
     ring_id: uuid.UUID | None = None,
+    rng: Optional[random.Random] = None,
 ) -> tuple[uuid.UUID, datetime]:
     order_row = {
-        "order_id": uuid.uuid4(),
+        "order_id": order_id if order_id is not None else uuid.uuid4(),
         "placed_at": placed_at,
         "order_status": "PLACED",
     }
@@ -1276,9 +1295,14 @@ async def insert_order(
         placed_at = inserted["placed_at"]
 
         if cart.items:
+            def _next_order_item_id() -> uuid.UUID:
+                if rng is None:
+                    return uuid.uuid4()
+                return uuid.UUID(bytes=bytes(rng.getrandbits(8) for _ in range(16)))
+
             item_rows = [
                 (
-                    uuid.uuid4(),
+                    _next_order_item_id(),
                     order_id,
                     placed_at,
                     item.item_id,
@@ -1580,6 +1604,10 @@ async def generate_order(
     store_hours_by_store_id: dict[uuid.UUID, list[dict[str, Any]]],
     promos: list[dict[str, Any]],
     scoring_enabled: bool = False,
+    order_id_override: uuid.UUID | None = None,
+    device_id_override: uuid.UUID | None = None,
+    ephemeral_pm_id_override: Optional[uuid.UUID] = None,
+    bulk_pm_tracker: Optional[set[uuid.UUID]] = None,
 ) -> uuid.UUID:
     user_id = user_picker.pick(rng)
     fraud_roll = rng.random()
@@ -1607,6 +1635,8 @@ async def generate_order(
         if isinstance(user_data.get("default_address"), dict)
         else None,
     )
+    if device_id_override is not None:
+        device["device_id"] = device_id_override
     if order_channel == "LEGACY_API":
         device = {
             "device_id": None,
@@ -1634,7 +1664,14 @@ async def generate_order(
     elif payment_methods and roll < 0.95:
         payment_method = rng.choice(payment_methods)
     else:
-        payment_method = await _insert_ephemeral_payment_method(conn, user_id, rng)
+        payment_method, is_new_ephemeral_payment_method = await _insert_ephemeral_payment_method(
+            conn,
+            user_id,
+            rng,
+            payment_method_id=ephemeral_pm_id_override,
+        )
+        if is_new_ephemeral_payment_method and bulk_pm_tracker is not None:
+            bulk_pm_tracker.add(payment_method["payment_method_id"])
 
     is_new_payment_method = await _is_new_payment_method(
         conn,
@@ -1725,18 +1762,43 @@ async def generate_order(
         try:
             snapshot["order_number"] = generate_order_number(rng, year=placed_at.year)
             if fraud_ground_truth is None:
-                order_id, _ = await insert_order(conn, snapshot, cart, placed_at)
+                if order_id_override is None:
+                    order_id, _ = await insert_order(conn, snapshot, cart, placed_at, rng=rng)
+                else:
+                    order_id, _ = await insert_order(
+                        conn,
+                        snapshot,
+                        cart,
+                        placed_at,
+                        order_id=order_id_override,
+                        rng=rng,
+                    )
             else:
-                order_id, _ = await insert_order(
-                    conn,
-                    snapshot,
-                    cart,
-                    placed_at,
-                    is_fraud=True,
-                    fraud_category=fraud_ground_truth.fraud_category,
-                    pattern_notes=fraud_ground_truth.pattern_notes,
-                    ring_id=fraud_ground_truth.ring_id,
-                )
+                if order_id_override is None:
+                    order_id, _ = await insert_order(
+                        conn,
+                        snapshot,
+                        cart,
+                        placed_at,
+                        is_fraud=True,
+                        fraud_category=fraud_ground_truth.fraud_category,
+                        pattern_notes=fraud_ground_truth.pattern_notes,
+                        ring_id=fraud_ground_truth.ring_id,
+                        rng=rng,
+                    )
+                else:
+                    order_id, _ = await insert_order(
+                        conn,
+                        snapshot,
+                        cart,
+                        placed_at,
+                        order_id=order_id_override,
+                        is_fraud=True,
+                        fraud_category=fraud_ground_truth.fraud_category,
+                        pattern_notes=fraud_ground_truth.pattern_notes,
+                        ring_id=fraud_ground_truth.ring_id,
+                        rng=rng,
+                    )
             break
         except asyncpg.UniqueViolationError:
             attempts += 1
@@ -1874,9 +1936,7 @@ async def main() -> None:
 
         while True:
             now = datetime.now(tz=LONDON_TZ)
-            now_for_rate = (
-                datetime(2024, 5, 10, 19, 0, 0, tzinfo=LONDON_TZ) if FORCE_PEAK else now
-            )
+            now_for_rate = datetime(2024, 5, 10, 19, 0, 0, tzinfo=LONDON_TZ) if FORCE_PEAK else now
             rate = current_rate(
                 now=now_for_rate,
                 multiplier=rate_multiplier,
