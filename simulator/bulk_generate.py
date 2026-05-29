@@ -56,10 +56,7 @@ from simulator.user_picker import WeightedUserPicker
 
 logger = logging.getLogger(__name__)
 
-_UNPLACEABLE_ORDER_MESSAGES: tuple[str, ...] = (
-    "no stores in current open-hours window",
-    "no active stores available",
-)
+_UNPLACEABLE_ORDER_MESSAGES: tuple[str, ...] = ("no stores in current open-hours window",)
 
 
 def _is_unplaceable_order_error(exc: RuntimeError) -> bool:

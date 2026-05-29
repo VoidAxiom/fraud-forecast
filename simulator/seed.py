@@ -106,7 +106,7 @@ _USER_UK_CARD_ISSUERS = UK_CARD_ISSUERS
 _STORE_HOUR_PATTERNS: list[str] = ["24h", "early", "standard", "late", "lunch"]
 _STORE_HOUR_WEIGHTS: list[float] = [0.05, 0.12, 0.58, 0.18, 0.07]
 _STORE_HOUR_WINDOWS: dict[str, tuple[str, str]] = {
-    "24h": ("00:00:00", "23:59:59"),
+    "24h": ("00:00:00", "23:59:59.999999"),
     "early": ("06:00:00", "22:00:00"),
     "standard": ("11:00:00", "23:00:00"),
     "late": ("17:00:00", "04:00:00"),

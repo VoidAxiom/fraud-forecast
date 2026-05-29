@@ -10,8 +10,8 @@ from simulator.seed import (
 def _is_open_at(open_time: str, close_time: str, hour: int) -> bool:
     open_h = int(open_time.split(":")[0])
     close_h = int(close_time.split(":")[0])
-    # 24h window: close_time "23:59:59" -> close_h 23, treat as always open
-    if open_time == "00:00:00" and close_time == "23:59:59":
+    # 24h window: close_time "23:59:59.999999" -> treat as always open
+    if open_time == "00:00:00" and close_time == "23:59:59.999999":
         return True
     if close_h > open_h:
         return open_h <= hour < close_h
@@ -27,7 +27,7 @@ def test_store_hours_cover_all_24_hours() -> None:
 
 def test_24h_window_open_every_hour() -> None:
     o, c = _STORE_HOUR_WINDOWS["24h"]
-    assert c == "23:59:59"
+    assert c == "23:59:59.999999"
     for hour in range(24):
         assert _is_open_at(o, c, hour)
 
