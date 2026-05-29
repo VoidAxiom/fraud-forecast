@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import random
+
 from simulator.seed import (
     _STORE_HOUR_PATTERNS,
     _STORE_HOUR_WEIGHTS,
     _STORE_HOUR_WINDOWS,
+    _assign_store_channels,
 )
 
 
@@ -44,3 +47,10 @@ def test_24h_stores_never_get_closed_day() -> None:
         eligible_for_closed_day = pattern != "24h"
         if pattern == "24h":
             assert not eligible_for_closed_day
+
+
+def test_every_store_accepts_at_least_one_channel() -> None:
+    rng = random.Random(12345)
+    for _ in range(50000):
+        in_store, delivery, pickup = _assign_store_channels(rng)
+        assert in_store or delivery or pickup
