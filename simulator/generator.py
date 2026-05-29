@@ -1378,6 +1378,22 @@ async def _read_runtime_rate(
     return parsed if parsed > 0 else fallback
 
 
+async def _read_runtime_rate_optional(
+    redis_conn: aioredis.Redis[Any],
+) -> Optional[int]:
+    """Return the explicit Redis-stored runtime rate, or None if absent/invalid."""
+    raw = await redis_conn.get("simulator:rate_per_second")
+    if raw is None:
+        return None
+    if isinstance(raw, bytes):
+        raw = raw.decode()
+    try:
+        parsed = int(raw)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed > 0 else None
+
+
 def _parse_live_rate_multiplier_env(
     env_value: str | None,
 ) -> tuple[float, bool]:
@@ -1996,14 +2012,15 @@ async def main() -> None:
                     )
                 )
                 if not _live_rate_override_active:
-                    runtime_ops_per_second = await _read_runtime_rate(
-                        redis_conn,
-                        config.orders_per_second,
+                    runtime_ops_per_second_opt = await _read_runtime_rate_optional(
+                        redis_conn
                     )
-                    if runtime_ops_per_second == config.orders_per_second:
+                    if runtime_ops_per_second_opt is None:
                         rate_multiplier = _DEFAULT_LIVE_RATE_MULTIPLIER
                     else:
-                        rate_multiplier = runtime_ops_per_second / _MEAN_HOURLY_RATE
+                        rate_multiplier = (
+                            runtime_ops_per_second_opt / _MEAN_HOURLY_RATE
+                        )
                 orders_since_report = 0
                 successful_orders = 0
                 window_errors = 0
