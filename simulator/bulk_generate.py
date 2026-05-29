@@ -56,6 +56,14 @@ from simulator.user_picker import WeightedUserPicker
 
 logger = logging.getLogger(__name__)
 
+_UNPLACEABLE_ORDER_MESSAGES: tuple[str, ...] = ("no stores in current open-hours window",)
+
+
+def _is_unplaceable_order_error(exc: RuntimeError) -> bool:
+    message = str(exc)
+    return any(fragment in message for fragment in _UNPLACEABLE_ORDER_MESSAGES)
+
+
 DATABASE_URL_BULK: str = os.environ.get(
     "DATABASE_URL_BULK",
     os.environ.get(
@@ -490,6 +498,7 @@ async def bulk_generate(
         processed = 0
         total = len(timestamps)
         bulk_pm_ids: set[uuid.UUID] = set()
+        skipped_unplaceable = 0
         for ts in timestamps:
             order_rng = random.Random(rng.randint(0, 2**63 - 1))
             bulk_ephemeral_pm_id = uuid.UUID(
@@ -497,73 +506,77 @@ async def bulk_generate(
             )
             order_id_bytes = bytes(rng.getrandbits(8) for _ in range(16))
             bulk_order_id = uuid.UUID(bytes=order_id_bytes)
-            async with pool.acquire() as conn:
-                order_id = await generate_order(
-                    order_rng,
-                    conn,
-                    now=ts,
-                    user_picker=user_picker,
-                    stores_by_city=stores_by_city,
-                    store_hours_by_store_id=store_hours_by_store_id,
-                    promos=promos,
-                    scoring_enabled=False,
-                    order_id_override=bulk_order_id,
-                    ephemeral_pm_id_override=bulk_ephemeral_pm_id,
-                    bulk_pm_tracker=bulk_pm_ids,
-                )
-                for lifecycle_iter in range(20):
-                    lifecycle_now = min(
-                        ts + timedelta(seconds=(lifecycle_iter + 1) * _BULK_LIFECYCLE_STEP_SECONDS),
-                        window_end,
+            try:
+                async with pool.acquire() as conn:
+                    order_id = await generate_order(
+                        order_rng,
+                        conn,
+                        now=ts,
+                        user_picker=user_picker,
+                        stores_by_city=stores_by_city,
+                        store_hours_by_store_id=store_hours_by_store_id,
+                        promos=promos,
+                        scoring_enabled=False,
+                        order_id_override=bulk_order_id,
+                        ephemeral_pm_id_override=bulk_ephemeral_pm_id,
+                        bulk_pm_tracker=bulk_pm_ids,
                     )
-                    status_before = await conn.fetchval(
-                        "SELECT order_status FROM orders WHERE order_id = $1",
+                    for lifecycle_iter in range(20):
+                        lifecycle_now = min(
+                            ts
+                            + timedelta(
+                                seconds=(lifecycle_iter + 1) * _BULK_LIFECYCLE_STEP_SECONDS
+                            ),
+                            window_end,
+                        )
+                        status_before = await conn.fetchval(
+                            "SELECT order_status FROM orders WHERE order_id = $1",
+                            order_id,
+                        )
+                        if status_before in _TERMINAL_STATES:
+                            break
+                        await advance_lifecycle(order_id, conn, now=lifecycle_now)
+                    order_row = await conn.fetchrow(
+                        """
+                        SELECT o.delivered_at, gt.is_fraud, gt.fraud_category
+                        FROM (
+                            SELECT delivered_at FROM orders WHERE order_id = $1
+                            UNION ALL
+                            SELECT delivered_at FROM orders_archive WHERE order_id = $1
+                        ) o,
+                        sim.simulator_ground_truth gt
+                        WHERE gt.order_id = $1
+                        LIMIT 1
+                        """,
                         order_id,
                     )
-                    if status_before in _TERMINAL_STATES:
-                        break
-                    await advance_lifecycle(order_id, conn, now=lifecycle_now)
-                order_row = await conn.fetchrow(
-                    """
-                    SELECT o.delivered_at, gt.is_fraud, gt.fraud_category
-                    FROM (
-                        SELECT delivered_at FROM orders WHERE order_id = $1
-                        UNION ALL
-                        SELECT delivered_at FROM orders_archive WHERE order_id = $1
-                    ) o,
-                    sim.simulator_ground_truth gt
-                    WHERE gt.order_id = $1
-                    LIMIT 1
-                    """,
-                    order_id,
-                )
-                if order_row is not None and order_row["delivered_at"] is not None:
-                    cb_time = bulk_chargeback_received_at(
-                        order_id=order_id,
-                        delivered_at=order_row["delivered_at"],
-                        is_fraud=bool(order_row["is_fraud"]),
-                        fraud_category=(
-                            str(order_row["fraud_category"])
-                            if order_row["fraud_category"]
-                            else None
-                        ),
-                        window_end=window_end,
-                    )
-                    if cb_time is not None:
-                        await bulk_emit_chargeback(order_id, conn, received_at=cb_time)
-                if (
-                    order_row is not None
-                    and order_row["delivered_at"] is not None
-                    and str(order_row["fraud_category"]) == "refund_abuse"
-                ):
-                    refund_time = bulk_refund_issued_at(
-                        order_id=order_id,
-                        delivered_at=order_row["delivered_at"],
-                        window_end=window_end,
-                    )
-                    if refund_time is not None:
-                        await conn.execute(
-                            """
+                    if order_row is not None and order_row["delivered_at"] is not None:
+                        cb_time = bulk_chargeback_received_at(
+                            order_id=order_id,
+                            delivered_at=order_row["delivered_at"],
+                            is_fraud=bool(order_row["is_fraud"]),
+                            fraud_category=(
+                                str(order_row["fraud_category"])
+                                if order_row["fraud_category"]
+                                else None
+                            ),
+                            window_end=window_end,
+                        )
+                        if cb_time is not None:
+                            await bulk_emit_chargeback(order_id, conn, received_at=cb_time)
+                    if (
+                        order_row is not None
+                        and order_row["delivered_at"] is not None
+                        and str(order_row["fraud_category"]) == "refund_abuse"
+                    ):
+                        refund_time = bulk_refund_issued_at(
+                            order_id=order_id,
+                            delivered_at=order_row["delivered_at"],
+                            window_end=window_end,
+                        )
+                        if refund_time is not None:
+                            await conn.execute(
+                                """
 INSERT INTO refunds (order_id, order_placed_at, amount_pence, reason, initiated_by, issued_at)
 SELECT $1, o.placed_at, o.total_pence, 'order_quality_complaint', 'USER', $2
 FROM (
@@ -573,9 +586,23 @@ FROM (
 ) o
 ON CONFLICT (order_id) DO NOTHING
 """,
-                            order_id,
-                            refund_time,
-                        )
+                                order_id,
+                                refund_time,
+                            )
+            except RuntimeError as exc:
+                if not _is_unplaceable_order_error(exc):
+                    raise
+                skipped_unplaceable += 1
+                logger.info(
+                    json.dumps(
+                        {
+                            "event": "bulk_skip_unplaceable",
+                            "reason": str(exc),
+                            "skipped_unplaceable": skipped_unplaceable,
+                        }
+                    )
+                )
+                continue
 
             processed += 1
             if processed % 1000 == 0:
@@ -602,6 +629,7 @@ ON CONFLICT (order_id) DO NOTHING
             "timestamps_synthesized": total,
             "elapsed_seconds": round(elapsed_seconds, 3),
             "ephemeral_pm_ids": [str(pm_id) for pm_id in sorted(bulk_pm_ids)],
+            "skipped_unplaceable": skipped_unplaceable,
         }
         await _write_bulk_metadata(pool, run_id=run_id, value=metadata)
         await _write_bulk_metadata(
@@ -613,6 +641,7 @@ ON CONFLICT (order_id) DO NOTHING
         result: dict[str, Any] = {
             "run_id": run_id,
             "orders_generated": processed,
+            "skipped_unplaceable": skipped_unplaceable,
             "timestamps_synthesized": total,
             "window_start": window_start.isoformat(),
             "window_end": window_end.isoformat(),

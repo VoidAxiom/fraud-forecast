@@ -103,6 +103,16 @@ _USER_DISPOSABLE_EMAIL_DOMAINS = DISPOSABLE_EMAIL_DOMAINS
 _USER_EMAIL_DOMAINS = EMAIL_DOMAINS
 _USER_UK_CARD_ISSUERS = UK_CARD_ISSUERS
 
+_STORE_HOUR_PATTERNS: list[str] = ["24h", "early", "standard", "late", "lunch"]
+_STORE_HOUR_WEIGHTS: list[float] = [0.05, 0.12, 0.58, 0.18, 0.07]
+_STORE_HOUR_WINDOWS: dict[str, tuple[str, str]] = {
+    "24h": ("00:00:00", "23:59:59.999999"),
+    "early": ("06:00:00", "22:00:00"),
+    "standard": ("11:00:00", "23:00:00"),
+    "late": ("17:00:00", "04:00:00"),
+    "lunch": ("11:00:00", "15:00:00"),
+}
+
 CUISINE_MENU_TEMPLATES: dict[str, list[tuple[str, str, bool]]] = {
     "Indian": [
         ("Chicken Tikka Masala", "MAIN", True),
@@ -819,19 +829,11 @@ def seed_store_hours() -> None:
         writer = csv.writer(buf)
         row_count = 0
         for store_id in _store_ids:
-            pattern = rng.choices(["standard", "late", "lunch"], weights=[0.90, 0.05, 0.05], k=1)[0]
-            if pattern == "standard":
-                open_time = "11:00:00"
-                close_time = "23:00:00"
-            elif pattern == "late":
-                open_time = "17:00:00"
-                close_time = "03:00:00"
-            else:
-                open_time = "11:00:00"
-                close_time = "15:00:00"
+            pattern = rng.choices(_STORE_HOUR_PATTERNS, weights=_STORE_HOUR_WEIGHTS, k=1)[0]
+            open_time, close_time = _STORE_HOUR_WINDOWS[pattern]
 
             closed_day = None
-            if rng.random() < 0.10:
+            if pattern != "24h" and rng.random() < 0.10:
                 closed_day = rng.choice([0, 1])
 
             for day_of_week in range(7):
